@@ -151,10 +151,12 @@ Sem duplicação de lógica: notebook e `run_diario` chamam as mesmas funções 
   - `run_dia(X)` — cadeia dos 13 passos para a liquidação X (raspa X **e** X-1u → forward-compatible com Anbima por dtNegocio).
   - `run_ultimos_n(n=5)` — rotina diária: passos globais 1×, per-date em laço, relatório no fim.
   - `run_setup(inicio_boletim, dias_indicativas=130, dias_curva_di=20, dias_cricra=5, rodar_outstanding=False)` — bootstrap (§5).
-- **`code/pipeline.ipynb`** — 1 bloco por fluxo (rotina diária / dia único / setup / blocos individuais). **Rodar a partir da pasta `code/`.**
-- **`code/scripts/run_diario.py`** — entrypoint p/ Task Scheduler (`pythonw.exe .../run_diario.py`):
-  - `run_diario.py` → últimos 5 dias úteis; `--last N` ajusta.
+- **`code/pipeline.ipynb`** — **interface principal** (rodar a partir de `code/`). 3 seções: **A)** testar cada fluxo isolado (1 bloco por script — validar o ambiente do banco antes do setup); **B)** rotina diária (`N_DIAS` parametrizável); **C)** setup em massa (`INICIO_BOLETIM`). Nada aborta o notebook — cada passo mostra `[OK]`/`[FALHA]`.
+- **`code/scripts/run_diario.py`** — **opcional**, só para o **Task Scheduler** (o Agendador não roda `.ipynb`, só `.py`). Reaproveita o `pipeline_core`. Aceita parâmetro (`--last N`, default 5) — nada fixo.
+  - `run_diario.py --last 5` → últimos 5 dias úteis.
   - `run_diario.py --setup --inicio-boletim YYYY-MM-DD [--outstanding]` → bootstrap.
+
+**Fluxo recomendado no banco:** rodar a Seção A do notebook fluxo a fluxo (isolar erros do ambiente) → corrigir o que quebrar → rodar a Seção C (setup) → depois agendar o `run_diario.py` (ou usar a Seção B na mão).
 
 Validado (02/07): datas corretas (pula fim de semana/feriado), notebook e scripts compilam, `check_no_secrets` verde.
 
