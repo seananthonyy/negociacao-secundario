@@ -1,0 +1,25 @@
+# --- Segredos e config local — NUNCA versionar ---
+.env
+destinatarios.py
+
+# --- Banco de dados e backups (regeneráveis; grandes) ---
+data/*.db
+data/*.db-journal
+data/*.db-wal
+*.db
+
+# --- Saídas geradas / dados brutos (regeneráveis) ---
+data/logs/
+data/relatorios/
+data/anbima_data_raw/
+data/api_samples/
+data/debug/
+
+# --- Python ---
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# --- Playwright ---
+.playwright/

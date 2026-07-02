@@ -1,0 +1,1566 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Relatório Secundário de Crédito Privado</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',Arial,sans-serif;background:#f4f5f7;color:#1a1a2e;font-size:13px}
+
+/* ── header ── */
+.hdr{background:#003087;color:#fff;padding:13px 24px;display:flex;align-items:center;justify-content:space-between}
+.hdr h1{font-size:17px;font-weight:700;letter-spacing:.3px}
+.hdr .per{font-size:12px;opacity:.75}
+
+/* ── tabs ── */
+.tabs{background:#002370;display:flex;padding:0 20px;gap:2px}
+.tab-btn{background:none;border:none;color:rgba(255,255,255,.6);padding:11px 20px;cursor:pointer;font-size:13px;font-weight:600;border-bottom:3px solid transparent;transition:all .15s;letter-spacing:.2px}
+.tab-btn:hover{color:#fff}
+.tab-btn.active{color:#fff;border-bottom-color:#EC7000}
+
+/* ── layout ── */
+.content{padding:16px 20px}
+.panel{display:none}
+.panel.active{display:block}
+
+/* ── card ── */
+.card{background:#fff;border-radius:8px;padding:14px 16px;box-shadow:0 1px 5px rgba(0,0,0,.08);margin-bottom:14px}
+.card-title{font-size:11px;font-weight:700;color:#003087;text-transform:uppercase;letter-spacing:.6px;margin-bottom:10px}
+.disclaimer{margin-top:12px;padding:10px 14px;background:#fff8e9;border-left:3px solid #e8a200;border-radius:6px;font-size:11.5px;color:#5c4a00;line-height:1.5}
+
+/* ── filter bar ── */
+.fbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:#fff;border-radius:8px;padding:12px 16px;box-shadow:0 1px 5px rgba(0,0,0,.08);margin-bottom:14px}
+.flabel{font-size:11px;font-weight:700;color:#5a6a7a;text-transform:uppercase;letter-spacing:.5px}
+.fbar select.fsel{border:1px solid #c8d0dc;border-radius:4px;padding:5px 9px;font-size:12px;color:#1a1a2e;outline:none;background:#fff;cursor:pointer;min-width:110px}
+.fbar select.fsel:focus{border-color:#EC7000}
+.sep{color:#bbb;font-size:14px}
+.btn{background:#EC7000;color:#fff;border:none;border-radius:4px;padding:6px 16px;font-size:12px;cursor:pointer;font-weight:700;letter-spacing:.2px}
+.btn:hover{background:#c95f00}
+.btn-sm{background:#6c757d;font-weight:600;padding:3px 9px;font-size:11px}
+.btn-sm:hover{background:#5a6268}
+
+/* ── pills ── */
+.pills{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+.pill{background:#fff;border-radius:8px;padding:11px 16px;box-shadow:0 1px 5px rgba(0,0,0,.08);min-width:130px;border-left:3px solid #EC7000}
+.pill .plabel{font-size:10px;color:#6c7a89;text-transform:uppercase;letter-spacing:.5px}
+.pill .pval{font-size:18px;font-weight:700;color:#003087;margin-top:2px}
+.pill .psub{font-size:10px;color:#9aabb4;margin-top:1px}
+
+/* ── ticker multiselect ── */
+.ts-wrap{position:relative;display:flex;align-items:center;gap:5px}
+.ts-input{border:1px solid #c8d0dc;border-radius:4px;padding:5px 9px;font-size:12px;width:215px;outline:none}
+.ts-input:focus{border-color:#EC7000}
+.ts-badge{font-size:11px;font-weight:700;color:#EC7000;background:#fff3e8;padding:2px 7px;border-radius:10px;min-width:22px;text-align:center}
+.ts-drop{position:absolute;top:calc(100% + 5px);left:0;width:320px;max-height:300px;background:#fff;border:1px solid #c8d0dc;border-radius:6px;box-shadow:0 4px 18px rgba(0,0,0,.12);z-index:999;display:none;overflow:hidden}
+.ts-drop.open{display:flex;flex-direction:column}
+.ts-actions{padding:7px 10px;border-bottom:1px solid #eee;display:flex;gap:6px;background:#f8f9fb;flex-shrink:0}
+.ts-list{overflow-y:auto;flex:1}
+.ts-item{display:flex;align-items:center;padding:5px 10px;cursor:pointer;gap:7px}
+.ts-item:hover{background:#f4f7fb}
+.ts-item label{cursor:pointer;font-size:12px;flex:1;color:#2c3e50;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ts-item input{margin:0;cursor:pointer;accent-color:#EC7000}
+
+/* ── empty message ── */
+.empty-msg{display:flex;align-items:center;justify-content:center;height:260px;color:#9aabb4;font-size:14px;font-style:italic}
+
+/* ── boletim: inner filter bar ── */
+.b-inner-fbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid #edf0f5}
+.b-fsel{border:1px solid #c8d0dc;border-radius:4px;padding:5px 9px;font-size:12px;color:#1a1a2e;outline:none;background:#fff;cursor:pointer;min-width:150px}
+.b-finp{flex:1 1 200px;max-width:360px;border:1px solid #c8d0dc;border-radius:4px;padding:5px 9px;font-size:12px;color:#1a1a2e;outline:none;background:#fff}
+.b-fsel:focus,.b-finp:focus{border-color:#EC7000}
+.b-idx-group{display:inline-flex;gap:7px;flex-wrap:wrap;align-items:center}
+.b-chk{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:#495057;cursor:pointer;border:1px solid #c8d0dc;border-radius:4px;padding:5px 10px;background:#fff;user-select:none;transition:border-color .15s,background .15s}
+.b-chk:hover{border-color:#EC7000}
+.b-chk input{cursor:pointer;margin:0;accent-color:#EC7000}
+.b-chk:has(input:checked){background:#fff3e8;border-color:#EC7000;color:#003087;font-weight:600}
+
+/* ── boletim: table ── */
+.b-wrap{overflow-x:auto}
+.b-wrap table{width:100%;border-collapse:collapse;font-size:12px}
+.b-wrap thead tr:first-child{background:#003087;color:#f8f9fa}
+.b-wrap thead th{padding:8px 9px;text-align:right;white-space:nowrap;font-weight:600;letter-spacing:.3px;cursor:pointer;user-select:none}
+.b-wrap thead th:nth-child(-n+5){text-align:left}
+.b-wrap thead th:hover{background:#002370}
+.b-wrap thead th .sa{display:inline-block;margin-left:4px;opacity:.4;font-size:10px}
+.b-wrap thead th.sort-asc  .sa::after{content:" ▲";opacity:1}
+.b-wrap thead th.sort-desc .sa::after{content:" ▼";opacity:1}
+.b-wrap thead th:not(.sort-asc):not(.sort-desc) .sa::after{content:" ⇅"}
+.b-wrap thead tr.bfr{background:#f0f2f7}
+.b-wrap thead tr.bfr th{padding:3px 5px}
+.b-wrap thead tr.bfr th input{width:100%;padding:3px 5px;font-size:11px;border:1px solid #c8d0dc;border-radius:3px;color:#1a1a2e;background:#fff;outline:none;box-sizing:border-box}
+.b-wrap thead tr.bfr th input:focus{border-color:#EC7000}
+.b-wrap tbody tr{border-bottom:1px solid #e9ecef}
+.b-wrap tbody tr:nth-child(even){background:#f8f9fc}
+.b-wrap tbody tr:hover{background:#e8f0fe}
+.b-wrap td{padding:6px 9px;text-align:right;white-space:nowrap;color:#2d3748}
+.b-wrap td:nth-child(-n+5){text-align:left}
+.b-wrap tfoot tr{background:#f0f2f7;font-weight:700}
+.b-wrap tfoot td{padding:7px 9px;border-top:2px solid #EC7000;text-align:right;color:#003087}
+.b-wrap tfoot td:nth-child(-n+5){text-align:left}
+.btk{font-weight:600;color:#003087;font-family:'SFMono-Regular',Consolas,monospace;font-size:11.5px}
+.btp{font-size:11px;font-weight:700;letter-spacing:.4px;color:#5a6a8a}
+.bnull{color:#adb5bd;font-style:italic}
+
+/* ── spread × duration: grid 2×2 ── */
+.dur-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.dur-chart{height:360px}
+@media(max-width:1100px){.dur-grid{grid-template-columns:1fr}}
+
+/* ── info ativos: data sob a taxa + alinhamento ── */
+.ia-dt{font-size:10px;color:#9aabb4;font-weight:400;margin-top:1px}
+#ia-tabela thead th, #ia-tabela tbody td{text-align:right}
+#ia-tabela thead th:nth-child(1), #ia-tabela tbody td:nth-child(1),
+#ia-tabela thead th:nth-child(2), #ia-tabela tbody td:nth-child(2),
+#ia-tabela thead th:nth-child(3), #ia-tabela tbody td:nth-child(3),
+#ia-tabela thead th:nth-child(5), #ia-tabela tbody td:nth-child(5){text-align:left}
+</style>
+</head>
+<body>
+
+<div class="hdr">
+  <h1>Relatório Secundário — Crédito Privado</h1>
+  <span class="per">Base completa: {{ dtStart.replace('-','/') }} a {{ dtEnd.replace('-','/') }}</span>
+</div>
+
+<div class="tabs">
+  <button class="tab-btn active" onclick="switchTab('boletim',this)">Boletim Diário</button>
+  <button class="tab-btn" onclick="switchTab('geral',this)">Visão Mercado</button>
+  <button class="tab-btn" onclick="switchTab('anbima',this)">Visão Anbima</button>
+  <button class="tab-btn" onclick="switchTab('ticker',this)">Por Ativo</button>
+  <button class="tab-btn" onclick="switchTab('duration',this)">Spread × Duration</button>
+  <button class="tab-btn" onclick="switchTab('infoativos',this)">Info Ativos</button>
+</div>
+
+<div class="content">
+
+  <!-- ══════════════════════ BOLETIM DIÁRIO (1ª aba) ════════════════════════ -->
+  <div id="panel-boletim" class="panel active">
+    <div class="fbar">
+      <span class="flabel">Liquidação</span>
+      <select id="b-date" class="fsel" onchange="renderBoletim()"></select>
+    </div>
+    <div id="boletim-pills" class="pills"></div>
+    <div class="card">
+      <div id="boletim-content">
+        <div class="empty-msg">Selecione uma data acima</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════ VISÃO GERAL ═══════════════════════ -->
+  <div id="panel-geral" class="panel">
+    <div class="fbar">
+      <span class="flabel">Período</span>
+      <select id="g-start" class="fsel" onchange="renderGeral()"></select>
+      <span class="sep">→</span>
+      <select id="g-end" class="fsel" onchange="renderGeral()"></select>
+    </div>
+    <div class="pills" id="pills-geral"></div>
+    <div class="card">
+      <div class="card-title">Volume Negociado (R$ MM) · Área Empilhada por Indexador</div>
+      <div id="chart-geral-vol" style="height:360px"></div>
+    </div>
+    <div class="card-title" style="padding:10px 2px 4px">Spread Médio Ponderado por Volume · por Indexador (dia a dia)</div>
+    <div class="dur-grid">
+      <div class="card"><div class="card-title">CDI+</div><div id="chart-geral-cdi" class="dur-chart"></div></div>
+      <div class="card"><div class="card-title">% CDI</div><div id="chart-geral-pctcdi" class="dur-chart"></div></div>
+      <div class="card"><div class="card-title">IPCA</div><div id="chart-geral-ipca" class="dur-chart"></div></div>
+      <div class="card"><div class="card-title">Prefixado</div><div id="chart-geral-pre" class="dur-chart"></div></div>
+    </div>
+    <div class="disclaimer">
+      ⚠ Os spreads médios por indexador <b>excluem ativos com taxa/spread implausível</b>
+      (erro de cálculo PU↔taxa na origem): CDI+/IPCA/Pré acima de 15% ou % CDI fora da faixa 60–180%.
+      O volume desses negócios é mantido, e os negócios seguem visíveis no Boletim Diário e nas visões por ativo.
+    </div>
+  </div>
+
+  <!-- ═══════════════════════ VISÃO ANBIMA ══════════════════════ -->
+  <div id="panel-anbima" class="panel">
+    <div class="fbar">
+      <span class="flabel">Período</span>
+      <select id="a-start" class="fsel" onchange="renderAnbima()"></select>
+      <span class="sep">→</span>
+      <select id="a-end" class="fsel" onchange="renderAnbima()"></select>
+      <span style="margin-left:12px;font-size:11px;color:#737373">Por indexador: <b>média ponderada por outstanding</b> dos ativos <b>selecionados</b> (filtre na mão os estressados). Curvas NTN-B/DI: mediana por vértice. Ativos sem outstanding na data ficam fora.</span>
+    </div>
+    <div class="card-title" style="padding:2px 2px 4px">Spread Anbima · por Indexador (média pond. dos ativos selecionados, dia a dia)</div>
+    <div class="dur-grid">
+      <div class="card"><div class="card-title">CDI+</div>
+        <div class="b-inner-fbar"><span class="flabel">Ativos</span>
+          <div class="ts-wrap">
+            <input class="ts-input" id="anbtk-cdi-input" placeholder="ticker/emissor..." autocomplete="off" oninput="anbTkFilter('cdi')" onfocus="anbTkOpen('cdi')">
+            <span class="ts-badge" id="anbtk-cdi-badge">0</span>
+            <div class="ts-drop" id="anbtk-cdi-drop">
+              <div class="ts-actions"><button class="btn btn-sm" onclick="anbTkAll('cdi')">Todos</button><button class="btn btn-sm" onclick="anbTkClear('cdi')">Limpar</button></div>
+              <div class="ts-list" id="anbtk-cdi-list"></div>
+            </div>
+          </div>
+          <span class="flabel" style="margin-left:8px">Instr.</span>
+          <span class="b-idx-group" id="anbfilt-cdi"></span>
+        </div>
+        <div id="chart-anb-cdi" class="dur-chart"></div></div>
+      <div class="card"><div class="card-title">% CDI</div>
+        <div class="b-inner-fbar"><span class="flabel">Ativos</span>
+          <div class="ts-wrap">
+            <input class="ts-input" id="anbtk-pctcdi-input" placeholder="ticker/emissor..." autocomplete="off" oninput="anbTkFilter('pctcdi')" onfocus="anbTkOpen('pctcdi')">
+            <span class="ts-badge" id="anbtk-pctcdi-badge">0</span>
+            <div class="ts-drop" id="anbtk-pctcdi-drop">
+              <div class="ts-actions"><button class="btn btn-sm" onclick="anbTkAll('pctcdi')">Todos</button><button class="btn btn-sm" onclick="anbTkClear('pctcdi')">Limpar</button></div>
+              <div class="ts-list" id="anbtk-pctcdi-list"></div>
+            </div>
+          </div>
+          <span class="flabel" style="margin-left:8px">Instr.</span>
+          <span class="b-idx-group" id="anbfilt-pctcdi"></span>
+        </div>
+        <div id="chart-anb-pctcdi" class="dur-chart"></div></div>
+      <div class="card"><div class="card-title">IPCA</div>
+        <div class="b-inner-fbar"><span class="flabel">Ativos</span>
+          <div class="ts-wrap">
+            <input class="ts-input" id="anbtk-ipca-input" placeholder="ticker/emissor..." autocomplete="off" oninput="anbTkFilter('ipca')" onfocus="anbTkOpen('ipca')">
+            <span class="ts-badge" id="anbtk-ipca-badge">0</span>
+            <div class="ts-drop" id="anbtk-ipca-drop">
+              <div class="ts-actions"><button class="btn btn-sm" onclick="anbTkAll('ipca')">Todos</button><button class="btn btn-sm" onclick="anbTkClear('ipca')">Limpar</button></div>
+              <div class="ts-list" id="anbtk-ipca-list"></div>
+            </div>
+          </div>
+          <span class="flabel" style="margin-left:8px">Instr.</span>
+          <span class="b-idx-group" id="anbfilt-ipca"></span>
+        </div>
+        <div id="chart-anb-ipca" class="dur-chart"></div></div>
+      <div class="card"><div class="card-title">Prefixado</div>
+        <div class="b-inner-fbar"><span class="flabel">Ativos</span>
+          <div class="ts-wrap">
+            <input class="ts-input" id="anbtk-pre-input" placeholder="ticker/emissor..." autocomplete="off" oninput="anbTkFilter('pre')" onfocus="anbTkOpen('pre')">
+            <span class="ts-badge" id="anbtk-pre-badge">0</span>
+            <div class="ts-drop" id="anbtk-pre-drop">
+              <div class="ts-actions"><button class="btn btn-sm" onclick="anbTkAll('pre')">Todos</button><button class="btn btn-sm" onclick="anbTkClear('pre')">Limpar</button></div>
+              <div class="ts-list" id="anbtk-pre-list"></div>
+            </div>
+          </div>
+          <span class="flabel" style="margin-left:8px">Instr.</span>
+          <span class="b-idx-group" id="anbfilt-pre"></span>
+        </div>
+        <div id="chart-anb-pre" class="dur-chart"></div></div>
+    </div>
+    <div class="card-title" style="padding:10px 2px 4px">Curvas · NTN-B/DI por vértice (mediana) · CDI+/%CDI por duration — spread/nominal, uma curva por data</div>
+    <div class="fbar" style="flex-wrap:wrap;gap:6px 10px">
+      <span class="flabel">Datas</span>
+      <div class="ts-wrap">
+        <input class="ts-input" id="anb-datas-input" placeholder="Selecionar datas..." readonly
+               onclick="anbDatesToggle(event)" style="width:170px;cursor:pointer">
+        <span class="ts-badge" id="anb-datas-badge">0</span>
+        <div class="ts-drop" id="anb-datas-drop">
+          <div class="ts-actions">
+            <button class="btn btn-sm" onclick="anbDatesAll()">Todas</button>
+            <button class="btn btn-sm" onclick="anbDatesClear()">Limpar</button>
+          </div>
+          <div class="ts-list" id="anb-datas-list"></div>
+        </div>
+      </div>
+      <span class="flabel" style="margin-left:8px">Métrica</span>
+      <label class="b-chk"><input type="checkbox" id="anb-ref-spread"  value="spread"  checked onchange="renderAnbimaRefAll()">Spread (bps)</label>
+      <label class="b-chk"><input type="checkbox" id="anb-ref-nominal" value="nominal"         onchange="renderAnbimaRefAll()">Nominal (%)</label>
+      <span class="flabel" style="margin-left:8px">Instrumento</span>
+      <span class="b-idx-group" id="anb-ref-tipo">
+        <label class="b-chk"><input type="checkbox" value="DEB"        checked onchange="renderAnbimaRefAll()">DEB</label>
+        <label class="b-chk"><input type="checkbox" value="DEB 12.431" checked onchange="renderAnbimaRefAll()">DEB 12.431</label>
+        <label class="b-chk"><input type="checkbox" value="CRI"        checked onchange="renderAnbimaRefAll()">CRI</label>
+        <label class="b-chk"><input type="checkbox" value="CRA"        checked onchange="renderAnbimaRefAll()">CRA</label>
+      </span>
+    </div>
+    <div class="dur-grid">
+      <div class="card"><div class="card-title">NTN-B (IPCA)</div><div id="chart-anb-ntnb" class="dur-chart"></div>
+        <div class="card-title" style="padding:8px 2px 2px">Nº de ativos por vértice</div>
+        <div class="b-wrap" id="tbl-anb-ntnb"></div></div>
+      <div class="card"><div class="card-title">DI1 (Prefixado)</div><div id="chart-anb-di1" class="dur-chart"></div>
+        <div class="card-title" style="padding:8px 2px 2px">Nº de ativos por vértice</div>
+        <div class="b-wrap" id="tbl-anb-di1"></div></div>
+      <div class="card"><div class="card-title">CDI+ (× duration)</div><div id="chart-anb-durcdi" class="dur-chart"></div></div>
+      <div class="card"><div class="card-title">% CDI (× duration)</div><div id="chart-anb-durpctcdi" class="dur-chart"></div></div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════ POR TICKER ════════════════════════ -->
+  <div id="panel-ticker" class="panel">
+    <div class="fbar">
+      <span class="flabel">Período</span>
+      <select id="t-start" class="fsel"></select>
+      <span class="sep">→</span>
+      <select id="t-end" class="fsel"></select>
+      <span class="flabel">Ativo(s)</span>
+      <div class="ts-wrap">
+        <input class="ts-input" id="t-search" placeholder="Ticker ou emissor + Enter..." autocomplete="off"
+               oninput="tsFilter('t')" onfocus="tsOpen('t')" onkeydown="tsEnter('t', event)">
+        <span class="ts-badge" id="t-badge">0</span>
+        <div class="ts-drop" id="t-drop">
+          <div class="ts-actions">
+            <button class="btn btn-sm" onclick="tsAll('t')">Todos</button>
+            <button class="btn btn-sm" onclick="tsClear('t')">Limpar</button>
+          </div>
+          <div class="ts-list" id="t-list"></div>
+        </div>
+      </div>
+      <span class="flabel">Instrumento</span>
+      <span class="b-idx-group" id="t-filtro-instrumento"></span>
+      <span class="flabel">Indexador</span>
+      <span class="b-idx-group" id="t-filtro-indexador"></span>
+      <button class="btn" onclick="renderTicker()">Atualizar</button>
+    </div>
+    <div class="card">
+      <div class="card-title">Volume (barras) + Spread Ponderado (linhas) — Dia a Dia</div>
+      <div id="chart-ticker" style="height:400px"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">Negócios dos ativos selecionados (por dia)</div>
+      <div class="b-wrap">
+        <table id="tk-trades-tbl">
+          <thead>
+            <tr>
+              <th onclick="tkTradesSort(this,0,false)">Data<span class="sa"></span></th>
+              <th onclick="tkTradesSort(this,1,false)">Ticker<span class="sa"></span></th>
+              <th onclick="tkTradesSort(this,2,false)">Emissor<span class="sa"></span></th>
+              <th onclick="tkTradesSort(this,3,true)">Duration<span class="sa"></span></th>
+              <th onclick="tkTradesSort(this,4,false)">Indexador<span class="sa"></span></th>
+              <th onclick="tkTradesSort(this,5,true)">Volume (R$M)<span class="sa"></span></th>
+              <th onclick="tkTradesSort(this,6,true)">Spread Méd. Negócio (bps)<span class="sa"></span></th>
+              <th onclick="tkTradesSort(this,7,true)">Spread Méd. Anbima (bps)<span class="sa"></span></th>
+            </tr>
+            <tr class="bfr">
+              <th><input type="text" placeholder="Data"      oninput="tkTradesFilter()"></th>
+              <th><input type="text" placeholder="Ticker"    oninput="tkTradesFilter()"></th>
+              <th><input type="text" placeholder="Emissor"   oninput="tkTradesFilter()"></th>
+              <th><input type="text" placeholder="Duration"  oninput="tkTradesFilter()"></th>
+              <th><input type="text" placeholder="Indexador" oninput="tkTradesFilter()"></th>
+              <th><input type="text" placeholder="Volume"    oninput="tkTradesFilter()"></th>
+              <th><input type="text" placeholder="Spread"    oninput="tkTradesFilter()"></th>
+              <th><input type="text" placeholder="Spread Anb." oninput="tkTradesFilter()"></th>
+            </tr>
+          </thead>
+          <tbody id="tk-trades-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═════════════════════ SPREAD × DURATION ═══════════════════ -->
+  <div id="panel-duration" class="panel">
+    <div class="fbar">
+      <span class="flabel">Data</span>
+      <select id="d-date" class="fsel" onchange="renderDuration()"></select>
+      <span class="flabel">Ativo(s)</span>
+      <div class="ts-wrap">
+        <input class="ts-input" id="d-search" placeholder="Ticker ou emissor + Enter..." autocomplete="off"
+               oninput="tsFilter('d')" onfocus="tsOpen('d')" onkeydown="tsEnter('d', event)">
+        <span class="ts-badge" id="d-badge">0</span>
+        <div class="ts-drop" id="d-drop">
+          <div class="ts-actions">
+            <button class="btn btn-sm" onclick="tsAll('d')">Todos</button>
+            <button class="btn btn-sm" onclick="tsClear('d')">Limpar</button>
+          </div>
+          <div class="ts-list" id="d-list"></div>
+        </div>
+      </div>
+      <button class="btn" onclick="renderDuration()">Atualizar</button>
+    </div>
+    <div class="card-title" style="padding:0 2px 4px">Spread × Duration · tamanho da bolha = volume negociado (R$ MM)</div>
+    <div class="dur-grid">
+      <div class="card"><div class="card-title">CDI+</div>
+        <div class="b-inner-fbar"><span class="flabel">Instrumento</span><span class="b-idx-group" id="dfilt-cdi"></span></div>
+        <div id="chart-dur-cdi" class="dur-chart"></div></div>
+      <div class="card"><div class="card-title">% CDI</div>
+        <div class="b-inner-fbar"><span class="flabel">Instrumento</span><span class="b-idx-group" id="dfilt-pctcdi"></span></div>
+        <div id="chart-dur-pctcdi" class="dur-chart"></div></div>
+      <div class="card"><div class="card-title">IPCA</div>
+        <div class="b-inner-fbar"><span class="flabel">Instrumento</span><span class="b-idx-group" id="dfilt-ipca"></span></div>
+        <div id="chart-dur-ipca" class="dur-chart"></div></div>
+      <div class="card"><div class="card-title">Prefixado</div>
+        <div class="b-inner-fbar"><span class="flabel">Instrumento</span><span class="b-idx-group" id="dfilt-pre"></span></div>
+        <div id="chart-dur-pre" class="dur-chart"></div></div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════ INFO ATIVOS ════════════════════════ -->
+  <div id="panel-infoativos" class="panel">
+    <div class="fbar">
+      <span class="flabel">Buscar</span>
+      <input type="text" id="ia-search" class="b-finp" placeholder="ticker ou emissor..." oninput="renderInfoAtivos()">
+      <span class="flabel" id="ia-count"></span>
+    </div>
+    <div class="card">
+      <div class="b-wrap">
+        <table id="ia-tabela">
+          <thead>
+            <tr>
+              <th onclick="iaSort(this,0,false)">Ticker<span class="sa"></span></th>
+              <th onclick="iaSort(this,1,false)">Instrumento<span class="sa"></span></th>
+              <th onclick="iaSort(this,2,false)">Emissor<span class="sa"></span></th>
+              <th onclick="iaSort(this,3,true)">Duration<span class="sa"></span></th>
+              <th onclick="iaSort(this,4,false)">Indexador<span class="sa"></span></th>
+              <th onclick="iaSort(this,5,true)">Taxa Anbima (%)<span class="sa"></span></th>
+              <th onclick="iaSort(this,6,true)">Taxa Méd. Trade (%)<span class="sa"></span></th>
+            </tr>
+            <tr class="bfr">
+              <th><input type="text" placeholder="Ticker"      oninput="iaFilter()"></th>
+              <th><input type="text" placeholder="Instrumento" oninput="iaFilter()"></th>
+              <th><input type="text" placeholder="Emissor"     oninput="iaFilter()"></th>
+              <th><input type="text" placeholder="Duration"    oninput="iaFilter()"></th>
+              <th><input type="text" placeholder="Indexador"   oninput="iaFilter()"></th>
+              <th><input type="text" placeholder="Taxa Anb."   oninput="iaFilter()"></th>
+              <th><input type="text" placeholder="Taxa Trade"  oninput="iaFilter()"></th>
+            </tr>
+          </thead>
+          <tbody id="ia-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ═══════════════════════════ DADOS + JS ════════════════════════════ -->
+<script>
+const DATA = {{ data_json | safe }};
+
+// ── paleta ───────────────────────────────────────────────────────────────────
+const ITAU = { orange:'#EC7000', navy:'#003087', blue:'#0055B3', red:'#CC2200', purple:'#6B2D8B', gray:'#737373' };
+
+const PALETTE = [
+  '#003087','#EC7000','#CC2200','#6B2D8B','#0055B3',
+  '#008542','#C0862E','#1E6B8F','#9B1B30','#2D7A4F',
+  '#5B2C6F','#1A5276','#B7770D','#0E6655','#943126',
+  '#2E86AB','#A23B72','#F18F01','#166534','#7B3F00',
+];
+const TICKER_COLOR = {};
+(function(){ DATA.tickers.forEach((tk, i) => { TICKER_COLOR[tk] = PALETTE[i % PALETTE.length]; }); })();
+
+// ── ticker → emissor (para busca por nome do emissor na aba Por Ativo) ─────────
+const TICKER_EMISSOR = {};
+DATA.ticker.forEach(r => { if (!(r.ticker in TICKER_EMISSOR)) TICKER_EMISSOR[r.ticker] = r.emissor || ''; });
+
+// ── ticker → duration / tipo / indexador (InfoAtivos; aba Por Ativo) ───────────
+const TICKER_DURATION = {};
+const TICKER_TIPO     = {};
+const TICKER_IDX      = {};
+DATA.infoAtivos.forEach(r => {
+  TICKER_DURATION[r.ticker] = r.duration;
+  TICKER_TIPO[r.ticker]     = r.tipo || '';
+  TICKER_IDX[r.ticker]      = r.indexador || '';
+});
+
+// ── volume negociado por (indexador, dia) — fundo dos gráficos de spread ───────
+const VOL_BY_IDX = {};
+DATA.diarioIdx.forEach(r => { (VOL_BY_IDX[r.indexador] = VOL_BY_IDX[r.indexador] || {})[r.dt] = r.volume; });
+
+// normaliza p/ busca: minúsculas + remove acentos
+function norm(s){ return (s || '').toString().normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase(); }
+
+const CFG = { responsive:true, displayModeBar:false };
+const BASE = {
+  font:{ family:'Segoe UI,Arial,sans-serif', size:11 },
+  paper_bgcolor:'#fff', plot_bgcolor:'#fff',
+  hovermode:'x unified',
+};
+// Nunca plota dias não-úteis: rangebreaks removem fins de semana e feriados Anbima.
+const XAXIS_DATE = { type:'date', tickformat:'%d/%m/%y', showgrid:false,
+  rangebreaks:[
+    { pattern:'day of week', bounds:[6,1] },   // remove sábado e domingo
+    { values:(DATA.feriados || []) },          // remove feriados Anbima
+  ] };
+
+// ── spread helpers ────────────────────────────────────────────────────────────
+const toBps    = (r, idx) => (r == null || idx === '%CDI') ? null : r * 100;
+const toPctCdi = (r, idx) => (r == null || idx !== '%CDI') ? null : r;
+
+// ── empty chart ───────────────────────────────────────────────────────────────
+function emptyChart(divId, msg) {
+  Plotly.react(divId, [], {
+    ...BASE, margin:{l:50,r:50,t:30,b:50},
+    annotations:[{ text: msg || 'Sem dados para a seleção atual',
+      showarrow:false, font:{size:14, color:'#9aabb4'},
+      xref:'paper', yref:'paper', x:.5, y:.5 }],
+  }, CFG);
+}
+
+// ── tab switch ────────────────────────────────────────────────────────────────
+function switchTab(id, el) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('panel-' + id).classList.add('active');
+  if (id === 'duration') {
+    setTimeout(() => DUR_CHARTS.forEach(c => {
+      const d = document.getElementById(c.div);
+      if (d) Plotly.Plots.resize(d);
+    }), 10);
+    return;
+  }
+  if (id === 'geral') {
+    setTimeout(() => ['chart-geral-vol', ...GERAL_IDX.map(g => g.div)].forEach(divId => {
+      const d = divId && document.getElementById(divId);
+      if (d) Plotly.Plots.resize(d);
+    }), 10);
+    return;
+  }
+  if (id === 'anbima') {
+    setTimeout(() => [...ANBIMA_IDX.map(g => g.div), 'chart-anb-ntnb', 'chart-anb-di1', 'chart-anb-durcdi', 'chart-anb-durpctcdi'].forEach(divId => {
+      const d = document.getElementById(divId);
+      if (d) Plotly.Plots.resize(d);
+    }), 10);
+    return;
+  }
+  const chartMap = { ticker:'chart-ticker' };
+  if (chartMap[id]) setTimeout(() => Plotly.Plots.resize(document.getElementById(chartMap[id])), 10);
+}
+
+// ── date select builder ───────────────────────────────────────────────────────
+function buildDateSelect(id, dates, selected) {
+  const el = document.getElementById(id);
+  dates.forEach(dt => {
+    const [y, m, d] = dt.split('-');
+    const opt = document.createElement('option');
+    opt.value = dt;
+    opt.textContent = `${d}/${m}/${y}`;
+    el.appendChild(opt);
+  });
+  if (selected) el.value = selected;
+}
+
+// ── ticker multiselect ────────────────────────────────────────────────────────
+const SEL = { t: new Set(), d: new Set() };
+
+// Resultados que casam a busca: ticker OU emissor (substring, sem acento).
+function tsMatches(p, q) {
+  const nq = norm(q);
+  if (!nq) return DATA.tickers.slice();
+  return DATA.tickers.filter(t => norm(t).includes(nq) || norm(TICKER_EMISSOR[t]).includes(nq));
+}
+
+function tsRebuild(p, items) {
+  const el = document.getElementById(p + '-list');
+  el.innerHTML = '';
+  items.forEach(tk => {
+    const row = document.createElement('div'); row.className = 'ts-item';
+    const cb  = document.createElement('input'); cb.type='checkbox'; cb.value=tk;
+    cb.id = p+'-cb-'+tk; cb.checked = SEL[p].has(tk);
+    cb.onchange = () => { cb.checked ? SEL[p].add(tk) : SEL[p].delete(tk); tsBadge(p); };
+    const lb = document.createElement('label'); lb.htmlFor=cb.id;
+    const em = TICKER_EMISSOR[tk];
+    lb.textContent = em ? `${tk} — ${em}` : tk;
+    lb.title = lb.textContent;
+    row.appendChild(cb); row.appendChild(lb); el.appendChild(row);
+  });
+}
+function tsFilter(p) {
+  tsRebuild(p, tsMatches(p, document.getElementById(p+'-search').value));
+  tsOpen(p);
+}
+// Enter: seleciona todos os ativos que casam a busca (ticker ou emissor) e atualiza o gráfico
+function tsEnter(p, e) {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  const matches = tsMatches(p, document.getElementById(p+'-search').value);
+  if (!matches.length) return;
+  matches.forEach(t => SEL[p].add(t));
+  tsBadge(p);
+  tsFilter(p);
+  if (p === 't') renderTicker();
+  else if (p === 'd') renderDuration();
+}
+function tsOpen(p)  { document.getElementById(p+'-drop').classList.add('open'); }
+function tsBadge(p) { document.getElementById(p+'-badge').textContent = SEL[p].size; }
+function tsAll(p)   { DATA.tickers.forEach(t => SEL[p].add(t)); tsFilter(p); tsBadge(p); }
+function tsClear(p) { SEL[p].clear(); tsFilter(p); tsBadge(p); }
+
+document.addEventListener('click', e => {
+  ['t','d'].forEach(p => {
+    const wrap = document.getElementById(p+'-search')?.closest('.ts-wrap');
+    if (wrap && !wrap.contains(e.target))
+      document.getElementById(p+'-drop').classList.remove('open');
+  });
+});
+
+// ── number formatting ─────────────────────────────────────────────────────────
+function bFmt(v, dec) {
+  if (v == null) return null;
+  const parts = v.toFixed(dec).split('.');
+  parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  return dec === 0 ? parts[0] : parts.join(',');
+}
+function bFmtInt(v) {
+  if (v == null) return null;
+  return Math.round(v).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+}
+function bRefDisp(v) {
+  if (!v) return v;
+  if (v.startsWith('NTN-B')) return 'B' + v.replace('NTN-B', '').replace(/\s+/g, '') + '+';
+  return v;
+}
+function bMesAno(s) {
+  if (!s) return null;
+  const MESES = ['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
+  const d = new Date(s + 'T00:00:00');
+  return MESES[d.getMonth()] + '/' + String(d.getFullYear()).slice(2);
+}
+function bSpreadDisp(v, idx) {
+  if (v == null) return null;
+  return idx === '%CDI' ? v : v * 100;
+}
+
+// ═══════════════════════════ VISÃO GERAL ═════════════════════════════════════
+// 1 gráfico de volume (área empilhada por indexador) + 1 gráfico de spread por indexador.
+// Apenas os 4 indexadores classificados; ativos sem indexador ('?') ficam fora.
+// Cores distintas (navy / laranja / verde / roxo) — evita azuis parecidos.
+const IDX_COLOR = { 'CDI+':'#003087', '%CDI':'#EC7000', 'IPCA':'#008542', 'PREFIXADO':'#6B2D8B' };
+const GERAL_IDX = [
+  { key:'CDI+',      label:'CDI+',      div:'chart-geral-cdi',    color:IDX_COLOR['CDI+'],      pct:false },
+  { key:'%CDI',      label:'% CDI',     div:'chart-geral-pctcdi', color:IDX_COLOR['%CDI'],      pct:true  },
+  { key:'IPCA',      label:'IPCA',      div:'chart-geral-ipca',   color:IDX_COLOR['IPCA'],      pct:false },
+  { key:'PREFIXADO', label:'Prefixado', div:'chart-geral-pre',    color:IDX_COLOR['PREFIXADO'], pct:false },
+];
+
+// Passo "redondo" (1/2/5 × 10^n) para o eixo de volume — divisões legíveis.
+function niceStep(span, target) {
+  if (!(span > 0)) return 1;
+  const raw = span / target;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const n   = raw / mag;
+  const s   = n < 1.5 ? 1 : n < 3 ? 2 : n < 7 ? 5 : 10;
+  return s * mag;
+}
+
+// Gráfico de spread por indexador com o volume negociado como área no fundo (eixo y2).
+function renderIdxSpreadChart(div, dts, spreadY, volY, label, color, pct) {
+  if (!spreadY.some(v => v != null)) { emptyChart(div, 'Sem spread no período'); return; }
+  const suffix = pct ? '' : ' bps';
+  const traces = [];
+  const maxVol = Math.max(0, ...volY.filter(v => v != null));
+  const volTop = maxVol > 0 ? maxVol * 2.3 : 1;   // volume nos ~40% de baixo
+  if (maxVol > 0) {
+    traces.push({ x:dts, y:volY, type:'scatter', fill:'tozeroy', name:'Volume (R$ MM)', yaxis:'y2',
+      line:{ width:1, color:'rgba(0,82,204,0.45)' }, fillcolor:'rgba(0,82,204,0.13)',
+      hovertemplate:'R$ %{y:,.1f} MM<extra>Volume</extra>' });
+  }
+  traces.push({ x:dts, y:spreadY, type:'scatter', mode:'lines+markers', name:label, yaxis:'y',
+    line:{ color, width:3 }, marker:{ size:6, color }, connectgaps:false,
+    hovertemplate:'%{y:.0f}'+suffix+'<extra>'+label+'</extra>' });
+  Plotly.react(div, traces, {
+    ...BASE,
+    separators:',.',   // BR: vírgula decimal, ponto como separador de milhar
+    margin:{ l:58, r:58, t:8, b:40 }, showlegend:false,
+    xaxis:{ ...XAXIS_DATE },
+    yaxis:{ title:{text: pct ? '% CDI' : 'Spread (bps)', font:{color, size:10}},
+            ticksuffix:suffix, showgrid:true, gridcolor:'#eef0f3', zeroline:false },
+    // escala própria à direita, em preto, com passo redondo
+    yaxis2:{ overlaying:'y', side:'right', showgrid:false, zeroline:false,
+             range:[0, volTop], dtick:niceStep(volTop, 4), tickformat:',.0f',
+             tickfont:{color:'#000', size:10},
+             title:{text:'Volume (R$ MM)', font:{color:'#000', size:10}} },
+  }, CFG);
+}
+
+function renderGeral() {
+  const s    = document.getElementById('g-start').value;
+  const e    = document.getElementById('g-end').value;
+  const KEYS  = new Set(GERAL_IDX.map(g => g.key));   // só indexadores classificados
+  const rows = DATA.diarioIdx.filter(r => r.dt >= s && r.dt <= e && KEYS.has(r.indexador));
+  if (!rows.length) {
+    emptyChart('chart-geral-vol','Sem dados no período selecionado');
+    GERAL_IDX.forEach(g => emptyChart(g.div,'Sem dados'));
+    document.getElementById('pills-geral').innerHTML = '';
+    return;
+  }
+
+  const dts = [...new Set(rows.map(r => r.dt))].sort();
+  // indexador -> { dt -> row }
+  const byIdx = {};
+  rows.forEach(r => { (byIdx[r.indexador] = byIdx[r.indexador] || {})[r.dt] = r; });
+
+  // ── Pills (totais do período) ── Volume Total + quebra por indexador (volume + % do total)
+  const totVol = rows.reduce((a,r) => a + r.volume, 0);
+  const volByIdx = GERAL_IDX
+    .map(g => ({ label:g.label, color:g.color,
+                 vol: dts.reduce((a,d) => a + (byIdx[g.key] && byIdx[g.key][d] ? byIdx[g.key][d].volume : 0), 0) }))
+    .filter(o => o.vol > 0);
+  const breakdown = volByIdx.map(o =>
+    `<div class="pill"><div class="plabel"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${o.color};margin-right:5px;vertical-align:middle"></span>${o.label}</div>`
+    + `<div class="pval">R$ ${bFmt(o.vol,0)} MM</div>`
+    + `<div class="psub">${bFmt(totVol ? o.vol/totVol*100 : 0,1)}% do total</div></div>`
+  ).join('');
+  document.getElementById('pills-geral').innerHTML = `
+    <div class="pill"><div class="plabel">Volume Total</div><div class="pval">R$ ${bFmt(totVol,0)} MM</div><div class="psub">${dts.length} pregão(ões)</div></div>
+    ${breakdown}
+  `;
+
+  // ── Volume: área empilhada por indexador ──
+  const volTraces = GERAL_IDX.filter(g => byIdx[g.key]).map(g => ({
+    x: dts,
+    y: dts.map(d => byIdx[g.key][d] ? byIdx[g.key][d].volume : 0),
+    type:'scatter', mode:'lines', stackgroup:'one', name:g.label,
+    line:{ width:0.5, color:g.color }, fillcolor:g.color,
+    hovertemplate:'R$ %{y:,.2f} MM<extra>'+g.label+'</extra>',
+  }));
+  Plotly.react('chart-geral-vol', volTraces, {
+    ...BASE,
+    margin:{ l:70, r:20, t:10, b:50 },
+    legend:{ orientation:'h', y:-0.14, font:{size:11} },
+    xaxis:{ ...XAXIS_DATE },
+    yaxis:{ title:{text:'Volume (R$ MM)',font:{color:'#003087',size:11}},
+            tickformat:',.0f', showgrid:true, gridcolor:'#eef0f3', zeroline:false },
+  }, CFG);
+
+  // ── Um gráfico de spread por indexador (ponderado por volume) + volume no fundo ──
+  GERAL_IDX.forEach(g => {
+    const m = byIdx[g.key];
+    if (!m) { emptyChart(g.div,'Sem dados'); return; }
+    const spreadY = dts.map(d => {
+      const r = m[d];
+      if (!r || r.spreadRaw == null) return null;
+      return g.pct ? r.spreadRaw : r.spreadRaw * 100;   // bps p/ os não-%CDI
+    });
+    const volY = dts.map(d => (m[d] ? m[d].volume : 0));
+    renderIdxSpreadChart(g.div, dts, spreadY, volY, g.label, g.color, g.pct);
+  });
+}
+
+// ═══════════════════════════ VISÃO ANBIMA ════════════════════════════════════
+// Por indexador: média ponderada por outstanding dos tickers SELECIONADOS
+// no filtro manual (DATA.anbimaIdx vem por ticker). Curvas NTN-B/DI: mediana (Python).
+// Mesma config de unidade da Visão Mercado: ×100 = bps, exceto %CDI.
+const ANBIMA_IDX = [
+  { key:'CDI+',      sid:'cdi',    label:'CDI+',      div:'chart-anb-cdi',    filt:'anbfilt-cdi',    color:IDX_COLOR['CDI+'],      pct:false },
+  { key:'%CDI',      sid:'pctcdi', label:'% CDI',     div:'chart-anb-pctcdi', filt:'anbfilt-pctcdi', color:IDX_COLOR['%CDI'],      pct:true  },
+  { key:'IPCA',      sid:'ipca',   label:'IPCA',      div:'chart-anb-ipca',   filt:'anbfilt-ipca',   color:IDX_COLOR['IPCA'],      pct:false },
+  { key:'PREFIXADO', sid:'pre',    label:'Prefixado', div:'chart-anb-pre',    filt:'anbfilt-pre',    color:IDX_COLOR['PREFIXADO'], pct:false },
+];
+
+// Filtro de instrumento por gráfico de indexador (DEB/DEB 12.431/CRI/CRA; só os
+// tipos presentes naquele indexador). Default: todos marcados. Só os marcados entram.
+function anbInstrBuild() {
+  ANBIMA_IDX.forEach(g => {
+    const el = document.getElementById(g.filt);
+    if (!el) return;
+    const tipos = [...new Set(DATA.anbimaIdx.filter(r => r.indexador === g.key).map(r => r.tipo).filter(Boolean))]
+      .sort((a, b) => TK_TIPO_ORDER.indexOf(a) - TK_TIPO_ORDER.indexOf(b));
+    el.innerHTML = tipos.map(v =>
+      `<label class="b-chk"><input type="checkbox" value="${v}" checked onchange="anbTkRerender('${g.sid}')">${v}</label>`
+    ).join('');
+  });
+}
+function anbInstrActive(sid) {
+  const g = ANBIMA_IDX.find(x => x.sid === sid);
+  return [...document.querySelectorAll('#' + g.filt + ' input:checked')].map(c => c.value);
+}
+
+// Filtro manual de ticker por indexador (default: todos selecionados).
+const ANB_TK      = {};   // sid -> Set(tickers selecionados)
+const ANB_TK_UNIV = {};   // sid -> [tickers] (universo, ordenado)
+const ANB_EMISSOR = {};   // ticker -> emissor (da base Anbima)
+
+function anbTkInit() {
+  const byIdx = {};
+  DATA.anbimaIdx.forEach(r => {
+    (byIdx[r.indexador] = byIdx[r.indexador] || new Set()).add(r.ticker);
+    if (r.emissor && !(r.ticker in ANB_EMISSOR)) ANB_EMISSOR[r.ticker] = r.emissor;
+  });
+  ANBIMA_IDX.forEach(g => {
+    const univ = [...(byIdx[g.key] || new Set())].sort();
+    ANB_TK_UNIV[g.sid] = univ;
+    ANB_TK[g.sid]      = new Set(univ);   // default: todos
+    anbTkBuild(g.sid, univ);
+    anbTkBadge(g.sid);
+  });
+}
+function anbTkMatches(sid, q) {
+  const nq = norm(q), univ = ANB_TK_UNIV[sid] || [];
+  if (!nq) return univ.slice();
+  return univ.filter(t => norm(t).includes(nq) || norm(ANB_EMISSOR[t] || '').includes(nq));
+}
+function anbTkBuild(sid, items) {
+  const el = document.getElementById('anbtk-' + sid + '-list');
+  if (!el) return;
+  el.innerHTML = '';
+  items.forEach(tk => {
+    const row = document.createElement('div'); row.className = 'ts-item';
+    const cb  = document.createElement('input'); cb.type = 'checkbox'; cb.value = tk;
+    cb.id = 'anbtk-' + sid + '-cb-' + tk; cb.checked = ANB_TK[sid].has(tk);
+    cb.onchange = () => { cb.checked ? ANB_TK[sid].add(tk) : ANB_TK[sid].delete(tk); anbTkBadge(sid); anbTkRerender(sid); };
+    const lb = document.createElement('label'); lb.htmlFor = cb.id;
+    const em = ANB_EMISSOR[tk]; lb.textContent = em ? `${tk} — ${em}` : tk; lb.title = lb.textContent;
+    row.appendChild(cb); row.appendChild(lb); el.appendChild(row);
+  });
+}
+function anbTkFilter(sid) { anbTkBuild(sid, anbTkMatches(sid, document.getElementById('anbtk-' + sid + '-input').value)); anbTkOpen(sid); }
+function anbTkOpen(sid)   { document.getElementById('anbtk-' + sid + '-drop').classList.add('open'); }
+function anbTkBadge(sid)  { document.getElementById('anbtk-' + sid + '-badge').textContent = ANB_TK[sid].size; }
+function anbTkAll(sid)    { ANB_TK_UNIV[sid].forEach(t => ANB_TK[sid].add(t)); anbTkFilter(sid); anbTkBadge(sid); anbTkRerender(sid); }
+function anbTkClear(sid)  { ANB_TK[sid].clear(); anbTkFilter(sid); anbTkBadge(sid); anbTkRerender(sid); }
+function anbTkRerender(sid) {
+  const g = ANBIMA_IDX.find(x => x.sid === sid);
+  const s = document.getElementById('a-start').value, e = document.getElementById('a-end').value;
+  renderAnbimaIdxChart(g, s, e, _anbDts(s, e));
+}
+document.addEventListener('click', e => {
+  ANBIMA_IDX.forEach(g => {
+    const wrap = document.getElementById('anbtk-' + g.sid + '-input')?.closest('.ts-wrap');
+    if (wrap && !wrap.contains(e.target)) document.getElementById('anbtk-' + g.sid + '-drop').classList.remove('open');
+  });
+});
+
+function _anbDts(s, e) {
+  return [...new Set(DATA.anbimaIdx.filter(r => r.dt >= s && r.dt <= e).map(r => r.dt))].sort();
+}
+
+// Um gráfico por indexador: média ponderada por outstanding (peso) dos tickers selecionados.
+function renderAnbimaIdxChart(g, s, e, dts) {
+  const sel   = ANB_TK[g.sid] || new Set();
+  const tipos = anbInstrActive(g.sid);   // instrumentos marcados (só esses entram)
+  const acc = {};   // dt -> {num, den}
+  for (const r of DATA.anbimaIdx) {
+    if (r.indexador !== g.key || r.dt < s || r.dt > e) continue;
+    if (!sel.has(r.ticker) || r.spreadRaw == null || r.peso == null) continue;
+    if (!tipos.includes(r.tipo)) continue;
+    const a = acc[r.dt] || (acc[r.dt] = { num: 0, den: 0 });
+    a.num += r.spreadRaw * r.peso; a.den += r.peso;
+  }
+  if (!Object.keys(acc).length) { emptyChart(g.div, 'Nenhum ativo selecionado / sem dados'); return; }
+  const spreadY = dts.map(d => {
+    const a = acc[d]; if (!a || a.den <= 0) return null;
+    const v = a.num / a.den; return g.pct ? v : v * 100;   // bps p/ não-%CDI
+  });
+  const volMap = VOL_BY_IDX[g.key] || {};
+  const volY   = dts.map(d => volMap[d] || 0);
+  renderIdxSpreadChart(g.div, dts, spreadY, volY, g.label, g.color, g.pct);
+}
+
+function renderAnbima() {
+  const s = document.getElementById('a-start').value;
+  const e = document.getElementById('a-end').value;
+  const dts = _anbDts(s, e);
+  ANBIMA_IDX.forEach(g => renderAnbimaIdxChart(g, s, e, dts));
+  // ── por referência: curva por vértice (term-structure), uma curva por data ──
+  renderAnbimaRefAll();
+}
+
+// Dropdown de datas (multi-seleção, estilo do seletor de tickers).
+// Default selecionado: data mais recente, D-1 e semana-1.
+function anbBuildRefDates() {
+  const dates = [...new Set(DATA.anbimaRef.map(r => r.dt))].sort();
+  if (!dates.length) return;
+  const recent = dates[dates.length - 1];
+  const dM1    = dates[dates.length - 2] || null;
+  const target = new Date(recent + 'T00:00:00'); target.setDate(target.getDate() - 7);
+  const targetStr = target.toISOString().slice(0, 10);
+  let week1 = null;
+  for (let i = dates.length - 1; i >= 0; i--) { if (dates[i] <= targetStr) { week1 = dates[i]; break; } }
+  const def = new Set([recent, dM1, week1].filter(Boolean));
+  // lista com mais recentes no topo
+  document.getElementById('anb-datas-list').innerHTML = [...dates].reverse().map(dt =>
+    `<div class="ts-item"><input type="checkbox" id="anbd-${dt}" value="${dt}" ${def.has(dt) ? 'checked' : ''} onchange="anbDatesChanged()"><label for="anbd-${dt}">${bDataCurta(dt)}</label></div>`
+  ).join('');
+  anbDatesBadge();
+}
+function anbDatesToggle(e) { if (e) e.stopPropagation(); document.getElementById('anb-datas-drop').classList.toggle('open'); }
+function anbDatesSelected() { return [...document.querySelectorAll('#anb-datas-list input:checked')].map(c => c.value); }
+function anbDatesBadge() { document.getElementById('anb-datas-badge').textContent = anbDatesSelected().length; }
+function anbDatesChanged() { anbDatesBadge(); renderAnbimaRefAll(); }
+function anbDatesAll() { document.querySelectorAll('#anb-datas-list input').forEach(c => c.checked = true); anbDatesChanged(); }
+function anbDatesClear() { document.querySelectorAll('#anb-datas-list input').forEach(c => c.checked = false); anbDatesChanged(); }
+document.addEventListener('click', e => {
+  const wrap = document.getElementById('anb-datas-input')?.closest('.ts-wrap');
+  if (wrap && !wrap.contains(e.target)) document.getElementById('anb-datas-drop').classList.remove('open');
+});
+
+function median(a) {
+  if (!a.length) return null;
+  const s = [...a].sort((x, y) => x - y), m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+function anbRefTipos() {
+  return new Set([...document.querySelectorAll('#anb-ref-tipo input:checked')].map(c => c.value));
+}
+// Agrega DATA.anbimaRef (por ticker) -> [{dt, ref, spreadRaw(mediana), taxa(mediana), n}],
+// filtrando por tipo de instrumento (DEB/DEB 12.431/CRI/CRA). Vazio = todos.
+function _anbRefAgg(s, e) {
+  const tipos = anbRefTipos();
+  const grp = {};
+  for (const r of DATA.anbimaRef) {
+    if (r.dt < s || r.dt > e) continue;
+    if (tipos.size && !tipos.has(r.tipo)) continue;
+    const k = r.dt + '|' + r.ref;
+    const g = grp[k] || (grp[k] = { dt: r.dt, ref: r.ref, spreads: [], taxas: [], tickers: new Set() });
+    if (r.spreadRaw != null) g.spreads.push(r.spreadRaw);
+    if (r.taxa != null) g.taxas.push(r.taxa);
+    g.tickers.add(r.ticker);
+  }
+  return Object.values(grp).map(g => ({
+    dt: g.dt, ref: g.ref, spreadRaw: median(g.spreads), taxa: median(g.taxas), n: g.tickers.size,
+  }));
+}
+
+function renderAnbimaRefAll() {
+  const s = document.getElementById('a-start').value;
+  const e = document.getElementById('a-end').value;
+  const agg = _anbRefAgg(s, e);
+  renderAnbimaRef('chart-anb-ntnb', 'NTN-B', s, e, agg);
+  renderAnbimaRef('chart-anb-di1',  'DI1',   s, e, agg);
+  // CDI+ e %CDI não têm vértice de referência → curva por duration do ativo.
+  renderAnbimaDur('chart-anb-durcdi',    'CDI+', s, e);
+  renderAnbimaDur('chart-anb-durpctcdi', '%CDI', s, e);
+}
+
+// x = duration do ativo, y = spread (bps p/ CDI+ · % CDI p/ %CDI) e/ou nominal (%),
+// uma curva por data. Respeita o seletor de datas, a métrica (Spread/Nominal) e o
+// filtro de instrumento da seção de curvas. Pontos ordenados por duration.
+function renderAnbimaDur(div, idxKey, s, e) {
+  const showSpread  = document.getElementById('anb-ref-spread').checked;
+  const showNominal = document.getElementById('anb-ref-nominal').checked;
+  if (!showSpread && !showNominal) { emptyChart(div, 'Marque Spread e/ou Nominal'); return; }
+
+  const selDates = new Set(anbDatesSelected());
+  const tipos    = anbRefTipos();
+  const isPct    = idxKey === '%CDI';
+
+  const base = DATA.anbimaDur.filter(r =>
+    r.indexador === idxKey && r.dt >= s && r.dt <= e && selDates.has(r.dt) &&
+    r.duration != null && (!tipos.size || tipos.has(r.tipo)));
+  if (!base.length) { emptyChart(div, 'Sem dados de ' + idxKey + ' nas datas/instrumentos selecionados'); return; }
+
+  const dates = [...selDates].filter(d => d >= s && d <= e).sort();
+  const traces = [];
+  dates.forEach((dt, i) => {
+    const color = PALETTE[i % PALETTE.length];
+    const dd = base.filter(r => r.dt === dt).sort((a, b) => a.duration - b.duration);
+    if (!dd.length) return;
+    if (showSpread) traces.push({
+      x: dd.map(r => r.duration),
+      y: dd.map(r => r.spreadRaw == null ? null : (isPct ? r.spreadRaw : r.spreadRaw * 100)),
+      type:'scatter', mode:'markers', name: bDataCurta(dt) + (showNominal ? ' · spread' : ''),
+      legendgroup:dt, yaxis:'y', text: dd.map(r => r.ticker),
+      marker:{ size:6, color, opacity:.7, line:{ width:0.5, color:'#fff' } },
+      hovertemplate:'<b>%{text}</b><br>Dur: %{x:.2f} anos<br>%{y:.0f}' + (isPct ? ' %CDI' : ' bps') + '<extra>' + bDataCurta(dt) + '</extra>',
+    });
+    if (showNominal) traces.push({
+      x: dd.map(r => r.duration),
+      y: dd.map(r => r.taxa),
+      type:'scatter', mode:'markers', name: bDataCurta(dt) + (showSpread ? ' · nominal' : ''),
+      legendgroup:dt, yaxis: showSpread ? 'y2' : 'y', text: dd.map(r => r.ticker),
+      marker:{ size:6, color, opacity:.7, symbol:'diamond', line:{ width:0.5, color:'#fff' } },
+      hovertemplate:'<b>%{text}</b><br>Dur: %{x:.2f} anos<br>%{y:.2f}%<extra>' + bDataCurta(dt) + ' nom.</extra>',
+    });
+  });
+
+  const onlyNominal  = showNominal && !showSpread;
+  const spreadTitle  = isPct ? 'Spread (% CDI)' : 'Spread (bps)';
+  const spreadSuffix = isPct ? '' : ' bps';
+  const layout = {
+    ...BASE, hovermode:'closest',
+    margin:{ l:58, r: (showSpread && showNominal) ? 58 : 15, t:8, b:64 },
+    legend:{ orientation:'h', y:-0.26, font:{size:10} },
+    xaxis:{ title:{text:'Duration (anos)', font:{size:10}}, showgrid:true, gridcolor:'#eef0f3', zeroline:false },
+    yaxis:{ title:{text: onlyNominal ? 'Nominal (%)' : spreadTitle, font:{size:10}},
+            ticksuffix: onlyNominal ? '%' : spreadSuffix, showgrid:true, gridcolor:'#eef0f3', zeroline:false },
+  };
+  if (showSpread && showNominal) {
+    layout.yaxis2 = { title:{text:'Nominal (%)', font:{size:10}}, ticksuffix:'%',
+                      overlaying:'y', side:'right', showgrid:false, zeroline:false };
+  }
+  Plotly.react(div, traces, layout, CFG);
+}
+
+// x = vértice (cada NTN-B / DI1), y = spread (bps) e/ou nominal (%), uma curva por data.
+function renderAnbimaRef(div, kind, s, e, agg) {
+  const isNtnb = kind === 'NTN-B';
+  const tblId = div.replace('chart-', 'tbl-');
+  const setTbl = html => { const t = document.getElementById(tblId); if (t) t.innerHTML = html; };
+  const showSpread  = document.getElementById('anb-ref-spread').checked;
+  const showNominal = document.getElementById('anb-ref-nominal').checked;
+  const selDates = new Set(anbDatesSelected());
+
+  if (!showSpread && !showNominal) { emptyChart(div, 'Marque Spread e/ou Nominal'); setTbl(''); return; }
+
+  const rows = (agg || _anbRefAgg(s, e)).filter(r =>
+    selDates.has(r.dt) &&
+    (isNtnb ? r.ref.startsWith('NTN-B') : r.ref.startsWith('DI1')));
+  if (!rows.length) { emptyChart(div, 'Sem dados de ' + kind + ' nas datas/instrumentos selecionados'); setTbl('<table><tbody><tr><td class="bnull" style="text-align:center">Sem dados</td></tr></tbody></table>'); return; }
+
+  const refs = [...new Set(rows.map(r => r.ref))].sort();
+  const xLabels = refs.map(r => isNtnb ? bRefDisp(r) : r);
+  const dates = [...selDates].filter(d => d >= s && d <= e).sort();
+
+  const idx = {};
+  rows.forEach(r => { (idx[r.dt] = idx[r.dt] || {})[r.ref] = r; });
+
+  const traces = [];
+  dates.forEach((dt, i) => {
+    const color = PALETTE[i % PALETTE.length];
+    const dd = idx[dt] || {};
+    const nAtivos = refs.map(r => dd[r] && dd[r].n != null ? dd[r].n : null);
+    if (showSpread) traces.push({
+      x:xLabels, y:refs.map(r => dd[r] && dd[r].spreadRaw != null ? dd[r].spreadRaw * 100 : null),
+      type:'scatter', mode:'lines+markers', name: bDataCurta(dt) + (showNominal ? ' · spread' : ''),
+      legendgroup:dt, yaxis:'y', connectgaps:false,
+      line:{ color, width:2.5 }, marker:{ size:5, color },
+      customdata:nAtivos,
+      hovertemplate:'%{x}: %{y:.0f} bps · %{customdata} ativo(s)<extra>'+bDataCurta(dt)+'</extra>',
+    });
+    if (showNominal) traces.push({
+      x:xLabels, y:refs.map(r => dd[r] && dd[r].taxa != null ? dd[r].taxa : null),
+      type:'scatter', mode:'lines+markers',
+      name: bDataCurta(dt) + (showSpread ? ' · nominal' : ''),
+      legendgroup:dt, yaxis: showSpread ? 'y2' : 'y', connectgaps:false,
+      line:{ color, width:2, dash:'dot' }, marker:{ size:5, color, symbol:'diamond' },
+      customdata:nAtivos,
+      hovertemplate:'%{x}: %{y:.2f}% · %{customdata} ativo(s)<extra>'+bDataCurta(dt)+' nom.</extra>',
+    });
+  });
+
+  // Tabela "Nº de ativos por vértice": linhas = vértice, colunas = data selecionada.
+  const head = '<th>Vértice</th>' + dates.map(d => `<th>${bDataCurta(d)}</th>`).join('');
+  const tbody = refs.map((r, ri) => {
+    const cells = dates.map(dt => {
+      const rec = (idx[dt] || {})[r];
+      const n = rec && rec.n != null ? rec.n : null;
+      return n != null ? `<td data-v="${n}">${n}</td>` : '<td class="bnull">—</td>';
+    }).join('');
+    return `<tr><td class="btk">${xLabels[ri]}</td>${cells}</tr>`;
+  }).join('');
+  setTbl(`<table><thead><tr>${head}</tr></thead><tbody>${tbody}</tbody></table>`);
+
+  const onlyNominal = showNominal && !showSpread;
+  const layout = {
+    ...BASE, hovermode:'closest',
+    margin:{ l:58, r: (showSpread && showNominal) ? 58 : 15, t:8, b:64 },
+    legend:{ orientation:'h', y:-0.26, font:{size:10} },
+    xaxis:{ type:'category', tickfont:{size:10} },
+    yaxis:{ title:{text: onlyNominal ? 'Nominal (%)' : 'Spread (bps)', font:{size:10}},
+            ticksuffix: onlyNominal ? '%' : ' bps', showgrid:true, gridcolor:'#eef0f3', zeroline:false },
+  };
+  if (showSpread && showNominal) {
+    layout.yaxis2 = { title:{text:'Nominal (%)', font:{size:10}}, ticksuffix:'%',
+                      overlaying:'y', side:'right', showgrid:false, zeroline:false };
+  }
+  Plotly.react(div, traces, layout, CFG);
+}
+
+// ═══════════════════════════ POR TICKER ══════════════════════════════════════
+// Filtros de instrumento/indexador (multi-seleção; vazio = não restringe).
+// Restringem a seleção de tickers: só renderiza os selecionados que batem.
+const TK_TIPO_ORDER = ['DEB', 'DEB 12.431', 'CRI', 'CRA'];
+
+function tkBuildFilters() {
+  const tipos = [...new Set(DATA.infoAtivos.map(r => r.tipo).filter(Boolean))]
+    .sort((a, b) => TK_TIPO_ORDER.indexOf(a) - TK_TIPO_ORDER.indexOf(b));
+  const idxs  = [...new Set(DATA.infoAtivos.map(r => r.indexador).filter(Boolean))].sort();
+  const mk = v => `<label class="b-chk"><input type="checkbox" value="${v}" onchange="renderTicker()">${v}</label>`;
+  document.getElementById('t-filtro-instrumento').innerHTML = tipos.map(mk).join('');
+  document.getElementById('t-filtro-indexador').innerHTML   = idxs.map(mk).join('');
+}
+function tkActiveFilters() {
+  return {
+    tipos: [...document.querySelectorAll('#t-filtro-instrumento input:checked')].map(c => c.value),
+    idxs:  [...document.querySelectorAll('#t-filtro-indexador input:checked')].map(c => c.value),
+  };
+}
+function tkPasses(ticker, f) {
+  if (f.tipos.length && f.tipos.indexOf(TICKER_TIPO[ticker] || '') === -1) return false;
+  if (f.idxs.length  && f.idxs.indexOf(TICKER_IDX[ticker]   || '') === -1) return false;
+  return true;
+}
+
+function renderTicker() {
+  renderTkTrades();
+  if (SEL.t.size === 0) { emptyChart('chart-ticker','Selecione um ou mais tickers no filtro acima'); return; }
+  const s    = document.getElementById('t-start').value;
+  const e    = document.getElementById('t-end').value;
+  const f    = tkActiveFilters();
+  const rows = DATA.ticker.filter(r => r.dt >= s && r.dt <= e && SEL.t.has(r.ticker) && tkPasses(r.ticker, f));
+  if (!rows.length) { emptyChart('chart-ticker','Sem dados para a seleção e filtros'); return; }
+
+  const byTk = {};
+  rows.forEach(r => {
+    if (!byTk[r.ticker]) byTk[r.ticker] = { vol:{}, spread:{}, idx:r.indexador };
+    byTk[r.ticker].vol[r.dt]    = (byTk[r.ticker].vol[r.dt] || 0) + r.volume;
+    byTk[r.ticker].spread[r.dt] = r.spreadRaw;
+    byTk[r.ticker].idx          = r.indexador;
+  });
+
+  const dts    = [...new Set(rows.map(r => r.dt))].sort();
+  const hasPct = Object.values(byTk).some(d => d.idx === '%CDI');
+  const xDom   = hasPct ? [0, 0.82] : [0, 0.90];
+  const traces = [];
+
+  Object.entries(byTk).forEach(([tk, d]) => {
+    const c = TICKER_COLOR[tk] || ITAU.gray;
+    const isPct = d.idx === '%CDI';
+    const dur = TICKER_DURATION[tk];
+    const tkLabel = dur != null ? `${tk} (${bFmt(dur, 2)})` : tk;
+    const ys = dts.map(dt => isPct ? toPctCdi(d.spread[dt], d.idx) : toBps(d.spread[dt], d.idx));
+    traces.push({ x:dts, y:dts.map(dt => d.vol[dt]||0), type:'bar', name:tkLabel, legendgroup:tk,
+      showlegend:true, yaxis:'y', marker:{color:c,opacity:.75},
+      hovertemplate:'R$ %{y:.2f} MM<extra>'+tk+'</extra>' });
+    traces.push({ x:dts, y:ys, type:'scatter', mode:'lines+markers', name:tk, legendgroup:tk,
+      showlegend:false, yaxis: isPct ? 'y3' : 'y2', line:{color:c,width:2.5,dash:isPct?'dot':'solid'},
+      marker:{size:5,color:c}, connectgaps:false,
+      hovertemplate:'%{y:.0f}'+(isPct?' %CDI':' bps')+'<extra>'+tk+' spread</extra>' });
+  });
+
+  Plotly.react('chart-ticker', traces, {
+    ...BASE, barmode:'stack',
+    margin:{ l:70, r: hasPct ? 140 : 90, t:20, b:70 },
+    legend:{ orientation:'h', y:-0.22, font:{size:11} },
+    xaxis:{ ...XAXIS_DATE, domain: xDom },
+    yaxis:{ title:{text:'Volume (R$ MM)',font:{color:'#003087',size:11}},
+      tickfont:{color:'#003087'}, side:'left', showgrid:true, gridcolor:'#eef0f3', zeroline:false, tickformat:',.1f' },
+    yaxis2:{ title:{text:'Spread (bps)',font:{color:'#444',size:11}},
+      tickfont:{color:'#444'}, side:'right', overlaying:'y', showgrid:false, zeroline:false, ticksuffix:' bps' },
+    ...(hasPct ? { yaxis3:{ title:{text:'Spread %CDI',font:{color:ITAU.orange,size:11}},
+      tickfont:{color:ITAU.orange}, side:'right', overlaying:'y', anchor:'free', position:1.0,
+      showgrid:false, zeroline:false } } : {}),
+  }, CFG);
+}
+
+// Tabela de negócios (por dia) dos ativos selecionados na aba Por Ativo.
+// Fonte: DATA.boletim (VALIDO+BROKER agregado, Anbima em D-1 — mesma base da aba Boletim).
+function renderTkTrades() {
+  const body = document.getElementById('tk-trades-body');
+  if (!body) return;
+  if (SEL.t.size === 0) {
+    body.innerHTML = '<tr><td colspan="8" class="bnull" style="text-align:center">Selecione ativos no filtro acima</td></tr>';
+    return;
+  }
+  const s = document.getElementById('t-start').value;
+  const e = document.getElementById('t-end').value;
+  const f = tkActiveFilters();
+  const out = [];
+  Object.keys(DATA.boletim).sort().forEach(dt => {
+    if (dt < s || dt > e) return;
+    DATA.boletim[dt].tickers
+      .filter(t => SEL.t.has(t.cdTicker) && tkPasses(t.cdTicker, f))
+      .sort((a, b) => a.cdTicker.localeCompare(b.cdTicker))
+      .forEach(t => {
+        const spOver = bSpreadDisp(t.vrSpreadOverMedio, t.cdIndexador);
+        const spAnb  = bSpreadDisp(t.vrSpreadAnbima,    t.cdIndexador);
+        const volM   = t.vrVolumeTotal != null ? t.vrVolumeTotal / 1e6 : null;
+        const c = (v, dec) => v != null ? `<td data-v="${v}">${bFmt(v, dec)}</td>` : `<td data-v="" class="bnull">—</td>`;
+        out.push(`<tr>
+          <td data-v="${dt}">${bDataCurta(dt)}</td>
+          <td class="btk" data-v="${t.cdTicker}">${t.cdTicker}</td>
+          <td data-v="${t.cdEmissor || ''}">${t.cdEmissor || '—'}</td>
+          ${c(t.vrDuration, 2)}
+          <td data-v="${t.cdIndexador || ''}">${t.cdIndexador || '—'}</td>
+          ${c(volM, 2)}
+          ${c(spOver, 0)}
+          ${c(spAnb, 0)}
+        </tr>`);
+      });
+  });
+  body.innerHTML = out.length ? out.join('')
+    : '<tr><td colspan="8" class="bnull" style="text-align:center">Sem negócios no período para a seleção</td></tr>';
+  _tkTradesSortCol = -1;   // reset ordenação ao reconstruir
+  tkTradesFilter();        // reaplica filtros de coluna nas linhas novas
+}
+
+let _tkTradesSortCol = -1, _tkTradesSortAsc = true;
+
+function tkTradesFilter() {
+  const table = document.getElementById('tk-trades-tbl');
+  if (!table) return;
+  const cols = [...table.querySelectorAll('thead tr.bfr th input')].map(
+    i => i.value.toLowerCase().split(',').map(t => t.trim()).filter(Boolean)
+  );
+  table.querySelectorAll('tbody tr').forEach(row => {
+    if (row.children.length < cols.length) { row.style.display = ''; return; }  // linha placeholder
+    let show = true;
+    for (let i = 0; i < cols.length; i++) {
+      if (!cols[i].length) continue;
+      const cell = row.cells[i]?.textContent.toLowerCase() || '';
+      if (!cols[i].some(t => cell.includes(t))) { show = false; break; }
+    }
+    row.style.display = show ? '' : 'none';
+  });
+}
+
+function tkTradesSort(th, col, isNum) {
+  const table = document.getElementById('tk-trades-tbl');
+  const tbody = table.querySelector('tbody');
+  if (!tbody || tbody.children.length && tbody.children[0].children.length < 8) return;  // placeholder
+  const asc = (_tkTradesSortCol === col) ? !_tkTradesSortAsc : true;
+  _tkTradesSortCol = col; _tkTradesSortAsc = asc;
+  table.querySelectorAll('thead th').forEach(h => h.classList.remove('sort-asc', 'sort-desc'));
+  th.classList.add(asc ? 'sort-asc' : 'sort-desc');
+  const rows = [...tbody.querySelectorAll('tr')];
+  rows.sort((a, b) => {
+    const va = a.cells[col]?.dataset.v ?? '';
+    const vb = b.cells[col]?.dataset.v ?? '';
+    if (isNum) {
+      const na = parseFloat(va), nb = parseFloat(vb);
+      if (isNaN(na) && isNaN(nb)) return 0;
+      if (isNaN(na)) return 1; if (isNaN(nb)) return -1;
+      return asc ? na - nb : nb - na;
+    }
+    if (!va && !vb) return 0; if (!va) return 1; if (!vb) return -1;
+    return asc ? va.localeCompare(vb, 'pt-BR') : vb.localeCompare(va, 'pt-BR');
+  });
+  rows.forEach(r => tbody.appendChild(r));
+}
+
+// ═══════════════════════ SPREAD × DURATION ═══════════════════════════════════
+// Um gráfico por indexador. %CDI usa eixo em "% do CDI"; demais em bps.
+const DUR_CHARTS = [
+  { idx:'CDI+',      div:'chart-dur-cdi',    filt:'dfilt-cdi',    title:'CDI+' },
+  { idx:'%CDI',      div:'chart-dur-pctcdi', filt:'dfilt-pctcdi', title:'% CDI' },
+  { idx:'IPCA',      div:'chart-dur-ipca',   filt:'dfilt-ipca',   title:'IPCA' },
+  { idx:'PREFIXADO', div:'chart-dur-pre',    filt:'dfilt-pre',    title:'Prefixado' },
+];
+
+// Filtro de instrumento independente por gráfico (CRI/CRA/DEB/DEB 12.431; vazio = todos).
+function durBuildFilters() {
+  const mk = v => `<label class="b-chk"><input type="checkbox" value="${v}" onchange="renderDuration()">${v}</label>`;
+  DUR_CHARTS.forEach(cfg => {
+    const el = document.getElementById(cfg.filt);
+    if (!el) return;
+    const tipos = [...new Set(DATA.infoAtivos.filter(r => r.indexador === cfg.idx).map(r => r.tipo).filter(Boolean))]
+      .sort((a, b) => TK_TIPO_ORDER.indexOf(a) - TK_TIPO_ORDER.indexOf(b));
+    el.innerHTML = tipos.map(mk).join('');
+  });
+}
+function durActiveFilter(cfg) {
+  return [...document.querySelectorAll('#' + cfg.filt + ' input:checked')].map(c => c.value);
+}
+
+function renderDuration() {
+  const dt   = document.getElementById('d-date').value;
+  const tks  = SEL.d.size > 0 ? SEL.d : new Set(DATA.tickers);
+  const base = DATA.duration.filter(r => r.dt === dt && tks.has(r.ticker) && r.duration != null);
+
+  DUR_CHARTS.forEach(cfg => {
+    const tipos = durActiveFilter(cfg);
+    const rows = base.filter(r => r.indexador === cfg.idx
+      && (!tipos.length || tipos.indexOf(TICKER_TIPO[r.ticker] || '') !== -1));
+    if (!rows.length) { emptyChart(cfg.div, 'Sem dados de ' + cfg.title + ' para a seleção'); return; }
+
+    const isPct  = cfg.idx === '%CDI';
+    const maxVol = Math.max(...rows.map(r => r.volume), 0.01);
+    const trace = {
+      x: rows.map(r => r.duration),
+      y: rows.map(r => isPct ? toPctCdi(r.spreadRaw, r.indexador) : toBps(r.spreadRaw, r.indexador)),
+      mode:'markers', type:'scatter',
+      text: rows.map(r => r.ticker),
+      customdata: rows.map(r => [r.emissor||'-', r.volume]),
+      hovertemplate:'<b>%{text}</b><br>Emissor: %{customdata[0]}<br>Duration: %{x:.2f} anos<br>Spread: %{y:.0f}'+(isPct?' %CDI':' bps')+'<br>Volume: R$ %{customdata[1]:.2f} MM<extra></extra>',
+      marker:{ size:rows.map(r => Math.sqrt(Math.max(r.volume,0.001))),
+        sizemode:'area', sizeref:2.0*Math.sqrt(maxVol)/(50**2), sizemin:5,
+        color:rows.map(r => TICKER_COLOR[r.ticker]||ITAU.gray), opacity:.75,
+        line:{width:1,color:'#fff'} },
+    };
+    Plotly.react(cfg.div, [trace], {
+      ...BASE, hovermode:'closest',
+      margin:{ l:60, r:18, t:8, b:45 },
+      xaxis:{ title:'Duration (anos)', showgrid:true, gridcolor:'#eef0f3', zeroline:false },
+      yaxis:{ title:{text: isPct ? 'Spread (% CDI)' : 'Spread (bps)', font:{color:'#003087',size:11}},
+        tickfont:{color:'#003087'}, showgrid:true, gridcolor:'#eef0f3', zeroline:false,
+        ticksuffix: isPct ? '' : ' bps' },
+    }, CFG);
+  });
+}
+
+// ══════════════════════════ BOLETIM DIÁRIO ═══════════════════════════════════
+
+let _bSortCol = -1, _bSortAsc = true;
+
+function renderBoletim() {
+  const dt  = document.getElementById('b-date').value;
+  const day = dt ? DATA.boletim[dt] : null;
+
+  const pillsEl = document.getElementById('boletim-pills');
+  const el      = document.getElementById('boletim-content');
+
+  if (!day || !day.tickers.length) {
+    pillsEl.innerHTML = '';
+    el.innerHTML = '<div class="empty-msg">Sem dados para esta data</div>';
+    return;
+  }
+
+  _bSortCol = -1; _bSortAsc = true;
+
+  pillsEl.innerHTML = [
+    `<div class="pill"><div class="plabel">Tickers</div><div class="pval">${bFmtInt(day.nrTickers)}</div><div class="psub">ativos negociados</div></div>`,
+    `<div class="pill"><div class="plabel">Negócios</div><div class="pval">${bFmtInt(day.nrTrades)}</div><div class="psub">VALIDO + BROKER</div></div>`,
+    `<div class="pill"><div class="plabel">Volume Total</div><div class="pval">R$ ${bFmt(day.vrVolumeTotal/1e6,0)} MM</div><div class="psub">&nbsp;</div></div>`,
+    ...day.resumo.map(r =>
+      `<div class="pill"><div class="plabel">${r.cdTipo}</div><div class="pval">R$ ${bFmt(r.vrVolume/1e6,0)} MM</div><div class="psub">${r.nrTickers} tickers · ${r.nrTrades} neg.</div></div>`
+    ),
+  ].join('');
+
+  const instrOpts = ['<option value="">Todos os tipos</option>',
+    ...day.resumo.map(r => `<option value="${r.cdTipo}">${r.cdTipo}</option>`)
+  ].join('');
+
+  const indexadores = [...new Set(day.tickers.map(t => t.cdIndexador).filter(Boolean))].sort();
+  const idxChecks = indexadores.map(ix =>
+    `<label class="b-chk"><input type="checkbox" value="${ix}" onchange="bFilterAll()">${ix}</label>`
+  ).join('');
+
+  const rowsHtml = day.tickers.map(t => {
+    const spreadOver = bSpreadDisp(t.vrSpreadOverMedio, t.cdIndexador);
+    const spreadAnb  = bSpreadDisp(t.vrSpreadAnbima,    t.cdIndexador);
+    const volM = t.vrVolumeTotal / 1e6;
+    const fOr  = v => v != null ? `<td data-v="${v}">${bFmt(v,0)}</td>`   : `<td data-v="" class="bnull">—</td>`;
+    const f4   = v => v != null ? `<td data-v="${v}">${bFmt(v,4)}</td>`   : `<td data-v="" class="bnull">—</td>`;
+    const fStr = v => v         ? `<td data-v="${v}">${v}</td>`            : `<td data-v="" class="bnull">—</td>`;
+    return `<tr data-tipo="${t.cdTipo}" data-indexador="${t.cdIndexador||''}">
+      <td class="btp" data-v="${t.cdTipo||''}">${t.cdTipo||'—'}</td>
+      <td class="btk" data-v="${t.cdTicker}">${t.cdTicker}</td>
+      <td data-v="${t.cdEmissor||''}">${t.cdEmissor||'—'}</td>
+      <td data-v="${t.cdIndexador||''}">${t.cdIndexador||'—'}</td>
+      ${fStr(bRefDisp(t.cdReferencia))}
+      ${t.vrDuration!=null ? `<td data-v="${t.vrDuration}">${bFmt(t.vrDuration,2)}</td>` : `<td data-v="" class="bnull">—</td>`}
+      ${t.dtVencimento     ? `<td data-v="${t.dtVencimento}">${bMesAno(t.dtVencimento)}</td>` : `<td data-v="" class="bnull">—</td>`}
+      <td data-v="${t.nrTrades}">${bFmtInt(t.nrTrades)}</td>
+      <td data-v="${t.vrQuantidadeTotal}">${bFmtInt(t.vrQuantidadeTotal)}</td>
+      <td data-v="${volM}">${bFmt(volM,2)}</td>
+      ${f4(t.vrTaxaMedia)}
+      ${fOr(spreadOver)}
+      ${f4(t.vrTaxaAnbima)}
+      ${fOr(spreadAnb)}
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div class="b-inner-fbar">
+      <span class="flabel">Tipo</span>
+      <select id="b-filtro-tipo" class="b-fsel" onchange="bFilterAll()">${instrOpts}</select>
+      <span class="flabel">Indexador</span>
+      <span class="b-idx-group" id="b-filtro-indexador">${idxChecks}</span>
+      <span class="flabel">Buscar</span>
+      <input type="text" id="b-filtro-texto" class="b-finp"
+             placeholder="ticker, emissor, indexador..." oninput="bFilterAll()">
+    </div>
+    <div class="b-wrap">
+      <table id="b-tabela">
+        <thead>
+          <tr>
+            <th onclick="bSort(this,0,false)">Tipo<span class="sa"></span></th>
+            <th onclick="bSort(this,1,false)">Ticker<span class="sa"></span></th>
+            <th onclick="bSort(this,2,false)">Emissor<span class="sa"></span></th>
+            <th onclick="bSort(this,3,false)">Indexador<span class="sa"></span></th>
+            <th onclick="bSort(this,4,false)">Referência<span class="sa"></span></th>
+            <th onclick="bSort(this,5,true)">Duration<span class="sa"></span></th>
+            <th onclick="bSort(this,6,false)">Vencimento<span class="sa"></span></th>
+            <th onclick="bSort(this,7,true)">Neg.<span class="sa"></span></th>
+            <th onclick="bSort(this,8,true)">Qtd<span class="sa"></span></th>
+            <th onclick="bSort(this,9,true)">Volume (R$M)<span class="sa"></span></th>
+            <th onclick="bSort(this,10,true)">Taxa Méd. (%)<span class="sa"></span></th>
+            <th onclick="bSort(this,11,true)">Spread Méd.<span class="sa"></span></th>
+            <th onclick="bSort(this,12,true)">Taxa Anbima (%)<span class="sa"></span></th>
+            <th onclick="bSort(this,13,true)">Spread Anbima<span class="sa"></span></th>
+          </tr>
+          <tr class="bfr">
+            <th><input type="text" placeholder="Tipo"        oninput="bFilterAll()"></th>
+            <th><input type="text" placeholder="Ticker (vírgula = vários)" oninput="bFilterAll()"></th>
+            <th><input type="text" placeholder="Emissor"     oninput="bFilterAll()"></th>
+            <th><input type="text" placeholder="Indexador"   oninput="bFilterAll()"></th>
+            <th><input type="text" placeholder="Referência"  oninput="bFilterAll()"></th>
+            <th><input type="text" placeholder="Duration"    oninput="bFilterAll()"></th>
+            <th><input type="text" placeholder="Vencimento"  oninput="bFilterAll()"></th>
+            <th><input type="text" placeholder="Neg."        oninput="bFilterAll()"></th>
+            <th><input type="text" placeholder="Qtd"         oninput="bFilterAll()"></th>
+            <th><input type="text" placeholder="Volume"      oninput="bFilterAll()"></th>
+            <th><input type="text" placeholder="Taxa"        oninput="bFilterAll()"></th>
+            <th><input type="text" placeholder="Spread"      oninput="bFilterAll()"></th>
+            <th><input type="text" placeholder="Taxa Anbima" oninput="bFilterAll()"></th>
+            <th><input type="text" placeholder="Spread Anb." oninput="bFilterAll()"></th>
+          </tr>
+        </thead>
+        <tbody>${rowsHtml}</tbody>
+        <tfoot>
+          <tr>
+            <td colspan="5">Total Geral</td>
+            <td></td><td></td>
+            <td>${bFmtInt(day.nrTrades)}</td>
+            <td>${bFmtInt(day.vrQtdTotal)}</td>
+            <td>${bFmt(day.vrVolumeTotal/1e6,2)}</td>
+            <td colspan="4"></td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  `;
+}
+
+function bSort(th, col, isNum) {
+  const table = document.getElementById('b-tabela');
+  if (!table) return;
+  const asc = (_bSortCol === col) ? !_bSortAsc : true;
+  _bSortCol = col; _bSortAsc = asc;
+  table.querySelectorAll('thead tr:first-child th').forEach(h => h.classList.remove('sort-asc','sort-desc'));
+  th.classList.add(asc ? 'sort-asc' : 'sort-desc');
+  const tbody = table.querySelector('tbody');
+  const rows  = [...tbody.querySelectorAll('tr')];
+  rows.sort((a, b) => {
+    const va = a.cells[col]?.dataset.v ?? '';
+    const vb = b.cells[col]?.dataset.v ?? '';
+    if (isNum) {
+      const na = parseFloat(va), nb = parseFloat(vb);
+      if (isNaN(na) && isNaN(nb)) return 0;
+      if (isNaN(na)) return 1; if (isNaN(nb)) return -1;
+      return asc ? na - nb : nb - na;
+    }
+    if (!va && !vb) return 0; if (!va) return 1; if (!vb) return -1;
+    return asc ? va.localeCompare(vb,'pt-BR') : vb.localeCompare(va,'pt-BR');
+  });
+  rows.forEach(r => tbody.appendChild(r));
+}
+
+function bFilterAll() {
+  const table = document.getElementById('b-tabela');
+  if (!table) return;
+  const tipo       = document.getElementById('b-filtro-tipo')?.value  || '';
+  const indexadores = [...document.querySelectorAll('#b-filtro-indexador input:checked')].map(c => c.value);
+  const texto      = (document.getElementById('b-filtro-texto')?.value || '').toLowerCase();
+  // cada filtro de coluna aceita vários termos separados por vírgula (OR)
+  const colFilters = [...table.querySelectorAll('thead tr.bfr th input')].map(
+    i => i.value.toLowerCase().split(',').map(t => t.trim()).filter(Boolean)
+  );
+  table.querySelectorAll('tbody tr').forEach(row => {
+    if (tipo && (row.dataset.tipo||'') !== tipo) { row.style.display='none'; return; }
+    if (indexadores.length && indexadores.indexOf(row.dataset.indexador||'') === -1) { row.style.display='none'; return; }
+    if (texto && !row.textContent.toLowerCase().includes(texto)) { row.style.display='none'; return; }
+    for (let i = 0; i < colFilters.length; i++) {
+      const terms = colFilters[i];
+      if (!terms.length) continue;
+      const cell = row.cells[i]?.textContent.toLowerCase() || '';
+      if (!terms.some(t => cell.includes(t))) { row.style.display='none'; return; }
+    }
+    row.style.display='';
+  });
+}
+
+// ══════════════════════════ INFO ATIVOS ══════════════════════════════════════
+
+function bDataCurta(s) {
+  if (!s) return '';
+  const [y, m, d] = s.split('-');
+  return `${d}/${m}/${y.slice(2)}`;
+}
+
+let _iaSortCol = -1, _iaSortAsc = true;
+
+function renderInfoAtivos() {
+  const q   = norm(document.getElementById('ia-search').value);
+  const rows = DATA.infoAtivos.filter(r => !q || norm(r.ticker).includes(q) || norm(r.emissor).includes(q));
+  const tbody = document.getElementById('ia-tbody');
+
+  // célula de taxa com a data da referência embaixo
+  const rc = (v, dt) => v != null
+    ? `<td data-v="${v}">${bFmt(v,4)}<div class="ia-dt">${bDataCurta(dt)}</div></td>`
+    : `<td data-v="" class="bnull">—</td>`;
+
+  tbody.innerHTML = rows.map(r => `<tr>
+    <td class="btk" data-v="${r.ticker}">${r.ticker}</td>
+    <td data-v="${r.tipo||''}">${r.tipo||'—'}</td>
+    <td data-v="${r.emissor||''}">${r.emissor||'—'}</td>
+    ${r.duration!=null ? `<td data-v="${r.duration}">${bFmt(r.duration,2)}</td>` : `<td data-v="" class="bnull">—</td>`}
+    <td data-v="${r.indexador||''}">${r.indexador||'—'}</td>
+    ${rc(r.taxaAnbima, r.dtAnbima)}
+    ${rc(r.taxaTrade,  r.dtTrade)}
+  </tr>`).join('');
+
+  document.getElementById('ia-count').textContent = `${rows.length} ativo(s)`;
+  iaFilter();   // reaplica filtros de coluna nas linhas recém-renderizadas
+}
+
+// Filtro por coluna (substring; vírgula = OR) na tabela Info Ativos.
+function iaFilter() {
+  const table = document.getElementById('ia-tabela');
+  if (!table) return;
+  const cols = [...table.querySelectorAll('thead tr.bfr th input')].map(
+    i => i.value.toLowerCase().split(',').map(t => t.trim()).filter(Boolean)
+  );
+  table.querySelectorAll('tbody tr').forEach(row => {
+    let show = true;
+    for (let i = 0; i < cols.length; i++) {
+      if (!cols[i].length) continue;
+      const cell = row.cells[i]?.textContent.toLowerCase() || '';
+      if (!cols[i].some(t => cell.includes(t))) { show = false; break; }
+    }
+    row.style.display = show ? '' : 'none';
+  });
+}
+
+function iaSort(th, col, isNum) {
+  const table = document.getElementById('ia-tabela');
+  if (!table) return;
+  const asc = (_iaSortCol === col) ? !_iaSortAsc : true;
+  _iaSortCol = col; _iaSortAsc = asc;
+  table.querySelectorAll('thead th').forEach(h => h.classList.remove('sort-asc','sort-desc'));
+  th.classList.add(asc ? 'sort-asc' : 'sort-desc');
+  const tbody = table.querySelector('tbody');
+  const rows  = [...tbody.querySelectorAll('tr')];
+  rows.sort((a, b) => {
+    const va = a.cells[col]?.dataset.v ?? '';
+    const vb = b.cells[col]?.dataset.v ?? '';
+    if (isNum) {
+      const na = parseFloat(va), nb = parseFloat(vb);
+      if (isNaN(na) && isNaN(nb)) return 0;
+      if (isNaN(na)) return 1; if (isNaN(nb)) return -1;
+      return asc ? na - nb : nb - na;
+    }
+    if (!va && !vb) return 0; if (!va) return 1; if (!vb) return -1;
+    return asc ? va.localeCompare(vb,'pt-BR') : vb.localeCompare(va,'pt-BR');
+  });
+  rows.forEach(r => tbody.appendChild(r));
+}
+
+// ── init ──────────────────────────────────────────────────────────────────────
+window.addEventListener('load', () => {
+  // Datas no formato DD/MM/AAAA em todos os filtros
+  const first = DATA.datas[0];
+  const last  = DATA.datas[DATA.datas.length - 1];
+  buildDateSelect('g-start', DATA.datas, first);
+  buildDateSelect('g-end',   DATA.datas, last);
+  buildDateSelect('t-start', DATA.datas, first);
+  buildDateSelect('t-end',   DATA.datas, last);
+  buildDateSelect('d-date',  DATA.datas, last);
+
+  // Visão Anbima: datas próprias (dtReferencia da Anbima, podem diferir das de trade)
+  const anbDates = [...new Set(DATA.anbimaIdx.map(r => r.dt))].sort();
+  if (anbDates.length) {
+    buildDateSelect('a-start', anbDates, anbDates[0]);
+    buildDateSelect('a-end',   anbDates, anbDates[anbDates.length - 1]);
+  }
+
+  // Boletim: datas decrescentes (mais recente primeiro)
+  const bSel = document.getElementById('b-date');
+  [...DATA.diasBoletim].reverse().forEach(dt => {
+    const [y, m, d] = dt.split('-');
+    const opt = document.createElement('option');
+    opt.value = dt;
+    opt.textContent = `${d}/${m}/${y}`;
+    bSel.appendChild(opt);
+  });
+
+  tsRebuild('t', DATA.tickers);
+  tsRebuild('d', DATA.tickers);
+  tkBuildFilters();
+
+  // Boletim é a aba ativa — renderiza primeiro
+  if (DATA.diasBoletim.length) renderBoletim();
+
+  // Pré-renderiza os outros charts enquanto estão em display:none
+  renderGeral();
+  anbBuildRefDates();
+  anbTkInit();
+  anbInstrBuild();
+  renderAnbima();
+  emptyChart('chart-ticker', 'Selecione um ou mais tickers no filtro acima');
+  renderTkTrades();
+  durBuildFilters();
+  renderDuration();
+  renderInfoAtivos();
+});
+</script>
+</body>
+</html>

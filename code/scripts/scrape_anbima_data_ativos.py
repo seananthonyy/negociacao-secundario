@@ -1,0 +1,788 @@
+"""Scrape Anbima Data: características e agenda de Debs/CRIs/CRAs."""
+
+import argparse, asyncio, json, re, sqlite3, sys
+from collections import defaultdict
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from playwright.async_api import async_playwright
+
+from lib.config import cfg
+from lib.db import get_db
+from lib.email_outlook import send_completion_email
+from lib.logger import get_logger
+
+# ── constantes ────────────────────────────────────────────────────────────────
+
+# Usados no filtro da listagem (strings exatas da API de listagem)
+INDEXADORES_VALIDOS_LISTING = {'DI+', 'IPCA', 'DI%', 'Pré-Fixado', 'Pre-Fixado'}
+
+# Usados no filtro por-ticker (indexador.nome retorna tipo base, ex: "DI", "IPCA", "PRE")
+# Lógica: bloquear inválidos conhecidos; aceitar todo o resto
+INDEXADORES_INVALIDOS_TICKER = {'IGPM', 'TR', 'INPC', 'DÓLAR', 'DOLAR', 'USD'}
+
+TIPO_API = {
+    'DEB': 'debentures',
+    'CRI': 'certificado-recebiveis',
+    'CRA': 'certificado-recebiveis',
+}
+TIPO_URL_SITE = {
+    'DEB': 'debentures',
+    'CRI': 'certificado-de-recebiveis',
+    'CRA': 'certificado-de-recebiveis',
+}
+LISTING_UI = {
+    'DEB': 'https://data.anbima.com.br/busca/debentures',
+    'CR':  'https://data.anbima.com.br/busca/certificado-de-recebiveis',
+}
+
+SIZE_LISTING = 5000
+SIZE_AGENDA  = 100   # max aceito pela API de agenda (size maior e capado em 100)
+WAIT_MS      = 3000
+MAX_LISTING_PAGES = 30   # safety cap
+MAX_AGENDA_PAGES  = 50   # safety cap (50 x 100 = 5000 eventos)
+
+
+# ── CLI ───────────────────────────────────────────────────────────────────────
+
+def _ParseArgs():
+    ap = argparse.ArgumentParser(description='Scrape Anbima Data — características e agenda')
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument('--mode', choices=['full'], help='Carga inicial: lista tickers do site')
+    g.add_argument('--date', metavar='YYYY-MM-DD', help='Incremental: tickers de NegociosBrutos nessa data')
+    g.add_argument('--start', metavar='YYYY-MM-DD', help='Incremental: data inicial (com --end)')
+    g.add_argument('--ticker', help='Debug: um ticker específico')
+    ap.add_argument('--end', metavar='YYYY-MM-DD')
+    ap.add_argument('--workers', type=int, default=4)
+    ap.add_argument('--force', action='store_true', help='Re-scrappa mesmo com JSON em cache')
+    ap.add_argument('--skip-scrape', action='store_true', dest='skip_scrape',
+                    help='Pula scraping; re-insere JSONs existentes no DB')
+    ap.add_argument('--limit', type=int, metavar='N', help='Para após N tickers (teste)')
+    return ap.parse_args()
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+def _Now() -> str:
+    return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
+
+def _ToFloat(v) -> float | None:
+    if v is None or str(v).strip() in ('-', ''):
+        return None
+    try:
+        return float(str(v).replace(',', '.'))
+    except Exception:
+        return None
+
+def _InferTipo(ticker: str, tipo_titulo: str | None = None) -> str:
+    # cdInstrumento autoritativo (NegociosBrutos/InfoAtivos) tem prioridade.
+    if tipo_titulo in ('DEB', 'CRI', 'CRA'):
+        return tipo_titulo
+    # Convencao B3 (confirmado no banco 30/06): CRA comeca com 'CRA' (len 11);
+    # CRI e codigo numerico (len 10, comeca com digito); DEB comeca com letra (len 6).
+    t = ticker.upper()
+    if t.startswith('CRA'):
+        return 'CRA'
+    if t[:1].isdigit():
+        return 'CRI'
+    return 'DEB'
+
+
+# ── indexador normalização ────────────────────────────────────────────────────
+
+def _NormalizeIndexador(info: dict) -> str | None:
+    """Normaliza para CDI+, %CDI, IPCA ou PREFIXADO usando info['remuneracao']."""
+    texto = (info.get('remuneracao') or '').strip().upper()
+    if not texto:
+        nome = ((info.get('indexador') or {}).get('nome') or '').strip().upper()
+        texto = nome
+    if not texto:
+        return None
+    if 'IPCA' in texto:
+        return 'IPCA'
+    if 'PRÉ' in texto or 'PRE' in texto or 'PREFIXADO' in texto:
+        return 'PREFIXADO'
+    if 'DI' in texto:
+        if re.search(r'DI\s*\+', texto):
+            return 'CDI+'
+        if re.search(r'%\s*DI|\d.*DI', texto):
+            return '%CDI'
+        return 'CDI+'
+    return None
+
+
+# ── agenda processing ─────────────────────────────────────────────────────────
+
+def _EventoConhecido(evento: str) -> bool:
+    n = evento.upper()
+    return ('PAGAMENTO DE JUROS' in n or 'AMORTIZA' in n
+            or 'VENCIMENTO' in n or 'RESGATE' in n or 'INCORPORA' in n)
+
+def _ProcessAgenda(ticker: str, agenda: list, log) -> list | None:
+    """Retorna rows para FluxoAtivos, ou None se evento desconhecido encontrado."""
+    for item in agenda:
+        evt = item.get('evento', '')
+        if not _EventoConhecido(evt):
+            log.warning(f'{ticker}: evento desconhecido "{evt}" — FluxoAtivos descartado')
+            return None
+
+    by_date = defaultdict(list)
+    for item in agenda:
+        by_date[item['data_liquidacao']].append(item)
+
+    now = _Now()
+    rows = []
+    for dt_liq, events in sorted(by_date.items()):
+        vrPctAmortizacao = None
+        vrPctIncorporacao = None
+
+        for e in events:
+            n = e['evento'].upper()
+            if 'AMORTIZA' in n or 'VENCIMENTO' in n or 'RESGATE' in n:
+                vrPctAmortizacao = _ToFloat(e.get('taxa'))
+                break
+
+        incorp = [e for e in events if 'INCORPORA' in e['evento'].upper()]
+        juros  = [e for e in events if 'PAGAMENTO DE JUROS' in e['evento'].upper()]
+        if incorp:
+            if not juros:
+                vrPctIncorporacao = 100.0
+            else:
+                vi = [_ToFloat(e.get('valor')) for e in incorp]
+                vj = [_ToFloat(e.get('valor')) for e in juros]
+                if None in vi or None in vj:
+                    vrPctIncorporacao = None
+                else:
+                    total = sum(vi) + sum(vj)
+                    vrPctIncorporacao = (sum(vi) / total * 100) if total > 0 else None
+
+        rows.append({
+            'cdTicker': ticker, 'dtEvento': dt_liq,
+            'vrPctAmortizacao': vrPctAmortizacao,
+            'vrPctIncorporacao': vrPctIncorporacao,
+            'dtAtualizacao': now,
+        })
+    return rows
+
+
+# ── db ────────────────────────────────────────────────────────────────────────
+
+def _UpsertInfoAtivos(conn: sqlite3.Connection, ticker: str, cdInstrumento: str, info: dict):
+    emissao = info.get('emissao') or {}
+    cdEmissor = (emissao.get('emissor') or {}).get('nome') if cdInstrumento == 'DEB' else info.get('devedor')
+
+    conn.execute("""
+        INSERT INTO InfoAtivos
+            (cdTicker, cdInstrumento, cdEmissor, dtVencimento, cdIndexador,
+             vrTaxaEmissao, vrVNE, dtInicioRentabilidade,
+             cdISIN, vrQuantidadeEmissao, dtEmissao, dtAtualizacao)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(cdTicker) DO UPDATE SET
+            cdInstrumento        = COALESCE(cdInstrumento,        excluded.cdInstrumento),
+            cdEmissor            = COALESCE(cdEmissor,            excluded.cdEmissor),
+            dtVencimento         = COALESCE(dtVencimento,         excluded.dtVencimento),
+            cdIndexador          = COALESCE(cdIndexador,          excluded.cdIndexador),
+            vrTaxaEmissao       = COALESCE(vrTaxaEmissao,       excluded.vrTaxaEmissao),
+            vrVNE                = COALESCE(vrVNE,                excluded.vrVNE),
+            dtInicioRentabilidade = COALESCE(dtInicioRentabilidade, excluded.dtInicioRentabilidade),
+            cdISIN               = COALESCE(cdISIN,               excluded.cdISIN),
+            vrQuantidadeEmissao  = COALESCE(vrQuantidadeEmissao,  excluded.vrQuantidadeEmissao),
+            dtEmissao            = COALESCE(dtEmissao,            excluded.dtEmissao),
+            dtAtualizacao          = excluded.dtAtualizacao
+    """, (
+        ticker, cdInstrumento, cdEmissor,
+        info.get('data_vencimento'),
+        _NormalizeIndexador(info),
+        _ToFloat(info.get('taxa_emissao')),
+        _ToFloat(info.get('vne')),
+        info.get('data_inicio_rentabilidade'),
+        info.get('isin'),
+        float(info['quantidade_emitida']) if info.get('quantidade_emitida') is not None else None,
+        emissao.get('data_emissao'),
+        _Now(),
+    ))
+
+def _UpsertFluxoAtivos(conn: sqlite3.Connection, rows: list):
+    conn.executemany("""
+        INSERT OR REPLACE INTO FluxoAtivos
+            (cdTicker, dtEvento, vrPctAmortizacao, vrPctIncorporacao, dtAtualizacao)
+        VALUES (:cdTicker, :dtEvento, :vrPctAmortizacao, :vrPctIncorporacao, :dtAtualizacao)
+    """, rows)
+
+# Colunas de InfoAtivos que precisam estar preenchidas para o ticker ser
+# considerado "completo" (não precisa de re-scrape no modo incremental).
+INFO_REQUIRED_COLS = [
+    'cdInstrumento', 'cdEmissor', 'dtVencimento', 'cdIndexador',
+    'vrTaxaEmissao', 'vrVNE', 'dtInicioRentabilidade',
+    'cdISIN', 'vrQuantidadeEmissao', 'dtEmissao',
+]
+
+# Colunas reportadas no email como "faltantes" quando NULL após scrape.
+INFO_FALTANTE_COLS = [
+    'cdEmissor', 'dtVencimento', 'cdIndexador', 'vrTaxaEmissao', 'vrVNE',
+    'dtInicioRentabilidade', 'cdISIN', 'vrQuantidadeEmissao', 'dtEmissao',
+]
+
+
+def _IsInfoNull(v) -> bool:
+    """NULL para fins de reporte: None, string vazia ou '-'."""
+    return v is None or str(v).strip() in ('', '-')
+
+
+def _ComputeInfoFaltante(info: dict, cdInstrumento: str) -> list[str]:
+    """Colunas de INFO_FALTANTE_COLS que ficaram NULL no dado capturado.
+
+    Usa a MESMA lógica de extração de `_UpsertInfoAtivos`."""
+    emissao = info.get('emissao') or {}
+    cdEmissor = ((emissao.get('emissor') or {}).get('nome')
+                 if cdInstrumento == 'DEB' else info.get('devedor'))
+    valores = {
+        'cdEmissor':            cdEmissor,
+        'dtVencimento':         info.get('data_vencimento'),
+        'cdIndexador':          _NormalizeIndexador(info),
+        'vrTaxaEmissao':       _ToFloat(info.get('taxa_emissao')),
+        'vrVNE':                _ToFloat(info.get('vne')),
+        'dtInicioRentabilidade': info.get('data_inicio_rentabilidade'),
+        'cdISIN':               info.get('isin'),
+        'vrQuantidadeEmissao':  info.get('quantidade_emitida'),
+        'dtEmissao':            emissao.get('data_emissao'),
+    }
+    return [c for c in INFO_FALTANTE_COLS if _IsInfoNull(valores[c])]
+
+
+def _LoadSkipTickers() -> set[str]:
+    """Tickers a pular, de data/anbima_skip_tickers.csv.
+
+    Um ticker por linha; linhas em branco e iniciadas por '#' são ignoradas;
+    texto após a primeira vírgula (motivo) é descartado. Arquivo opcional —
+    se não existir, retorna set vazio."""
+    skipPath = Path(cfg['paths']['dbFile']).parent / 'anbima_skip_tickers.csv'
+    skip: set[str] = set()
+    if not skipPath.exists():
+        return skip
+    for line in skipPath.read_text(encoding='utf-8').splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        tk = line.split(',')[0].strip().upper()
+        if tk:
+            skip.add(tk)
+    return skip
+
+SQL_VAR_CHUNK = 500  # limite seguro abaixo do teto de ~999 variáveis do SQLite
+
+
+def _GetTickersFromTradesRaw(conn: sqlite3.Connection, dates: list[str]) -> list[tuple[str, str | None]]:
+    """Tickers com trade (não cancelado) nas datas. cdInstrumento cru (pode ser NULL)."""
+    ph = ','.join('?' * len(dates))
+    rows = conn.execute(f"""
+        SELECT DISTINCT cdTicker, cdInstrumento FROM NegociosBrutos
+        WHERE dtNegocio IN ({ph}) AND cdSituacao != 'Cancelado'
+    """, dates).fetchall()
+    return [(r['cdTicker'], r['cdInstrumento']) for r in rows]
+
+
+def _GetTickersFromAnbima(conn: sqlite3.Connection, dates: list[str]) -> list[tuple[str, str | None]]:
+    """Tickers com taxa Anbima divulgada nas datas (AnbimaIndicativos.dtReferencia).
+
+    AnbimaIndicativos não tem coluna de instrumento — derivamos via LEFT JOIN
+    com InfoAtivos (cdInstrumento cru, pode ser NULL)."""
+    ph = ','.join('?' * len(dates))
+    rows = conn.execute(f"""
+        SELECT DISTINCT a.cdTicker, i.cdInstrumento
+        FROM AnbimaIndicativos a
+        LEFT JOIN InfoAtivos i ON i.cdTicker = a.cdTicker
+        WHERE a.dtReferencia IN ({ph})
+    """, dates).fetchall()
+    return [(r['cdTicker'], r['cdInstrumento']) for r in rows]
+
+
+def _GetTickersCompletos(conn: sqlite3.Connection, tickers: list[str]) -> set[str]:
+    """Set de tickers já completos: existem em InfoAtivos com todas as colunas
+    de INFO_REQUIRED_COLS não-nulas E têm pelo menos uma linha em FluxoAtivos.
+
+    Uma query por chunk de SQL_VAR_CHUNK tickers (evita o teto de variáveis)."""
+    if not tickers:
+        return set()
+    not_null = ' AND '.join(f'i.{c} IS NOT NULL' for c in INFO_REQUIRED_COLS)
+    completos: set[str] = set()
+    for i in range(0, len(tickers), SQL_VAR_CHUNK):
+        part = tickers[i:i + SQL_VAR_CHUNK]
+        ph = ','.join('?' * len(part))
+        rows = conn.execute(f"""
+            SELECT i.cdTicker FROM InfoAtivos i
+            WHERE i.cdTicker IN ({ph})
+              AND {not_null}
+              AND EXISTS (SELECT 1 FROM FluxoAtivos f WHERE f.cdTicker = i.cdTicker)
+        """, part).fetchall()
+        completos.update(r['cdTicker'] for r in rows)
+    return completos
+
+
+def _GetInvalidIndexadorTickers(json_dir: Path, tickers: list[str]) -> set[str]:
+    """Set de tickers cujo JSON de checkpoint já marca 'indexador_invalido' em
+    skip_reasons. Esses nunca são persistidos no DB (descartados de propósito),
+    então sempre apareceriam como 'faltando' — guarda contra re-scrape infinito."""
+    invalidos: set[str] = set()
+    for tk in tickers:
+        jp = json_dir / f'{tk}.json'
+        if not jp.exists():
+            continue
+        try:
+            payload = json.loads(jp.read_text(encoding='utf-8'))
+        except Exception:
+            continue
+        if 'indexador_invalido' in (payload.get('skip_reasons') or []):
+            invalidos.add(tk)
+    return invalidos
+
+
+# ── playwright: listagem ──────────────────────────────────────────────────────
+
+async def _GetListingPass(browser, api_key: str, ui_base: str, order: str, log) -> tuple[dict, int]:
+    """Um passe de listagem com a ordem dada. Retorna (collected, total_elements)."""
+    ctx  = await browser.new_context()
+    page = await ctx.new_page()
+
+    collected: dict[str, dict] = {}
+    state = {'total': 0}
+
+    async def route_listing(route):
+        url = re.sub(r'size=\d+', f'size={SIZE_LISTING}', route.request.url)
+        await route.continue_(url=url)
+
+    await page.route(re.compile(rf'web-bff/v1/{api_key}\?'), route_listing)
+
+    async def on_resp(resp):
+        if f'web-bff/v1/{api_key}?' in resp.url and 'view=caracteristicas' in resp.url:
+            try:
+                d = await resp.json()
+                state['total'] = d.get('total_elements', state['total'])
+                for item in d.get('content', []):
+                    code = item.get('codigo_b3')
+                    if code and code not in collected:
+                        collected[code] = item
+            except Exception:
+                pass
+
+    page.on('response', on_resp)
+
+    for api_page in range(MAX_LISTING_PAGES):
+        prev = len(collected)
+        try:
+            await page.goto(
+                f'{ui_base}?page={api_page}&field=codigo_b3&order={order}',
+                wait_until='domcontentloaded', timeout=30000
+            )
+            await page.wait_for_timeout(WAIT_MS)
+        except Exception as e:
+            log.warning(f'Listagem pag {api_page} ({order}): {e}')
+            break
+
+        if state['total'] and len(collected) >= state['total']:
+            break
+        if len(collected) == prev and api_page > 0:
+            break
+
+    await ctx.close()
+    return collected, state['total']
+
+
+async def _GetListingTickersWithFilter(browser, tipo_grupo: str, log) -> list[tuple[str, str]]:
+    """Captura listagem completa. Para DEB: dois passes (asc+desc) para superar cap ~3000/sessão."""
+    api_key = 'debentures' if tipo_grupo == 'DEB' else 'certificado-recebiveis'
+    ui_base = LISTING_UI[tipo_grupo]
+
+    collected: dict[str, dict] = {}
+    total_elements = 0
+
+    orders = ['asc', 'desc'] if tipo_grupo == 'DEB' else ['asc']
+    for order in orders:
+        pass_col, pass_total = await _GetListingPass(browser, api_key, ui_base, order, log)
+        total_elements = pass_total or total_elements
+        prev = len(collected)
+        collected.update(pass_col)
+        log.info(f'Listagem {tipo_grupo} ({order}): {len(pass_col)}/{pass_total} — acumulado {len(collected)}/{total_elements}')
+
+    result = []
+    descartados = 0
+    for code, item in collected.items():
+        idx = item.get('indexador', '')
+        if idx not in INDEXADORES_VALIDOS_LISTING:
+            descartados += 1
+            continue
+        result.append((code, _InferTipo(code, item.get('tipo_titulo'))))
+
+    log.info(f'Listagem {tipo_grupo}: {len(result)} válidos, {descartados} descartados por indexador')
+    return result
+
+
+# ── playwright: por ticker ────────────────────────────────────────────────────
+
+async def _ScrapeCaract(page, ticker: str, cdInstrumento: str, log) -> dict | None:
+    api  = TIPO_API[cdInstrumento]
+    site = TIPO_URL_SITE[cdInstrumento]
+    captured = {}
+
+    async def on_resp(resp):
+        url = resp.url
+        if f'web-bff/v1/{api}/{ticker}' in url and 'agenda' not in url:
+            try:
+                d = await resp.json()
+                if isinstance(d, dict) and d.get('codigo_b3'):
+                    captured.update(d)
+            except Exception:
+                pass
+
+    page.on('response', on_resp)
+    try:
+        await page.goto(
+            f'https://data.anbima.com.br/{site}/{ticker}/caracteristicas',
+            wait_until='domcontentloaded', timeout=30000
+        )
+        await page.wait_for_timeout(WAIT_MS)
+    except Exception as e:
+        log.warning(f'{ticker}: características timeout: {e}')
+    finally:
+        page.remove_listener('response', on_resp)
+
+    return captured if captured.get('codigo_b3') else None
+
+
+async def _ScrapeAgenda(page, ticker: str, cdInstrumento: str, log) -> list | None:
+    api  = TIPO_API[cdInstrumento]
+    site = TIPO_URL_SITE[cdInstrumento]
+    items: list = []
+    total_elements = 0
+    seen: set = set()
+
+    async def route_agenda(route):
+        # Apenas eleva o size ao maximo aceito (100); NAO forcar page (precisamos paginar).
+        url = re.sub(r'size=\d+', f'size={SIZE_AGENDA}', route.request.url)
+        await route.continue_(url=url)
+
+    async def on_resp(resp):
+        nonlocal total_elements
+        if f'web-bff/v1/{api}/{ticker}/agenda' in resp.url:
+            try:
+                d = await resp.json()
+                total_elements = d.get('total_elements', total_elements)
+                for item in d.get('content', []):
+                    key = (item['data_base'], item['evento'])
+                    if key not in seen:
+                        seen.add(key)
+                        items.append(item)
+            except Exception:
+                pass
+
+    pattern = re.compile(rf'web-bff/v1/{api}/{re.escape(ticker)}/agenda')
+    await page.route(pattern, route_agenda)
+    page.on('response', on_resp)
+    try:
+        # A API de agenda pagina (size capado em 100). Navega ?page=0,1,2... ate
+        # juntar total_elements; para por progresso (2 paginas seguidas sem novidade).
+        max_pg = MAX_AGENDA_PAGES
+        pg = 0
+        stale = 0
+        while pg < max_pg:
+            before = len(items)
+            await page.goto(
+                f'https://data.anbima.com.br/{site}/{ticker}/agenda?page={pg}',
+                wait_until='domcontentloaded', timeout=30000
+            )
+            await page.wait_for_timeout(WAIT_MS)
+            if total_elements:
+                needed = (total_elements + SIZE_AGENDA - 1) // SIZE_AGENDA
+                max_pg = min(MAX_AGENDA_PAGES, needed + 1)
+                if len(items) >= total_elements:
+                    break
+            stale = stale + 1 if len(items) == before else 0
+            if stale >= 2:   # 2 navegacoes seguidas sem nada novo -> para
+                break
+            pg += 1
+    except Exception as e:
+        log.warning(f'{ticker}: agenda timeout: {e}')
+    finally:
+        page.remove_listener('response', on_resp)
+        await page.unroute(pattern)
+
+    if total_elements and len(items) < total_elements:
+        log.warning(f'{ticker}: agenda incompleta {len(items)}/{total_elements}')
+
+    return items if items else None
+
+
+# ── worker ────────────────────────────────────────────────────────────────────
+
+async def _Worker(wid: int, queue: asyncio.Queue, browser, json_dir: Path,
+                  conn: sqlite3.Connection, lock: asyncio.Lock, stats: dict, args, log):
+    ctx  = await browser.new_context()
+    page = await ctx.new_page()
+
+    while True:
+        try:
+            ticker, cdInstrumento = queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+
+        json_path = json_dir / f'{ticker}.json'
+        try:
+            skip_reasons: list[str] = []
+            fluxo_rows = None
+            info = None
+            agenda = None
+
+            # ── 1. obter dados (cache ou scrape) ─────────────────────────────
+            if args.skip_scrape or (json_path.exists() and not args.force):
+                if not json_path.exists():
+                    log.warning(f'{ticker}: JSON não encontrado (--skip-scrape)')
+                    stats['erros'] += 1
+                    continue
+                payload       = json.loads(json_path.read_text(encoding='utf-8'))
+                info          = payload['info']
+                agenda        = payload.get('agenda')
+                skip_reasons  = payload.get('skip_reasons', [])
+                cdInstrumento = payload.get('cdInstrumento', cdInstrumento)
+                from_cache    = True
+
+            else:
+                # NAO apagar o checkpoint antes de raspar: se o scrape falhar,
+                # preservamos o JSON antigo. O write_text() abaixo sobrescreve so no sucesso.
+                info = await _ScrapeCaract(page, ticker, cdInstrumento, log)
+                if not info:
+                    log.warning(f'{ticker}: características não capturadas')
+                    stats['erros'] += 1
+                    continue
+
+                idx = (info.get('indexador') or {}).get('nome', '')
+                if idx and idx.upper() in INDEXADORES_INVALIDOS_TICKER:
+                    log.info(f'{ticker}: indexador "{idx}" inválido — descartado')
+                    skip_reasons = ['indexador_invalido']
+                else:
+                    agenda = await _ScrapeAgenda(page, ticker, cdInstrumento, log)
+                    if agenda is None:
+                        log.warning(f'{ticker}: agenda não capturada')
+                        stats['erros'] += 1
+                        continue
+                    fluxo_rows = _ProcessAgenda(ticker, agenda, log)
+                    if fluxo_rows is None:
+                        skip_reasons = ['evento_desconhecido']
+
+                json_path.write_text(
+                    json.dumps({'ticker': ticker, 'cdInstrumento': cdInstrumento,
+                                'info': info, 'agenda': agenda,
+                                'skip_reasons': skip_reasons},
+                               ensure_ascii=False, indent=2),
+                    encoding='utf-8'
+                )
+                stats['scrappados'] += 1
+                stats['novos_tickers'].append(ticker)
+                from_cache = False
+
+            # ── 2. indexador inválido: não persiste nada no DB ────────────────
+            if 'indexador_invalido' in skip_reasons:
+                stats['descartados'] += 1
+                continue
+
+            # ── 3. processar agenda em cache hit ─────────────────────────────
+            if from_cache and 'evento_desconhecido' not in skip_reasons:
+                fluxo_rows = _ProcessAgenda(ticker, agenda, log)
+                if fluxo_rows is None:
+                    skip_reasons = ['evento_desconhecido']
+                    payload['skip_reasons'] = skip_reasons
+                    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+
+            # ── 4. persistir no DB ────────────────────────────────────────────
+            async with lock:
+                _UpsertInfoAtivos(conn, ticker, cdInstrumento, info)
+                if fluxo_rows is not None:
+                    _UpsertFluxoAtivos(conn, fluxo_rows)
+                    stats['fluxo_ok'] += 1
+                else:
+                    stats['fluxo_skip'] += 1
+                    stats['anomalias'].append((ticker, skip_reasons[:]))
+                # reporta info faltante só para tickers EFETIVAMENTE raspados
+                # nesta run (não os que vieram só de cache)
+                if not from_cache:
+                    faltantes = _ComputeInfoFaltante(info, cdInstrumento)
+                    if faltantes:
+                        stats['info_faltante'].append((ticker, cdInstrumento, faltantes))
+                conn.commit()
+                stats['inseridos'] += 1
+
+            log.info(f'[W{wid}] {ticker} OK ({stats["inseridos"]} inseridos)'
+                     + (f' [skip: {skip_reasons}]' if skip_reasons else ''))
+
+        except Exception as e:
+            log.error(f'{ticker}: erro inesperado: {e}', exc_info=True)
+            stats['erros'] += 1
+        finally:
+            queue.task_done()
+
+    await ctx.close()
+
+
+# ── main ──────────────────────────────────────────────────────────────────────
+
+async def _Main():
+    args = _ParseArgs()
+    log  = get_logger('scrape_anbima_data_ativos')
+    conn = get_db()
+
+    json_dir = Path(cfg['paths']['anbimaDataRaw'])
+    json_dir.mkdir(parents=True, exist_ok=True)
+
+    stats = {'scrappados': 0, 'inseridos': 0, 'erros': 0,
+             'fluxo_ok': 0, 'fluxo_skip': 0, 'descartados': 0,
+             'skip_list': 0,        # tickers excluídos pela skip-list manual
+             'anomalias': [],       # [(ticker, [skip_reasons])]
+             'info_faltante': [],   # [(ticker, cdInstrumento, [campos_null])]
+             'novos_tickers': []}   # tickers novos scrappados nessa run
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=True)
+
+        # ── fase 1: coleta de tickers ─────────────────────────────────────────
+        tickers: list[tuple[str, str]] = []
+
+        if args.ticker:
+            tickers = [(args.ticker, _InferTipo(args.ticker))]
+
+        elif args.skip_scrape:
+            for jp in sorted(json_dir.glob('*.json')):
+                p = json.loads(jp.read_text(encoding='utf-8'))
+                tickers.append((p['ticker'], p['cdInstrumento']))
+
+        elif args.mode == 'full':
+            log.info('Modo full: coletando listagem Anbima Data...')
+            deb    = await _GetListingTickersWithFilter(browser, 'DEB', log)
+            cr     = await _GetListingTickersWithFilter(browser, 'CR',  log)
+            tickers = deb + cr
+
+        else:
+            dates = []
+            if args.date:
+                dates = [args.date]
+            elif args.start:
+                d   = date.fromisoformat(args.start)
+                end = date.fromisoformat(args.end) if args.end else d
+                while d <= end:
+                    dates.append(d.isoformat())
+                    d += timedelta(days=1)
+            else:
+                log.error('Especifique --mode full, --date, --start/--end ou --ticker')
+                await browser.close()
+                conn.close()
+                return
+
+            # ── 1. união de fontes: quem teve trade + quem teve taxa Anbima ────
+            from_trades = _GetTickersFromTradesRaw(conn, dates)
+            from_anbima = _GetTickersFromAnbima(conn, dates)
+            log.info(f'Candidatos brutos — NegociosBrutos: {len(from_trades)}, '
+                     f'AnbimaIndicativos: {len(from_anbima)}')
+
+            # dedup por ticker, preferindo cdInstrumento não-nulo
+            # (trades costuma ter; senão InfoAtivos; senão _InferTipo no final)
+            merged: dict[str, str | None] = {}
+            for tk, inst in from_trades:
+                if tk not in merged or (merged[tk] is None and inst is not None):
+                    merged[tk] = inst
+            for tk, inst in from_anbima:
+                if tk not in merged or (merged[tk] is None and inst is not None):
+                    merged[tk] = inst
+            candidatos = [(tk, inst or _InferTipo(tk)) for tk, inst in merged.items()]
+            log.info(f'Candidatos após dedup por ticker: {len(candidatos)}')
+
+            # ── 2. guarda contra re-scrape infinito: indexador_invalido ───────
+            invalidos = _GetInvalidIndexadorTickers(json_dir, [tk for tk, _ in candidatos])
+            if invalidos:
+                candidatos = [(tk, inst) for tk, inst in candidatos if tk not in invalidos]
+                log.info(f'Excluídos por indexador_invalido (cache JSON): '
+                         f'{len(invalidos)} — restam {len(candidatos)}')
+
+            # ── 3. filtro de completude (a menos que --force) ─────────────────
+            if args.force:
+                tickers = candidatos
+                log.info(f'--force: ignora completude — fila: {len(tickers)}')
+            else:
+                completos = _GetTickersCompletos(conn, [tk for tk, _ in candidatos])
+                tickers = [(tk, inst) for tk, inst in candidatos if tk not in completos]
+                log.info(f'Completos na base: {len(completos)} — '
+                         f'fila (info faltando): {len(tickers)}')
+
+        # ── exclusão pela skip-list manual (INCONDICIONAL, mesmo com --force) ──
+        skipTickers = _LoadSkipTickers()
+        if skipTickers:
+            antes   = len(tickers)
+            tickers = [(tk, inst) for tk, inst in tickers if tk.upper() not in skipTickers]
+            excluidos = antes - len(tickers)
+            stats['skip_list'] = excluidos
+            if excluidos:
+                log.info(f'Excluídos pela skip-list ({len(skipTickers)} tickers no arquivo): '
+                         f'{excluidos} — restam {len(tickers)}')
+
+        if args.limit:
+            tickers = tickers[:args.limit]
+
+        log.info(f'Tickers a processar: {len(tickers)}')
+        if not tickers:
+            log.info('Nada a fazer.')
+            await browser.close()
+            conn.close()
+            return
+
+        # ── fase 2: scraping paralelo ─────────────────────────────────────────
+        queue = asyncio.Queue()
+        for t in tickers:
+            queue.put_nowait(t)
+
+        n_workers = 1 if args.skip_scrape else args.workers
+        lock      = asyncio.Lock()
+
+        await asyncio.gather(*[
+            _Worker(i, queue, browser, json_dir, conn, lock, stats, args, log)
+            for i in range(n_workers)
+        ])
+
+        await browser.close()
+
+    conn.close()
+    log.info(f'Concluído: {stats}')
+
+    lines = [
+        f"Tickers inseridos/atualizados : {stats['inseridos']}",
+        f"Scrappados (novos)            : {stats['scrappados']}",
+        f"Descartados (indexador)       : {stats['descartados']}",
+        f"Pulados (skip-list)           : {stats['skip_list']}",
+        f"FluxoAtivos OK                : {stats['fluxo_ok']}",
+        f"FluxoAtivos skip (evento desc): {stats['fluxo_skip']}",
+        f"Erros                         : {stats['erros']}",
+    ]
+
+    if stats['info_faltante']:
+        lines.append(f"\nAtivos com info faltante após scrape "
+                     f"({len(stats['info_faltante'])} tickers):")
+        for tk, inst, campos in stats['info_faltante']:
+            lines.append(f"  {tk} ({inst}): {', '.join(campos)}")
+
+    if stats['anomalias']:
+        lines.append(f"\nAnomalias — FluxoAtivos descartado ({len(stats['anomalias'])} tickers):")
+        for tk, reasons in stats['anomalias']:
+            lines.append(f"  {tk}: {', '.join(reasons)}")
+
+    if stats['novos_tickers']:
+        lines.append(f"\nNovos tickers scrappados ({len(stats['novos_tickers'])}):")
+        lines.append('  ' + ', '.join(stats['novos_tickers']))
+
+    body = '\n'.join(lines)
+    send_completion_email('scrape_anbima_data_ativos', stats['erros'] == 0, body, log)
+
+
+def Main():
+    asyncio.run(_Main())
+
+
+if __name__ == '__main__':
+    Main()

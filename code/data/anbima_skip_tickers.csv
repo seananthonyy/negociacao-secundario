@@ -1,0 +1,3 @@
+# Tickers a pular no scrape_anbima_data_ativos — um por linha. Anbima não fornece dados completos.
+# Formato: TICKER[,motivo]
+# Linhas em branco e linhas iniciadas por '#' são ignoradas. Só a primeira coluna (ticker) é lida.

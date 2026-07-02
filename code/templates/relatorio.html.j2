@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Relatório Crédito Privado — {{ dtLiquidacaoFmt }}</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      font-size: 13px;
+      color: #1a1a2e;
+      background: #f4f6f9;
+      padding: 24px;
+    }
+
+    /* ===== Cabeçalho ===== */
+    .header {
+      background: #fff;
+      border-radius: 8px;
+      padding: 24px 32px;
+      margin-bottom: 20px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.08);
+    }
+
+    .header-top {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .titulo {
+      font-size: 22px;
+      font-weight: 700;
+      color: #0a1628;
+      flex: 1 1 auto;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 4px 14px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .6px;
+      text-transform: uppercase;
+      flex-shrink: 0;
+    }
+    .badge-previa     { background: #fff3cd; color: #856404; border: 1px solid #ffc107; }
+    .badge-definitivo { background: #d1e7dd; color: #0a3622; border: 1px solid #198754; }
+
+    .header-meta {
+      margin-top: 10px;
+      color: #6c757d;
+      font-size: 12px;
+    }
+
+    .header-stats {
+      display: flex;
+      gap: 32px;
+      margin-top: 14px;
+      flex-wrap: wrap;
+      align-items: flex-start;
+    }
+
+    .stat-box { text-align: center; }
+    .stat-box .stat-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      color: #8a94a6;
+      margin-bottom: 2px;
+    }
+    .stat-box .stat-value {
+      font-size: 18px;
+      font-weight: 700;
+      color: #0a1628;
+    }
+
+    .resumo-chips {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-top: 14px;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      background: #f1f3f9;
+      border: 1px solid #d9dfe9;
+      border-radius: 6px;
+      padding: 5px 12px;
+      font-size: 12px;
+      color: #2d3748;
+    }
+    .chip b { color: #0a1628; font-weight: 700; }
+
+    /* ===== Aviso sem dados ===== */
+    .no-data {
+      background: #fff8e1;
+      border: 1px solid #ffe082;
+      border-radius: 6px;
+      padding: 20px 24px;
+      color: #6d4c00;
+      font-size: 14px;
+      text-align: center;
+    }
+
+    /* ===== Card da tabela ===== */
+    .card {
+      background: #fff;
+      border-radius: 8px;
+      padding: 20px 24px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.08);
+    }
+
+    /* ===== Barra de filtros ===== */
+    .filter-bar {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .filter-select,
+    .filter-input {
+      padding: 6px 12px;
+      border: 1px solid #ced4da;
+      border-radius: 4px;
+      font-size: 12px;
+      color: #495057;
+      outline: none;
+      background: #fff;
+      transition: border-color .15s;
+    }
+    .filter-select { cursor: pointer; min-width: 150px; }
+    .filter-input  { flex: 1 1 220px; max-width: 360px; }
+    .filter-select:focus,
+    .filter-input:focus { border-color: #0d6efd; }
+
+    .filter-label {
+      font-size: 11px;
+      font-weight: 700;
+      color: #6c757d;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+    }
+    .filter-checks { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .filter-checks .chk {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 12px;
+      color: #495057;
+      cursor: pointer;
+      border: 1px solid #ced4da;
+      border-radius: 4px;
+      padding: 5px 10px;
+      background: #fff;
+      user-select: none;
+      transition: border-color .15s, background .15s;
+    }
+    .filter-checks .chk:hover { border-color: #0d6efd; }
+    .filter-checks .chk input { cursor: pointer; margin: 0; }
+    .filter-checks .chk:has(input:checked) { background: #e8f0fe; border-color: #0d6efd; color: #0a1628; font-weight: 600; }
+
+    /* ===== Tabela ===== */
+    .table-wrap { overflow-x: auto; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+
+    thead {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+    }
+
+    thead tr {
+      background: #0a1628;
+      color: #f8f9fa;
+    }
+
+    thead th {
+      padding: 9px 10px;
+      text-align: right;
+      white-space: nowrap;
+      font-weight: 600;
+      letter-spacing: .3px;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    thead th:nth-child(-n+5) { text-align: left; }
+    thead th:hover { background: #1a2a4a; }
+
+    thead th .sort-arrow { display: inline-block; margin-left: 4px; opacity: .4; font-size: 10px; }
+    thead th.sort-asc  .sort-arrow::after { content: " ▲"; opacity: 1; }
+    thead th.sort-desc .sort-arrow::after { content: " ▼"; opacity: 1; }
+    thead th:not(.sort-asc):not(.sort-desc) .sort-arrow::after { content: " ⇅"; }
+
+    tbody tr { border-bottom: 1px solid #e9ecef; }
+    tbody tr:nth-child(even) { background: #f8f9fc; }
+    tbody tr:hover { background: #e8f0fe; }
+
+    td {
+      padding: 7px 10px;
+      text-align: right;
+      white-space: nowrap;
+      color: #2d3748;
+    }
+
+    td:nth-child(-n+5) { text-align: left; }
+
+    td.ticker-cell {
+      font-weight: 600;
+      color: #0a1628;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    }
+
+    td.tipo-cell {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .4px;
+      color: #5a6a8a;
+    }
+
+    td.null-cell { color: #adb5bd; font-style: italic; }
+
+    tfoot tr { background: #e9ecef; font-weight: 700; }
+    tfoot td { padding: 8px 10px; border-top: 2px solid #ced4da; text-align: right; }
+    tfoot td:nth-child(-n+5) { text-align: left; }
+
+    /* ===== Linha de filtros por coluna ===== */
+    thead tr.filter-row th {
+      background: #f0f2f7;
+      padding: 4px 6px;
+    }
+
+    thead tr.filter-row th input {
+      width: 100%;
+      padding: 3px 6px;
+      font-size: 11px;
+      border: 1px solid #ced4da;
+      border-radius: 3px;
+      color: #495057;
+      background: #fff;
+      outline: none;
+      box-sizing: border-box;
+    }
+    thead tr.filter-row th input:focus { border-color: #0d6efd; }
+
+    /* ===== Footer ===== */
+    .footer {
+      text-align: center;
+      color: #adb5bd;
+      font-size: 11px;
+      margin-top: 24px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <div class="header-top">
+      <div class="titulo">Relatório de Crédito Privado &mdash; {{ dtLiquidacaoFmt }}</div>
+      <span class="badge badge-{{ modo }}">
+        {%- if modo == 'previa' %}Prévia{% else %}Definitivo{% endif -%}
+      </span>
+    </div>
+    <div class="header-meta">Gerado em {{ dtGeracao }}</div>
+
+    {%- if nrTickersGeral > 0 %}
+    <div class="header-stats">
+      <div class="stat-box">
+        <div class="stat-label">Tickers</div>
+        <div class="stat-value">{{ nrTickersGeral | intbr }}</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">Negócios</div>
+        <div class="stat-value">{{ nrTradesGeral | intbr }}</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">Volume Total</div>
+        <div class="stat-value">R$ {{ (vrVolumeTotalGeral / 1000000) | br(2) }} MM</div>
+      </div>
+    </div>
+
+    <div class="resumo-chips">
+      {%- for r in resumoSecoes %}
+      <span class="chip">
+        <b>{{ r.cdTipo }}</b>
+        {{ r.nrTickers }} ticker(s) &middot;
+        R$ {{ (r.vrVolume / 1000000) | br(2) }} MM &middot;
+        {{ r.nrTrades }} neg.
+      </span>
+      {%- endfor %}
+    </div>
+    {%- endif %}
+  </div>
+
+  {%- if nrTickersGeral == 0 %}
+  <div class="no-data">
+    Nenhum trade encontrado para dtLiquidacao {{ dtLiquidacao }}.
+  </div>
+
+  {%- else %}
+
+  <div class="card">
+    <div class="filter-bar">
+      <select id="filtro-tipo" class="filter-select" onchange="filterAll()">
+        <option value="">Todos os tipos</option>
+        {%- for instr in instrumentosDisponiveis %}
+        <option value="{{ instr }}">{{ instr }}</option>
+        {%- endfor %}
+      </select>
+      {%- if indexadoresDisponiveis %}
+      <span class="filter-label">Indexador:</span>
+      <div class="filter-checks" id="filtro-indexador">
+        {%- for idx in indexadoresDisponiveis %}
+        <label class="chk"><input type="checkbox" value="{{ idx }}" onchange="filterAll()">{{ idx }}</label>
+        {%- endfor %}
+      </div>
+      {%- endif %}
+      <input
+        type="text"
+        id="filtro-texto"
+        class="filter-input"
+        placeholder="Buscar ticker, emissor, indexador..."
+        oninput="filterAll()"
+      >
+    </div>
+
+    <div class="table-wrap">
+      <table id="tabela-principal">
+        <thead>
+          <tr>
+            <th onclick="sortTable(this,0)">Tipo<span class="sort-arrow"></span></th>
+            <th onclick="sortTable(this,1)">Ticker<span class="sort-arrow"></span></th>
+            <th onclick="sortTable(this,2)">Emissor<span class="sort-arrow"></span></th>
+            <th onclick="sortTable(this,3)">Indexador<span class="sort-arrow"></span></th>
+            <th onclick="sortTable(this,4)">Referência<span class="sort-arrow"></span></th>
+            <th onclick="sortTable(this,5)" data-type="num">Duration<span class="sort-arrow"></span></th>
+            <th onclick="sortTable(this,6)">Vencimento<span class="sort-arrow"></span></th>
+            <th onclick="sortTable(this,7)" data-type="num">Neg.<span class="sort-arrow"></span></th>
+            <th onclick="sortTable(this,8)" data-type="num">Qtd<span class="sort-arrow"></span></th>
+            <th onclick="sortTable(this,9)" data-type="num">Volume (R$M)<span class="sort-arrow"></span></th>
+            <th onclick="sortTable(this,10)" data-type="num">Taxa Méd. (%)<span class="sort-arrow"></span></th>
+            <th onclick="sortTable(this,11)" data-type="num">Spread Méd. (bps)<span class="sort-arrow"></span></th>
+            <th onclick="sortTable(this,12)" data-type="num">Taxa Anbima (%)<span class="sort-arrow"></span></th>
+            <th onclick="sortTable(this,13)" data-type="num">Spread Anbima (bps)<span class="sort-arrow"></span></th>
+          </tr>
+          <tr class="filter-row">
+            <th><input type="text" placeholder="Tipo"           oninput="filterAll()"></th>
+            <th><input type="text" placeholder="Ticker"         oninput="filterAll()"></th>
+            <th><input type="text" placeholder="Emissor"        oninput="filterAll()"></th>
+            <th><input type="text" placeholder="Indexador"      oninput="filterAll()"></th>
+            <th><input type="text" placeholder="Referência"     oninput="filterAll()"></th>
+            <th><input type="text" placeholder="Duration"       oninput="filterAll()"></th>
+            <th><input type="text" placeholder="Vencimento"     oninput="filterAll()"></th>
+            <th><input type="text" placeholder="Neg."           oninput="filterAll()"></th>
+            <th><input type="text" placeholder="Qtd"            oninput="filterAll()"></th>
+            <th><input type="text" placeholder="Volume"         oninput="filterAll()"></th>
+            <th><input type="text" placeholder="Taxa"           oninput="filterAll()"></th>
+            <th><input type="text" placeholder="Spread"         oninput="filterAll()"></th>
+            <th><input type="text" placeholder="Taxa Anbima"    oninput="filterAll()"></th>
+            <th><input type="text" placeholder="Spread Anbima"  oninput="filterAll()"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {%- for t in tickers %}
+          <tr data-tipo="{{ t.cdTipo }}" data-indexador="{{ t.cdIndexador or '' }}">
+            <td class="tipo-cell">{{ t.cdTipo }}</td>
+            <td class="ticker-cell">{{ t.cdTicker }}</td>
+            <td>{{ t.cdEmissor or "—" }}</td>
+            <td>{{ t.cdIndexador or "—" }}</td>
+            {%- if t.cdReferencia %}
+            <td>{{ t.cdReferencia }}</td>
+            {%- else %}
+            <td class="null-cell">—</td>
+            {%- endif %}
+            {%- if t.vrDuration is not none %}
+            <td data-sort-val="{{ t.vrDuration }}">{{ t.vrDuration | br(2) }}</td>
+            {%- else %}
+            <td class="null-cell" data-sort-val="">—</td>
+            {%- endif %}
+            {%- if t.dtVencimento %}
+            <td data-sort-val="{{ t.dtVencimento }}">{{ t.dtVencimento | mesbr }}</td>
+            {%- else %}
+            <td class="null-cell" data-sort-val="">—</td>
+            {%- endif %}
+            <td data-sort-val="{{ t.nrTrades }}">{{ t.nrTrades | intbr }}</td>
+            <td data-sort-val="{{ t.vrQuantidadeTotal }}">{{ t.vrQuantidadeTotal | intbr }}</td>
+            <td data-sort-val="{{ t.vrVolumeTotal / 1000000 }}">{{ (t.vrVolumeTotal / 1000000) | br(2) }}</td>
+            {%- if t.vrTaxaMedia is not none %}
+            <td data-sort-val="{{ t.vrTaxaMedia }}">{{ t.vrTaxaMedia | br(4) }}</td>
+            {%- else %}
+            <td class="null-cell" data-sort-val="">—</td>
+            {%- endif %}
+            {%- if t.vrSpreadOverMedio is not none %}
+            {%- set spreadOverDisp = t.vrSpreadOverMedio if t.cdIndexador == '%CDI' else t.vrSpreadOverMedio * 100 %}
+            <td data-sort-val="{{ spreadOverDisp }}">{{ spreadOverDisp | br(2) }}</td>
+            {%- else %}
+            <td class="null-cell" data-sort-val="">—</td>
+            {%- endif %}
+            {%- if t.vrTaxaAnbima is not none %}
+            <td data-sort-val="{{ t.vrTaxaAnbima }}">{{ t.vrTaxaAnbima | br(4) }}</td>
+            {%- else %}
+            <td class="null-cell" data-sort-val="">—</td>
+            {%- endif %}
+            {%- if t.vrSpreadAnbima is not none %}
+            {%- set spreadAnbimaDisp = t.vrSpreadAnbima if t.cdIndexador == '%CDI' else t.vrSpreadAnbima * 100 %}
+            <td data-sort-val="{{ spreadAnbimaDisp }}">{{ spreadAnbimaDisp | br(2) }}</td>
+            {%- else %}
+            <td class="null-cell" data-sort-val="">—</td>
+            {%- endif %}
+          </tr>
+          {%- endfor %}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td colspan="5">Total Geral</td>
+            <td></td>
+            <td></td>
+            <td>{{ nrTradesGeral | intbr }}</td>
+            <td>{{ vrQuantidadeTotalGeral | intbr }}</td>
+            <td>{{ (vrVolumeTotalGeral / 1000000) | br(2) }}</td>
+            <td colspan="4"></td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  </div>
+
+  {%- endif %}
+
+  <div class="footer">
+    Relatório de Negociação Secundária de Crédito Privado &mdash; gerado em {{ dtGeracao }}
+  </div>
+
+  <script>
+    function sortTable(th, colIdx) {
+      var table = th.closest("table");
+      var tbody = table.querySelector("tbody");
+      var rows  = Array.from(tbody.querySelectorAll("tr"));
+      var isNum = th.dataset.type === "num";
+      var asc   = !th.classList.contains("sort-asc");
+
+      table.querySelectorAll("thead th").forEach(function(h) {
+        h.classList.remove("sort-asc", "sort-desc");
+      });
+      th.classList.add(asc ? "sort-asc" : "sort-desc");
+
+      rows.sort(function(a, b) {
+        var cellA = a.cells[colIdx];
+        var cellB = b.cells[colIdx];
+        // data-sort-val tem o valor cru (float pt format ou ISO date); fallback para textContent
+        var va = (cellA && cellA.dataset.sortVal !== undefined && cellA.dataset.sortVal !== "")
+                   ? cellA.dataset.sortVal
+                   : (cellA ? cellA.textContent.trim() : "");
+        var vb = (cellB && cellB.dataset.sortVal !== undefined && cellB.dataset.sortVal !== "")
+                   ? cellB.dataset.sortVal
+                   : (cellB ? cellB.textContent.trim() : "");
+
+        if (isNum) {
+          var na = parseFloat(va);
+          var nb = parseFloat(vb);
+          var nullA = isNaN(na) || va === "";
+          var nullB = isNaN(nb) || vb === "";
+          if (nullA && nullB) return 0;
+          if (nullA) return 1;
+          if (nullB) return -1;
+          return asc ? na - nb : nb - na;
+        } else {
+          if (!va && !vb) return 0;
+          if (!va) return 1;
+          if (!vb) return -1;
+          return asc ? va.localeCompare(vb, "pt-BR") : vb.localeCompare(va, "pt-BR");
+        }
+      });
+
+      rows.forEach(function(r) { tbody.appendChild(r); });
+    }
+
+    function filterAll() {
+      var tipo  = document.getElementById("filtro-tipo").value;
+      var idxChecks = document.querySelectorAll("#filtro-indexador input:checked");
+      var indexadores = Array.from(idxChecks).map(function(c) { return c.value; });
+      var texto = document.getElementById("filtro-texto").value.toLowerCase().trim();
+
+      // Filtros por coluna: array de strings (vazio = sem filtro)
+      var colInputs = document.querySelectorAll("#tabela-principal thead tr.filter-row th input");
+      var colFilters = Array.from(colInputs).map(function(inp) {
+        return inp.value.toLowerCase().trim();
+      });
+      var hasColFilter = colFilters.some(function(v) { return v !== ""; });
+
+      var rows = document.querySelectorAll("#tabela-principal tbody tr");
+      rows.forEach(function(row) {
+        // Filtro global: tipo dropdown
+        if (tipo && (row.dataset.tipo || "") !== tipo) {
+          row.style.display = "none"; return;
+        }
+        // Filtro global: indexador (multi-seleção; vazio = todos)
+        if (indexadores.length && indexadores.indexOf(row.dataset.indexador || "") === -1) {
+          row.style.display = "none"; return;
+        }
+        // Filtro global: texto livre
+        if (texto && !row.textContent.toLowerCase().includes(texto)) {
+          row.style.display = "none"; return;
+        }
+        // Filtros por coluna
+        if (hasColFilter) {
+          for (var i = 0; i < colFilters.length; i++) {
+            if (!colFilters[i]) continue;
+            var cell = row.cells[i];
+            var cellText = cell ? cell.textContent.toLowerCase() : "";
+            if (!cellText.includes(colFilters[i])) {
+              row.style.display = "none"; return;
+            }
+          }
+        }
+        row.style.display = "";
+      });
+    }
+  </script>
+
+</body>
+</html>
