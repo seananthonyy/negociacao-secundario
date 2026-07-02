@@ -170,20 +170,9 @@ CREATE TABLE IF NOT EXISTS AnbimaIndicativos (
 CREATE INDEX IF NOT EXISTS idxAnbimaDtReferencia ON AnbimaIndicativos(dtReferencia);
 ```
 
-### MtmBloomberg
+### MtmBloomberg (REMOVIDA — 02/07/2026)
 
-Tabela read-only, populada externamente (fora do escopo dos scripts automáticos). Contém as taxas e durations das referências de mercado: NTN-Bs e contratos de DI Futuro, extraídos do Bloomberg. Os tickers seguem a convenção Bloomberg ("NTN-B 32", "DI1F31"). É consultada pelo `calc_spread_over.py` para obter a taxa da referência mais recente disponível. Ver [[08 - Match de Referencia]].
-
-```sql
-CREATE TABLE IF NOT EXISTS MtmBloomberg (
-    cdTicker        TEXT NOT NULL,
-    dtMtmBloomberg  TEXT NOT NULL,
-    vrTaxa          REAL NOT NULL,
-    vrDuration      REAL NOT NULL,
-    PRIMARY KEY (cdTicker, dtMtmBloomberg)
-);
-CREATE INDEX IF NOT EXISTS idxMtmDtMtmBloomberg ON MtmBloomberg(dtMtmBloomberg);
-```
+Tabela do plano original (referências de mercado via Bloomberg). **Nunca foi usada:** a implementação (F9) passou a usar `MtmAnbima`, e a `MtmBloomberg` ficou como schema morto (0 linhas, 0 referências no código). DDL e índice removidos de `lib/db.py` e dropados do `trades.db`.
 
 ### InfoAtivosAnbima
 
@@ -276,7 +265,7 @@ Com a conexão read-only (ver [[10 - Scripts/libs]] → `get_readonly_connection
 
 ### MtmAnbima
 
-Alternativa ao `MtmBloomberg`, populada automaticamente por scripts locais. Consolida dois tipos de referência:
+Populada automaticamente por scripts locais (F13 `scrape_anbima_ntnb`, F14 `scrape_b3_curva_di`). Consolida dois tipos de referência:
 
 - **NTN-B** (`cdTicker = "NTN-B 26"`, `"NTN-B 32"`, etc.) — taxa indicativa do mercado secundário de títulos públicos, publicada diariamente pela Anbima. Referência para bonds indexados a IPCA.
 - **DI Futuro** (`cdTicker = "DI1F26"`, etc.) — taxa da curva pré × DI, publicada diariamente pela B3. Referência para bonds PREFIXADOS.

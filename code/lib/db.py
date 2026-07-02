@@ -82,16 +82,6 @@ CREATE TABLE IF NOT EXISTS AnbimaIndicativos (
 );
 CREATE INDEX IF NOT EXISTS idxAnbimaDtReferencia ON AnbimaIndicativos(dtReferencia);
 
--- ===== MtmBloomberg =====
-CREATE TABLE IF NOT EXISTS MtmBloomberg (
-    cdTicker        TEXT NOT NULL,
-    dtMtmBloomberg  TEXT NOT NULL,
-    vrTaxa          REAL NOT NULL,
-    vrDuration      REAL NOT NULL,
-    PRIMARY KEY (cdTicker, dtMtmBloomberg)
-);
-CREATE INDEX IF NOT EXISTS idxMtmDtMtmBloomberg ON MtmBloomberg(dtMtmBloomberg);
-
 -- ===== MtmAnbima =====
 CREATE TABLE IF NOT EXISTS MtmAnbima (
     cdTicker     TEXT NOT NULL,
@@ -207,7 +197,6 @@ def bootstrap(conn: sqlite3.Connection) -> None:
         "ALTER TABLE InfoAtivos ADD COLUMN vrTaxaEmissao REAL NULL",
         "ALTER TABLE InfoAtivos ADD COLUMN vrVNE REAL NULL",
         "ALTER TABLE InfoAtivos ADD COLUMN dtInicioRentabilidade TEXT NULL",
-        "ALTER TABLE NegociosProcessados ADD COLUMN vrSpreadOverAnbima REAL NULL",
         "ALTER TABLE InfoAtivos ADD COLUMN cdISIN              TEXT NULL",
         "ALTER TABLE InfoAtivos ADD COLUMN vrQuantidadeEmissao REAL NULL",
         "ALTER TABLE InfoAtivos ADD COLUMN dtEmissao           TEXT NULL",

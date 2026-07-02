@@ -80,18 +80,16 @@ print('B3:', bool(get_secret('b3CalcToken')), '| FIkey:', bool(get_secret('fiana
 ```
 Tudo `True` = segredos resolvendo.
 
-## Passo 5 — Testar cada fluxo isolado (antes de montar a base)
-Abra `pipeline.ipynb` **a partir de `code\`**. Rode a célula de setup e depois a **Seção A um bloco por vez** (boletim, Anbima deb, CRI/CRA, FI Analytics, Anbima Data, NTN-B, curva DI, Outstanding, e os de cálculo). Cada bloco mostra `[OK]`/`[FALHA]`.
-**Se algo der `[FALHA]`, capture o erro** — costuma ser proxy, Playwright (`playwright install`), login ou (Outstanding) Bloomberg. Ajuste antes de seguir.
+## Passo 5 — Montar a base (`setup_inicial.ipynb`, bloco a bloco)
+Abra **`setup_inicial.ipynb`** a partir de `code\`. Rode a célula **Config** (calcula as janelas máximas de cada fonte automaticamente) e depois **um bloco por vez**:
+- **Blocos 1–8 (scraping):** Anbima Data (completa) · FI Analytics · deb · NTN-B · curva DI · CRI/CRA · boletim · Outstanding. Cada bloco já vem na **janela máxima** que a fonte entrega. Se um falhar (proxy, Playwright, login, Bloomberg), **o erro fica só nele** — corrija e **re-rode só esse bloco**.
+- **Blocos 9–14 (cálculo):** taxa → filtrar → spread Anbima → match → spread over → relatório. Idempotentes (re-rodar pula o já feito).
 
-## Passo 6 — Montar a base (setup)
-Depois que a Seção A estiver OK, rode a **Seção C**: ajuste `INICIO_BOLETIM` (~4 meses atrás) e `OUTSTANDING = True` (há Bloomberg no banco), execute. Demorado; tolerante a falha (traz o que cada fonte tiver + resumo no fim). Equivale a:
-```powershell
-python scripts\run_diario.py --setup --inicio-boletim 2026-03-02 --outstanding
-```
+Ajuste `INICIO_BOLETIM`/`OUTSTANDING` na célula Config se quiser (no banco, deixe `OUTSTANDING` implícito rodando o bloco 8).
 
-## Passo 7 — (Opcional) Agendar a rotina diária
-Task Scheduler chamando `python.exe <raiz>\code\scripts\run_diario.py` (reprocessa os últimos 5 dias úteis e regenera o relatório). Sem agendar: rode a Seção B do notebook na mão.
+## Passo 6 — (Opcional) Agendar a rotina diária
+Use o **`pipeline.ipynb`** (Seção B) no dia a dia, ou agende no Task Scheduler:
+`python.exe <raiz>\code\scripts\run_diario.py` — reprocessa os últimos 5 dias úteis e regenera o relatório.
 
 ---
 

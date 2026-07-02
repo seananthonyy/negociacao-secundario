@@ -152,12 +152,11 @@ Sem duplicação de lógica: notebook e `run_diario` chamam as mesmas funções 
   - `run_dia(X)` — cadeia dos 13 passos para a liquidação X (raspa X **e** X-1u → Anbima por dtNegocio).
   - `run_ultimos_n(n=5)` — rotina diária: passos globais 1×, per-date em laço, relatório no fim.
   - `run_setup(inicio_boletim, dias_indicativas=130, dias_curva_di=20, dias_cricra=5, rodar_outstanding=False)` — bootstrap (§5). Tolerante a falha.
-- **`code/pipeline.ipynb`** — **interface principal** (rodar a partir de `code/`). 3 seções: **A)** testar cada fluxo isolado (1 bloco por script — validar o ambiente do banco antes do setup); **B)** rotina diária (`N_DIAS` parametrizável); **C)** setup em massa (`INICIO_BOLETIM`). Nada aborta o notebook — cada passo mostra `[OK]`/`[FALHA]`.
-- **`code/scripts/run_diario.py`** — **opcional**, só para o **Task Scheduler** (o Agendador não roda `.ipynb`, só `.py`). Reaproveita o `pipeline_core`. Aceita parâmetro (`--last N`, default 5) — nada fixo.
-  - `run_diario.py --last 5` → últimos 5 dias úteis.
-  - `run_diario.py --setup --inicio-boletim YYYY-MM-DD [--outstanding]` → bootstrap.
+- **`code/setup_inicial.ipynb`** — **bootstrap (roda 1 vez)**. 1 bloco por fonte (janelas máximas embutidas: Anbima Data completa; deb/NTN-B ~4 meses; DI ~20 pregões; CRI/CRA ~5 pregões; boletim desde `INI_BOLETIM`) + blocos de cálculo. Se um bloco falha, o erro fica **só nele** → corrige e re-roda só ele. Idempotente.
+- **`code/pipeline.ipynb`** — **uso diário** (rodar a partir de `code/`). **A)** testar/rodar um fluxo isolado (1 bloco por função, para debug); **B)** rotina diária (`N_DIAS` parametrizável) + rodar um dia único.
+- **`code/scripts/run_diario.py`** — **opcional**, só para o **Task Scheduler** (o Agendador não roda `.ipynb`, só `.py`). `--last N` (default 5); `--setup --inicio-boletim YYYY-MM-DD [--outstanding]`.
 
-**Fluxo recomendado no banco:** rodar a Seção A do notebook fluxo a fluxo (isolar erros do ambiente) → corrigir o que quebrar → rodar a Seção C (setup) → depois agendar o `run_diario.py` (ou usar a Seção B na mão).
+**Fluxo no banco:** `setup_inicial.ipynb` bloco a bloco (isolar erros do ambiente + montar a base) → depois dia a dia via `pipeline.ipynb` Seção B ou agendando o `run_diario.py`.
 
 Validado (02/07): datas corretas (pula fim de semana/feriado), notebook e scripts compilam, `check_no_secrets` verde.
 

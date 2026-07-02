@@ -57,7 +57,7 @@ conn.close()
 | `bootstrap(conn)` | Executa o DDL completo via `executescript`, dropa índice redundante e roda `ANALYZE` na primeira vez. Idempotente por `IF NOT EXISTS`. |
 | `get_db(db_path=None)` | Helper principal: chama `get_connection` + `bootstrap`. É o único ponto de entrada que os scripts usam. |
 
-**Tabelas criadas:** ver lista completa e DDL em [[04 - Banco de Dados]] (`NegociosBrutos`, `NegociosProcessados`, `InfoAtivos`, `AnbimaIndicativos`, `MtmAnbima`, `FluxoAtivos`, `Outstanding`, `MtmBloomberg`).
+**Tabelas criadas:** ver lista completa e DDL em [[04 - Banco de Dados]] (`NegociosBrutos`, `NegociosProcessados`, `InfoAtivos`, `AnbimaIndicativos`, `MtmAnbima`, `FluxoAtivos`, `Outstanding`). (`MtmBloomberg` removida em 02/07 — era schema morto.)
 
 **Pragmas ativados:** `journal_mode=WAL` (leitura concorrente), `foreign_keys=ON` e, no `get_connection`, `synchronous=NORMAL`. Além disso, o bloco `_PRAGMAS_PERF` é aplicado em **toda** conexão (read-write e read-only).
 

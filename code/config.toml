@@ -38,17 +38,12 @@ pfMinPctCdi             = 2.0    # %CDI: threshold em unidades %CDI (ex: 100 →
 
 [calc]
 timeoutSeconds  = 15
-retries         = 2
-
-[spread]
-maxDiasFallbackCurva = 5
 
 [alerta]
 volumeMinSemTaxa = 5_000_000
 
 [email]
 ativo          = true
-assuntoPrefixo = "[credito-privado]"
 
 [scrape.b3]
 baseUrl              = "https://www.b3.com.br/pt_br/market-data-e-indices/servicos-de-dados/market-data/consultas/boletim-diario/boletim-diario-do-mercado/"
