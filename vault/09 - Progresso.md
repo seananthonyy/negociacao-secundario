@@ -212,6 +212,11 @@ gerar_relatorio_credito       ← análise histórica (todos os pregões, sem ar
 
 ## Última atualização
 
+2026-07-02 (noite) — **Otimização do NTN-B + reorder do setup para Run All overnight.**
+- **`scrape_anbima_ntnb`: duration em PARALELO + skip.** As chamadas de duration (I/O-bound, 2 por NTN-B) agora rodam em `ThreadPoolExecutor` com concorrência limitada (`--workers`, default **4** — conservador p/ não bloquear a API FI Analytics). Novo **skip do já-calculado**: tickers que já têm `vrDuration` na data não re-chamam a API (retomada após falha vira segundos); `--force` recalcula. Validado: paralelo 15 papéis 0-sem-duration ~10s (vs ~30s sequencial); skip instantâneo; UPSERT usa `COALESCE` (skip passa `None`, preserva duration). `pc.ntnb` usa o default 4.
+- **`setup_inicial.ipynb` reordenado:** **Anbima Data (o mais pesado) movido para o ÚLTIMO bloco de scraping** (ainda antes do cálculo, que depende do `InfoAtivos` que ele preenche). Motivo: rodar as fontes leves/env-sensíveis (login, proxy, Playwright) primeiro num Run All overnight; o pesado por último. Nota de Run All + célula de conferência já presentes.
+- **Curva DI (pendente, não feito):** match de vértice é **exato, sem interpolação** — proposto adicionar interpolação linear por dias úteis p/ eliminar "sem match du" (aguarda OK do usuário).
+
 2026-07-02 (fim do dia) — **Repo PÚBLICO + transferência em 1 arquivo. Fase 2 fechada.**
 - **Repositório `github.com/seananthonyy/negociacao-secundario` tornado PÚBLICO.** Varredura de segurança em **todo o histórico** (8 commits): 0 segredos reais, 0 emails internos, 0 arquivos proibidos (`.env`/`destinatarios.py`/`*.db` nunca commitados). `check_no_secrets` verde.
 - **Transferência para o banco em 1 download:** `bundle_banco.py` (raiz, auto-extraível, ~1 MB) — baixa 1 arquivo, roda `python bundle_banco.py`, recria a árvore (~80 arquivos). Gerado por `make_bundle.py` (regerar após mudanças). Não empacota `.env`/`destinatarios.py`/`*.db`.

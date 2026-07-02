@@ -11,15 +11,20 @@ Coluna F (idx 5): Tx. Indicativas (float, % a.a.)
 
 Duration em cascata: FI Analytics → B3 Calculator → NULL
 
+Duration em paralelo (ThreadPool, --workers, default 4) com skip do que já está
+na base (--force ignora o skip). Retomada após falha é rápida.
+
 CLI:
     python scripts/scrape_anbima_ntnb.py --date 2026-06-05
-    python scripts/scrape_anbima_ntnb.py --start 2026-06-01 --end 2026-06-05
+    python scripts/scrape_anbima_ntnb.py --start 2026-06-01 --end 2026-06-05 --workers 4
+    python scripts/scrape_anbima_ntnb.py --date 2026-06-05 --force   # recalcula duration
 """
 
 import argparse
 import json
 import sys
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -292,7 +297,7 @@ def _ParseSheet(sh, wb, dtRef: date, log) -> list[tuple]:
     return rows
 
 
-def _ProcessDate(conn, d: date, log) -> tuple[int, int]:
+def _ProcessDate(conn, d: date, log, workers: int, force: bool = False) -> tuple[int, int]:
     content = _DownloadXls(d, log)
     if content is None:
         return 0, 0
@@ -316,21 +321,39 @@ def _ProcessDate(conn, d: date, log) -> tuple[int, int]:
         log.warning("ntnb: %s — nenhuma NTN-B extraida da aba", d)
         return 0, 0
 
-    log.info("ntnb: %s — %d NTN-Bs extraidas, buscando duration...", d, len(rows))
+    # Skip do já-calculado: tickers que já têm vrDuration nesta data não chamam
+    # a API de novo (retomada rápida após falha). --force ignora o skip.
+    dtRefStr0 = d.isoformat()
+    jaFeitos: set = set()
+    if not force:
+        jaFeitos = {r[0] for r in conn.execute(
+            "SELECT cdTicker FROM MtmAnbima WHERE dtReferencia = ? AND vrDuration IS NOT NULL",
+            (dtRefStr0,)).fetchall()}
 
-    upsertRows: list[tuple] = []
-    nSemDuration = 0
+    log.info("ntnb: %s — %d NTN-Bs (%d ja c/ duration, %d workers)...",
+             d, len(rows), len(jaFeitos), workers)
 
-    for cdTicker, dtVenc, dtRefStr, vrTaxa in rows:
-        vrDuration = _GetDuration(dtVenc, d, vrTaxa, log)
-        if vrDuration is None:
-            nSemDuration += 1
-        upsertRows.append((cdTicker, dtRefStr, vrTaxa, vrDuration))
+    # Duration via API é I/O-bound: paraleliza com concorrência limitada por
+    # `workers` (não sobrecarregar/bloquear a API). O UPSERT (COALESCE) preserva
+    # a duration existente quando o valor vem None. UPSERT sequencial após o pool.
+    def _ComputeRow(item: tuple) -> tuple:
+        cdTicker, dtVenc, dtRefStr, vrTaxa = item
+        if cdTicker in jaFeitos:
+            return (cdTicker, dtRefStr, vrTaxa, None, True)      # pulado
+        return (cdTicker, dtRefStr, vrTaxa, _GetDuration(dtVenc, d, vrTaxa, log), False)
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        results = list(executor.map(_ComputeRow, rows))
+
+    upsertRows   = [(r[0], r[1], r[2], r[3]) for r in results]
+    nSkip        = sum(1 for r in results if r[4])
+    nSemDuration = sum(1 for r in results if not r[4] and r[3] is None)
 
     conn.executemany(_SQL_UPSERT, upsertRows)
     conn.commit()
 
-    log.info("ntnb: %s — %d upserts, %d sem duration", d, len(upsertRows), nSemDuration)
+    log.info("ntnb: %s — %d upserts (%d pulados, %d sem duration)",
+             d, len(upsertRows), nSkip, nSemDuration)
     return len(upsertRows), nSemDuration
 
 
@@ -346,6 +369,11 @@ def _ParseArgs() -> argparse.Namespace:
     grp.add_argument("--date",  metavar="YYYY-MM-DD", help="Data unica de publicacao Anbima.")
     grp.add_argument("--start", metavar="YYYY-MM-DD", help="Inicio do intervalo.")
     parser.add_argument("--end", metavar="YYYY-MM-DD", help="Fim do intervalo (requer --start).")
+    parser.add_argument("--workers", type=int, default=4,
+                        help="Chamadas de duration em paralelo por data (default 4; "
+                             "reduza p/ 1-2 se a API bloquear, aumente se estiver de boa).")
+    parser.add_argument("--force", action="store_true",
+                        help="Recalcula a duration mesmo se ja existir na base (ignora o skip).")
     args = parser.parse_args()
     if args.start and not args.end:
         parser.error("--end e obrigatorio com --start.")
@@ -400,7 +428,7 @@ def Main() -> None:
         log.info("ntnb: processando %d data(s): %s ... %s", len(datas), datas[0], datas[-1])
 
         for d in datas:
-            nUp, nSem = _ProcessDate(conn, d, log)
+            nUp, nSem = _ProcessDate(conn, d, log, args.workers, args.force)
             results.append((d.isoformat(), nUp, nSem))
 
         summary = _BuildSummary(results)

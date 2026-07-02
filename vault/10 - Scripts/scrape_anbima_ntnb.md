@@ -77,6 +77,8 @@ Rodar uma vez por dia útil, junto com os scrapers Anbima de debêntures/CRI/CRA
 
 ## Obtenção de Duration — Cascata FI Analytics → B3 Calculator
 
+**Paralelismo (02/07/2026):** as chamadas de duration (I/O-bound, 2 HTTP por NTN-B) rodam em `ThreadPoolExecutor` por data, com concorrência limitada por `--workers` (default **4**, conservador p/ não bloquear a API). **Skip:** tickers que já têm `vrDuration` na data não re-chamam a API (`--force` ignora o skip); o UPSERT usa `COALESCE`, então o skip passa `None` e preserva a duration existente. UPSERT sequencial após o pool. Retomada após falha é rápida.
+
 Para cada NTN-B lida do XLS, o script busca a duration em cascata:
 
 ### Primário: FI Analytics (`/gov/govbondcalculator`)
