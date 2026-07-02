@@ -2,6 +2,8 @@
 
 Este projeto gera relatórios HTML diários de negócios de crédito privado brasileiro (Debêntures, CRIs, CRAs) consolidando dados da B3, FI Analytics e Anbima.
 
+> **Instalando/migrando para o PC do banco?** Se o usuário pedir "me diga o que fazer" / "como instalo isto", siga o runbook **`INSTALACAO_BANCO.md`** (raiz) — passo a passo de pastas, dependências, segredos, teste de fluxos e montagem da base. Contexto da migração em `vault/13 - Migracao Banco.md`.
+
 ## Documento mestre
 
 **Toda decisão de projeto está em `PLANEJAMENTO_v5.md` na raiz.** Leia esse arquivo antes de qualquer ação. É a fonte da verdade.
