@@ -8,19 +8,18 @@ Lógica compartilhada de orquestração do pipeline. Usado por:
 Cada passo é executado como subprocesso do CLI que já existe em scripts/ — não
 duplica lógica e mantém cada script independente (com seu próprio log/email).
 
-Datas seguem a lógica de liquidação X / X-1u de [[11 - Pipeline de Execucao]]:
-para a liquidação X, os negócios vêm das pontas X-1u (D+1) e X (D+0).
+**Fonte única do CLI:** cada fluxo tem UMA função (boletim, anbima_deb, ntnb,
+calc_taxa, ...). O comando de linha de cada script fica escrito num único lugar
+(essa função). Se o CLI de um script mudar, altera-se só a função aqui — o
+notebook e as rotinas (run_dia/run_ultimos_n/run_setup) chamam essas funções.
 
-Funções principais:
-  ultimos_n_dias_uteis(n)   -> últimos n dias úteis (cronológico)
-  dia_util_anterior(d)      -> X-1u
-  run_dia(X)                -> cadeia dos 13 passos para a liquidação X
-  run_ultimos_n(n)          -> rotina diária (n dias úteis) + relatório no fim
-  run_setup(...)            -> bootstrap inicial (histórico largo por fonte)
+Datas seguem a lógica de liquidação X / X-1u de [[11 - Pipeline de Execucao]].
 
 Uso típico:
-    from pipeline_core import run_ultimos_n, run_setup
-    run_ultimos_n(5)
+    import pipeline_core as pc
+    pc.boletim(Xant, X)          # testar um fluxo isolado
+    pc.run_ultimos_n(5)          # rotina diária
+    pc.run_setup("2026-03-02")   # bootstrap inicial
 """
 
 import csv
@@ -126,6 +125,76 @@ def _resumo(resultados: list[tuple[str, bool]]) -> None:
         print(f"\n{len(falhas)} passo(s) com falha — revisar acima.")
 
 
+def _date_args(inicio, fim):
+    """('--date', d) para data única; ('--start', i, '--end', f) para intervalo."""
+    return ("--date", inicio) if fim is None else ("--start", inicio, "--end", fim)
+
+
+# ---------------------------------------------------------------------------
+# Fluxos individuais — 1 função por script. O CLI vive SÓ aqui.
+# (mude aqui se o CLI de um script mudar; notebook e rotinas chamam estas funções)
+# ---------------------------------------------------------------------------
+
+def boletim(inicio, fim, resultados=None) -> bool:
+    """Boletim B3 (negócios). Na diária: inicio=X-1u, fim=X."""
+    return run_step("scrape_b3_boletim", "--start", inicio, "--end", fim, resultados=resultados)
+
+def anbima_deb(inicio, fim=None, resultados=None) -> bool:
+    """Anbima debêntures (taxa indicativa). Aceita data única ou intervalo."""
+    return run_step("scrape_anbima_debentures", *_date_args(inicio, fim), resultados=resultados)
+
+def anbima_cricra(inicio, fim=None, resultados=None) -> bool:
+    """Anbima CRI/CRA (taxa indicativa) — Playwright. Data única ou intervalo."""
+    return run_step("scrape_anbima_cri_cra", *_date_args(inicio, fim), resultados=resultados)
+
+def fianalytics(resultados=None) -> bool:
+    """FI Analytics planilha (características) — Playwright + login. Sem data."""
+    return run_step("scrape_fianalytics_planilha", resultados=resultados)
+
+def anbima_data(inicio=None, fim=None, full=False, resultados=None) -> bool:
+    """Anbima Data (características + fluxo) — Playwright.
+    full=True → `--mode full` (universo completo, setup); senão intervalo incremental."""
+    if full:
+        return run_step("scrape_anbima_data_ativos", "--mode", "full", resultados=resultados)
+    return run_step("scrape_anbima_data_ativos", *_date_args(inicio, fim), resultados=resultados)
+
+def ntnb(inicio, fim=None, resultados=None) -> bool:
+    """Anbima NTN-B (MtM). Na diária: intervalo X-1u..X."""
+    return run_step("scrape_anbima_ntnb", *_date_args(inicio, fim), resultados=resultados)
+
+def curva_di(d, resultados=None) -> bool:
+    """Curva DI B3 (MtM). Só aceita data única — rodar 1× por pregão."""
+    return run_step("scrape_b3_curva_di", "--date", d, resultados=resultados)
+
+def outstanding(inicio, fim=None, resultados=None) -> bool:
+    """Outstanding via Bloomberg — SÓ NO BANCO. Data única ou intervalo."""
+    return run_step("scrape_outstanding_bloomberg", *_date_args(inicio, fim), resultados=resultados)
+
+def calc_taxa(X, resultados=None) -> bool:
+    """Calcula taxa por trade (cascata FI Analytics → B3). ANTES de filtrar."""
+    return run_step("calc_taxa_negocios", "--date", X, resultados=resultados)
+
+def filtrar(X, resultados=None) -> bool:
+    """Classifica VALIDO / FUNDO / BROKER / PF."""
+    return run_step("filtrar_trades", "--date", X, resultados=resultados)
+
+def spread_anbima(d, resultados=None) -> bool:
+    """Spread Anbima das indicativas na data d."""
+    return run_step("calc_spread_anbima", "--date", d, resultados=resultados)
+
+def match_ref(resultados=None) -> bool:
+    """Preenche cdReferencia faltante (global, sem data). ANTES de spread_over."""
+    return run_step("match_referencias", resultados=resultados)
+
+def spread_over(X, resultados=None) -> bool:
+    """Spread dos trades vs MtM (casado por dtNegocio)."""
+    return run_step("calc_spread_over", "--date", X, resultados=resultados)
+
+def relatorio(resultados=None) -> bool:
+    """Regenera o relatório HTML (toda a base)."""
+    return run_step("gerar_relatorio_credito", resultados=resultados)
+
+
 # ---------------------------------------------------------------------------
 # Cadeia diária — liquidação X
 # ---------------------------------------------------------------------------
@@ -133,79 +202,69 @@ def _resumo(resultados: list[tuple[str, bool]]) -> None:
 def run_dia(X: date | str, resultados: list | None = None,
             gerar_relatorio: bool = True) -> list:
     """Cadeia completa dos 13 passos para a liquidação X (ver [[11 - Pipeline de Execucao]]).
-    Raspa Anbima deb/CRI/CRA de X E X-1u (forward-compatible com Anbima por dtNegocio).
-    Passe gerar_relatorio=False ao rodar em loop (rodar o relatório 1× no fim)."""
+    Raspa Anbima deb/CRI/CRA de X E X-1u (Anbima casado por dtNegocio).
+    Passe gerar_relatorio=False ao rodar em loop (relatório 1× no fim)."""
     res = resultados if resultados is not None else []
-    X = date.fromisoformat(X) if isinstance(X, str) else X
     Xant = dia_util_anterior(X)
 
-    # --- scraping (rede) ---
-    run_step("scrape_b3_boletim", "--start", Xant, "--end", X, resultados=res)
+    boletim(Xant, X, resultados=res)
     for d in (Xant, X):
-        run_step("scrape_anbima_debentures", "--date", d, resultados=res)
-        run_step("scrape_anbima_cri_cra", "--date", d, resultados=res)
-    run_step("scrape_fianalytics_planilha", resultados=res)
-    run_step("scrape_anbima_data_ativos", "--start", Xant, "--end", X, resultados=res)
-    run_step("scrape_anbima_ntnb", "--start", Xant, "--end", X, resultados=res)
+        anbima_deb(d, resultados=res)
+        anbima_cricra(d, resultados=res)
+    fianalytics(resultados=res)
+    anbima_data(Xant, X, resultados=res)
+    ntnb(Xant, X, resultados=res)
     for d in (Xant, X):
-        run_step("scrape_b3_curva_di", "--date", d, resultados=res)
+        curva_di(d, resultados=res)
 
-    # --- cálculo (local) ---
-    run_step("calc_taxa_negocios", "--date", X, resultados=res)
-    run_step("filtrar_trades", "--date", X, resultados=res)
+    calc_taxa(X, resultados=res)
+    filtrar(X, resultados=res)
     for d in (Xant, X):
-        run_step("calc_spread_anbima", "--date", d, resultados=res)
-    run_step("match_referencias", resultados=res)
-    run_step("calc_spread_over", "--date", X, resultados=res)
+        spread_anbima(d, resultados=res)
+    match_ref(resultados=res)
+    spread_over(X, resultados=res)
 
     if gerar_relatorio:
-        run_step("gerar_relatorio_credito", resultados=res)
+        relatorio(resultados=res)
         _resumo(res)
     return res
 
 
 def run_ultimos_n(n: int = 5) -> list:
-    """Rotina diária: roda a cadeia para os últimos n dias úteis (para pegar
-    alterações retroativas) e gera o relatório 1× no fim.
-
-    Passos globais (fianalytics, anbima_data_ativos, match_referencias) rodam
-    uma vez sobre a janela inteira, não por dia."""
+    """Rotina diária: roda a cadeia para os últimos n dias úteis (pega alterações
+    retroativas) e gera o relatório 1× no fim. Passos globais (fianalytics,
+    anbima_data, match_ref) rodam uma vez sobre a janela inteira."""
     res: list[tuple[str, bool]] = []
     dias = ultimos_n_dias_uteis(n)
     Xant0 = dia_util_anterior(dias[0])
     print(f"Rotina diária — liquidações {dias[0]} .. {dias[-1]} (n={n}); X-1u da 1ª = {Xant0}")
 
-    # 1. Global (uma vez)
-    run_step("scrape_fianalytics_planilha", resultados=res)
+    fianalytics(resultados=res)
 
-    # 2. Scraping per-date (boletim, Anbima indicativas, MtM)
     for X in dias:
         Xant = dia_util_anterior(X)
-        run_step("scrape_b3_boletim", "--start", Xant, "--end", X, resultados=res)
-        run_step("scrape_anbima_debentures", "--date", X, resultados=res)
-        run_step("scrape_anbima_cri_cra", "--date", X, resultados=res)
-        run_step("scrape_anbima_ntnb", "--start", Xant, "--end", X, resultados=res)
-        run_step("scrape_b3_curva_di", "--date", X, resultados=res)
+        boletim(Xant, X, resultados=res)
+        anbima_deb(X, resultados=res)
+        anbima_cricra(X, resultados=res)
+        ntnb(Xant, X, resultados=res)
+        curva_di(X, resultados=res)
     # a ponta X-1u da 1ª liquidação (fora do laço acima)
-    run_step("scrape_anbima_debentures", "--date", Xant0, resultados=res)
-    run_step("scrape_anbima_cri_cra", "--date", Xant0, resultados=res)
-    run_step("scrape_b3_curva_di", "--date", Xant0, resultados=res)
+    anbima_deb(Xant0, resultados=res)
+    anbima_cricra(Xant0, resultados=res)
+    curva_di(Xant0, resultados=res)
 
-    # 3. Características/fluxo dos ativos da janela (incremental)
-    run_step("scrape_anbima_data_ativos", "--start", Xant0, "--end", dias[-1], resultados=res)
+    anbima_data(Xant0, dias[-1], resultados=res)
 
-    # 4. Cálculo por dia
     for X in dias:
-        run_step("calc_taxa_negocios", "--date", X, resultados=res)
-        run_step("filtrar_trades", "--date", X, resultados=res)
-        run_step("calc_spread_anbima", "--date", X, resultados=res)
-    run_step("calc_spread_anbima", "--date", Xant0, resultados=res)
-    run_step("match_referencias", resultados=res)
+        calc_taxa(X, resultados=res)
+        filtrar(X, resultados=res)
+        spread_anbima(X, resultados=res)
+    spread_anbima(Xant0, resultados=res)
+    match_ref(resultados=res)
     for X in dias:
-        run_step("calc_spread_over", "--date", X, resultados=res)
+        spread_over(X, resultados=res)
 
-    # 5. Relatório (uma vez, toda a base)
-    run_step("gerar_relatorio_credito", resultados=res)
+    relatorio(resultados=res)
     _resumo(res)
     return res
 
@@ -221,9 +280,10 @@ def run_setup(inicio_boletim: date | str,
               rodar_outstanding: bool = False) -> list:
     """Bootstrap da base no banco (roda 1 vez). Raspa o histórico largo que cada
     fonte ainda entrega e roda a cadeia de cálculo sobre todos os pregões da
-    janela do boletim. Ver [[13 - Migracao Banco]] §5.
+    janela do boletim. Tolerante a falha (segue em frente; resumo no fim).
+    Ver [[13 - Migracao Banco]] §5.
 
-      inicio_boletim   : 1º dia do boletim B3 a raspar (define a janela do relatório)
+      inicio_boletim   : 1º dia do boletim B3 (define a janela do relatório)
       dias_indicativas : janela (dias corridos) de deb/NTN-B — fonte guarda ~4 meses
       dias_curva_di    : nº de pregões da curva DI B3 (guarda ~20)
       dias_cricra      : nº de pregões de CRI/CRA (portal guarda ~5)
@@ -233,34 +293,27 @@ def run_setup(inicio_boletim: date | str,
     hoje = date.today()
     ini_ind = hoje - timedelta(days=dias_indicativas)
 
-    # 1. Anbima Data — universo completo (características + fluxo). O passo mais pesado.
-    run_step("scrape_anbima_data_ativos", "--mode", "full", resultados=res)
-    # 2. FI Analytics — snapshot de características
-    run_step("scrape_fianalytics_planilha", resultados=res)
-    # 3. Indicativas deb + NTN-B (~4 meses)
-    run_step("scrape_anbima_debentures", "--start", ini_ind, "--end", hoje, resultados=res)
-    run_step("scrape_anbima_ntnb", "--start", ini_ind, "--end", hoje, resultados=res)
-    # 4. Curva DI (~20 pregões) e CRI/CRA (~5 pregões) — por pregão
+    anbima_data(full=True, resultados=res)                 # universo completo (o mais pesado)
+    fianalytics(resultados=res)
+    anbima_deb(ini_ind, hoje, resultados=res)              # ~4 meses
+    ntnb(ini_ind, hoje, resultados=res)                    # ~4 meses
     for d in ultimos_n_dias_uteis(dias_curva_di, ref=hoje):
-        run_step("scrape_b3_curva_di", "--date", d, resultados=res)
+        curva_di(d, resultados=res)                        # ~20 pregões
     for d in ultimos_n_dias_uteis(dias_cricra, ref=hoje):
-        run_step("scrape_anbima_cri_cra", "--date", d, resultados=res)
-    # 5. Boletim B3 (janela escolhida)
-    run_step("scrape_b3_boletim", "--start", inicio_boletim, "--end", hoje, resultados=res)
-    # 6. Outstanding (só no banco)
+        anbima_cricra(d, resultados=res)                   # ~5 pregões
+    boletim(inicio_boletim, hoje, resultados=res)          # janela escolhida
     if rodar_outstanding:
-        run_step("scrape_outstanding_bloomberg", "--start", inicio_boletim, "--end", hoje, resultados=res)
+        outstanding(inicio_boletim, hoje, resultados=res)  # só no banco
 
-    # 7. Cadeia de cálculo sobre cada liquidação da janela
     dias = dias_uteis_entre(inicio_boletim, hoje)
     for X in dias:
-        run_step("calc_taxa_negocios", "--date", X, resultados=res)
-        run_step("filtrar_trades", "--date", X, resultados=res)
-        run_step("calc_spread_anbima", "--date", X, resultados=res)
-    run_step("match_referencias", resultados=res)
+        calc_taxa(X, resultados=res)
+        filtrar(X, resultados=res)
+        spread_anbima(X, resultados=res)
+    match_ref(resultados=res)
     for X in dias:
-        run_step("calc_spread_over", "--date", X, resultados=res)
+        spread_over(X, resultados=res)
 
-    run_step("gerar_relatorio_credito", resultados=res)
+    relatorio(resultados=res)
     _resumo(res)
     return res

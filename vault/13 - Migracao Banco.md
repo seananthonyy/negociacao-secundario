@@ -148,9 +148,10 @@ Sem duplicação de lógica: notebook e `run_diario` chamam as mesmas funções 
 - **`code/scripts/pipeline_core.py`** — lógica compartilhada:
   - `ultimos_n_dias_uteis(n)`, `dia_util_anterior(d)`, `dias_uteis_entre(ini,fim)` — dias úteis via `feriados_anbima.csv` (1263 feriados).
   - `run_step(script, *args)` — roda 1 CLI, retorna ok/falha, acumula resumo.
-  - `run_dia(X)` — cadeia dos 13 passos para a liquidação X (raspa X **e** X-1u → forward-compatible com Anbima por dtNegocio).
+  - **Funções por fluxo** (`boletim`, `anbima_deb`, `anbima_cricra`, `fianalytics`, `anbima_data`, `ntnb`, `curva_di`, `outstanding`, `calc_taxa`, `filtrar`, `spread_anbima`, `match_ref`, `spread_over`, `relatorio`) — **o CLI de cada script vive só aqui**. Mudou o argumento de um script? Edita 1 função; notebook e rotinas se ajustam sozinhos.
+  - `run_dia(X)` — cadeia dos 13 passos para a liquidação X (raspa X **e** X-1u → Anbima por dtNegocio).
   - `run_ultimos_n(n=5)` — rotina diária: passos globais 1×, per-date em laço, relatório no fim.
-  - `run_setup(inicio_boletim, dias_indicativas=130, dias_curva_di=20, dias_cricra=5, rodar_outstanding=False)` — bootstrap (§5).
+  - `run_setup(inicio_boletim, dias_indicativas=130, dias_curva_di=20, dias_cricra=5, rodar_outstanding=False)` — bootstrap (§5). Tolerante a falha.
 - **`code/pipeline.ipynb`** — **interface principal** (rodar a partir de `code/`). 3 seções: **A)** testar cada fluxo isolado (1 bloco por script — validar o ambiente do banco antes do setup); **B)** rotina diária (`N_DIAS` parametrizável); **C)** setup em massa (`INICIO_BOLETIM`). Nada aborta o notebook — cada passo mostra `[OK]`/`[FALHA]`.
 - **`code/scripts/run_diario.py`** — **opcional**, só para o **Task Scheduler** (o Agendador não roda `.ipynb`, só `.py`). Reaproveita o `pipeline_core`. Aceita parâmetro (`--last N`, default 5) — nada fixo.
   - `run_diario.py --last 5` → últimos 5 dias úteis.
