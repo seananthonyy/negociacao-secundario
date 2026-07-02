@@ -212,6 +212,11 @@ gerar_relatorio_credito       ← análise histórica (todos os pregões, sem ar
 
 ## Última atualização
 
+2026-07-02 (fim do dia) — **Repo PÚBLICO + transferência em 1 arquivo. Fase 2 fechada.**
+- **Repositório `github.com/seananthonyy/negociacao-secundario` tornado PÚBLICO.** Varredura de segurança em **todo o histórico** (8 commits): 0 segredos reais, 0 emails internos, 0 arquivos proibidos (`.env`/`destinatarios.py`/`*.db` nunca commitados). `check_no_secrets` verde.
+- **Transferência para o banco em 1 download:** `bundle_banco.py` (raiz, auto-extraível, ~1 MB) — baixa 1 arquivo, roda `python bundle_banco.py`, recria a árvore (~80 arquivos). Gerado por `make_bundle.py` (regerar após mudanças). Não empacota `.env`/`destinatarios.py`/`*.db`.
+- **Migração fechada do lado do PC pessoal.** Falta só executar no banco (runbook `INSTALACAO_BANCO.md`). Ver [[13 - Migracao Banco]].
+
 2026-07-02 (tarde) — **Limpeza de schema morto + setup reformulado em notebook próprio.**
 - **Removido schema/config morto** (auditoria de tabelas, colunas e config keys — não só imports): tabela **`MtmBloomberg`** (0 usos, sobra do plano; F9 usou `MtmAnbima`) — DDL/índice fora do `lib/db.py` e dropada do `trades.db`; coluna **`vrSpreadOverAnbima`** (migração órfã, 0 usos) removida do `db.py` e dropada; config keys órfãs **`[calc] retries`**, **`[spread] maxDiasFallbackCurva`** (seção inteira) e **`[email] assuntoPrefixo`** removidas do `config.toml`. `vrVNE`/`dtInicioRentabilidade`/etc. **mantidas** (populadas pelo `scrape_anbima_data_ativos`, contrato do add-in). Bootstrap valida limpo (7 tabelas).
 - **Setup reformulado** (pedido do usuário): novo **`code/setup_inicial.ipynb`** separado do diário, **1 bloco por fonte** com as **janelas máximas embutidas** (Anbima Data completa; deb/NTN-B ~4 meses; DI ~20 pregões; CRI/CRA ~5 pregões; boletim desde `INI_BOLETIM`) + blocos de cálculo idempotentes — se um bloco falha, isola e re-roda só ele. O `pipeline.ipynb` ficou só com o **uso diário** (Seção A debug + Seção B rotina); a antiga Seção C (setup) saiu.

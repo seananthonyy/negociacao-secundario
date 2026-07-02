@@ -6,7 +6,7 @@
 
 Início do planejamento: 01/07/2026.
 
-**Repositório:** `https://github.com/seananthonyy/negociacao-secundario` — **privado** por enquanto (o usuário torna público manualmente quando decidir). Push inicial em 02/07/2026 (78 arquivos, `check_no_secrets` verde). Antes de **cada** push futuro: rodar `python code/scripts/check_no_secrets.py`.
+**Repositório:** `https://github.com/seananthonyy/negociacao-secundario` — **PÚBLICO** (desde 02/07/2026). Segurança verificada em todo o histórico: 0 segredos, 0 emails internos, 0 arquivos proibidos (`.env`/`destinatarios.py`/`*.db` nunca commitados). Antes de **cada** push futuro: rodar `python code/scripts/check_no_secrets.py` (trava anti-vazamento).
 
 ---
 
@@ -46,6 +46,8 @@ Início do planejamento: 01/07/2026.
 | `data/logs/`, `relatorios/`, `anbima_data_raw/`, `api_samples/`, `debug/` | ❌ | regeneráveis; no `.gitignore` |
 
 **Manifesto do download inicial (núcleo curado):** todo o `code/` publicável + `CLAUDE.md` + `PLANEJAMENTO_v5.md` + notas do vault: [[01 - O Que Faz]], [[02 - Como Rodar]], [[04 - Banco de Dados]], [[11 - Pipeline de Execucao]], [[98 - Backlog]], [[99 - Credenciais e Links]] e esta nota. Outras notas só se precisar.
+
+**Transferência rápida (recomendada) — 1 download:** em vez de baixar arquivo a arquivo, baixar só **`bundle_banco.py`** (raiz, ~1 MB, botão "Download raw file") e rodar `python bundle_banco.py` na pasta raiz → recria os ~80 arquivos de uma vez. Não traz `.env`/`destinatarios.py`/`*.db` (ignorados). Regerar após mudanças: `python make_bundle.py`. Ver `INSTALACAO_BANCO.md` Passo 0.
 
 ---
 
@@ -179,14 +181,15 @@ Validado (02/07): datas corretas (pula fim de semana/feriado), notebook e script
 
 - **Fase 0 — limpeza + infra de segredos: ✅ CONCLUÍDA (01/07/2026).** Ver [[09 - Progresso]] e [[12 - Auditoria pre-migracao]]. Resumo: `dump_api_samples.py` deletado; 8 imports mortos + 2 renames + docstring corrigida; `[env]`/`get_secret`/`get_email_list`/proxy em `lib/config.py`; call sites migrados; `destinatarios.py`/`.example`; `.gitignore` blindado; `check_no_secrets.py`; segredos scrubbed de `PLANEJAMENTO_v5.md` e `Progresso.md`. Local roda sem env vars (validado). Tudo compila, 0 imports mortos, verificador verde.
 - **Fase 1 — ✅ COMPLETA (02/07/2026):** orquestração (`pipeline_core.py`, `pipeline.ipynb`, `run_diario.py` — §8) + Anbima por `dtNegocio` (§7). Tudo validado.
-- **Fase 2 — repo criado e pushado (privado): ✅ (02/07/2026).** Falta: (a) usuário tornar público quando decidir; (b) baixar no banco e instalar (§9).
+- **Fase 2 — ✅ COMPLETA (02/07/2026): repo PÚBLICO + transferência pronta.** Push feito, histórico verificado limpo, `bundle_banco.py` para transferência em 1 download. Do lado do PC pessoal, a migração está fechada.
+- **Limpeza de schema morto (02/07):** removidos `MtmBloomberg` (tabela), `vrSpreadOverAnbima` (coluna) e config keys `[calc].retries`/`[spread]`/`[email].assuntoPrefixo`. Ver [[04 - Banco de Dados]] e [[09 - Progresso]].
+- **Setup em notebook próprio (`setup_inicial.ipynb`, 1 bloco/fonte, Run All-friendly)** e `pipeline.ipynb` só diário — ver §8.
 
-## 11. Pendências abertas (todas no banco)
+## 11. Pendências abertas (todas no banco — o usuário executa)
 
-- Baixar os 37 arquivos de `code/` (+ docs) 1-a-1 do GitHub; recriar dotfiles.
+Runbook completo: `INSTALACAO_BANCO.md`.
+- Baixar `bundle_banco.py` → `python bundle_banco.py` (recria a árvore).
 - Setar variáveis da conta + criar `destinatarios.py` + `pip install` + `playwright install`.
-- Definir a janela do boletim B3 no `--setup` (parâmetro `inicio_boletim`) e rodar o bootstrap.
-- Agendar `run_diario.py` no Task Scheduler.
-- Testar Playwright incremental (`scrape_anbima_data_ativos`) e `scrape_outstanding_bloomberg` (Bloomberg) no banco.
-- Testar modo incremental do `scrape_anbima_data_ativos` com Playwright **no banco** (pendência antiga — ver [[98 - Backlog]]).
-- `scrape_outstanding_bloomberg` só testável no banco.
+- Rodar `setup_inicial.ipynb` bloco a bloco (janelas máximas já embutidas; ajustar `INI_BOLETIM` se quiser).
+- Agendar `run_diario.py` no Task Scheduler (ou usar `pipeline.ipynb` Seção B).
+- Testar Playwright incremental (`scrape_anbima_data_ativos`) e `scrape_outstanding_bloomberg` (Bloomberg) — só validáveis no banco.
