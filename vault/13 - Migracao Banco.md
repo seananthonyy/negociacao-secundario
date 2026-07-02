@@ -6,6 +6,8 @@
 
 Início do planejamento: 01/07/2026.
 
+**Repositório:** `https://github.com/seananthonyy/negociacao-secundario` — **privado** por enquanto (o usuário torna público manualmente quando decidir). Push inicial em 02/07/2026 (78 arquivos, `check_no_secrets` verde). Antes de **cada** push futuro: rodar `python code/scripts/check_no_secrets.py`.
+
 ---
 
 ## 1. Objetivo e restrições (dadas pelo usuário)
@@ -175,11 +177,14 @@ Validado (02/07): datas corretas (pula fim de semana/feriado), notebook e script
 
 - **Fase 0 — limpeza + infra de segredos: ✅ CONCLUÍDA (01/07/2026).** Ver [[09 - Progresso]] e [[12 - Auditoria pre-migracao]]. Resumo: `dump_api_samples.py` deletado; 8 imports mortos + 2 renames + docstring corrigida; `[env]`/`get_secret`/`get_email_list`/proxy em `lib/config.py`; call sites migrados; `destinatarios.py`/`.example`; `.gitignore` blindado; `check_no_secrets.py`; segredos scrubbed de `PLANEJAMENTO_v5.md` e `Progresso.md`. Local roda sem env vars (validado). Tudo compila, 0 imports mortos, verificador verde.
 - **Fase 1 — ✅ COMPLETA (02/07/2026):** orquestração (`pipeline_core.py`, `pipeline.ipynb`, `run_diario.py` — §8) + Anbima por `dtNegocio` (§7). Tudo validado.
-- **Fase 2 — criar o repo público + transferir: a fazer.** Docs/manifesto prontos (esta nota).
+- **Fase 2 — repo criado e pushado (privado): ✅ (02/07/2026).** Falta: (a) usuário tornar público quando decidir; (b) baixar no banco e instalar (§9).
 
-## 11. Pendências abertas
+## 11. Pendências abertas (todas no banco)
 
-- Criar o repositório GitHub público, rodar `check_no_secrets`, subir os arquivos (Fase 2).
-- Definir a janela do boletim B3 no `--setup` (parâmetro `inicio_boletim`).
+- Baixar os 37 arquivos de `code/` (+ docs) 1-a-1 do GitHub; recriar dotfiles.
+- Setar variáveis da conta + criar `destinatarios.py` + `pip install` + `playwright install`.
+- Definir a janela do boletim B3 no `--setup` (parâmetro `inicio_boletim`) e rodar o bootstrap.
+- Agendar `run_diario.py` no Task Scheduler.
+- Testar Playwright incremental (`scrape_anbima_data_ativos`) e `scrape_outstanding_bloomberg` (Bloomberg) no banco.
 - Testar modo incremental do `scrape_anbima_data_ativos` com Playwright **no banco** (pendência antiga — ver [[98 - Backlog]]).
 - `scrape_outstanding_bloomberg` só testável no banco.
