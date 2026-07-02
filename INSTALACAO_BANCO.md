@@ -3,7 +3,25 @@
 > **Claude: se o usuário pedir "me diga o que fazer" / "como instalo isto", siga este runbook e conduza-o passo a passo.**
 > Contexto completo da migração: `vault/13 - Migracao Banco.md`. Pipeline: `vault/11 - Pipeline de Execucao.md`. Segredos: `vault/99 - Credenciais e Links.md`. Visão geral: `CLAUDE.md` e `PLANEJAMENTO_v5.md`.
 
-Este projeto gera o relatório diário de negociação secundária de crédito privado (Deb/CRI/CRA). Os arquivos vieram do GitHub (repo privado, baixados 1-a-1). Falta **instalar e montar a base** neste PC.
+Este projeto gera o relatório diário de negociação secundária de crédito privado (Deb/CRI/CRA). Falta **transferir os arquivos, instalar e montar a base** neste PC.
+
+---
+
+## Passo 0 — Transferir os arquivos (rápido, 1 download)
+
+No banco não dá `git pull` nem baixar `.zip`. Use o **bundle auto-extraível**:
+
+1. No GitHub (web), abra **`bundle_banco.py`** na raiz do repo → botão **"Download raw file"** (é 1 arquivo, ~1 MB).
+2. Salve na pasta que será a raiz do projeto (ex.: `Z:\AntonioOliveira\NegociacaoSecundario\`).
+3. Abra um terminal nessa pasta e rode:
+   ```powershell
+   python bundle_banco.py
+   ```
+   Ele recria a árvore inteira (`code/`, `vault/`, docs) — os ~79 arquivos de uma vez. **Não** traz `.env`, `destinatarios.py` nem `trades.db` (esses você configura/monta nos passos seguintes).
+
+*(Se `bundle_banco.py` estiver desatualizado após mudanças de código, regenere no PC pessoal com `python make_bundle.py` e suba de novo.)*
+
+Alternativa (lenta): baixar cada arquivo 1-a-1 espelhando os caminhos do repo.
 
 ---
 
