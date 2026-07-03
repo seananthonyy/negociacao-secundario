@@ -31,7 +31,8 @@ O código resolve caminhos relativos à pasta `code/` — a **raiz pode ter qual
 
 ```
 <raiz>\code\
-├── config.toml, requirements.txt, pipeline.ipynb, destinatarios.example.py
+├── config.toml, requirements.txt, destinatarios.example.py
+│   setup_1_teste.ipynb, setup_2_carga.ipynb, pipeline.ipynb
 ├── lib\        (__init__.py, config.py, db.py, logger.py, email_outlook.py, b3_calc_api.py, fianalytics_api.py)
 ├── scripts\    (scrape_*.py, calc_*.py, filtrar_trades.py, gerar_*.py, match_referencias.py,
 │                pipeline_core.py, run_diario.py, check_no_secrets.py)
@@ -39,7 +40,7 @@ O código resolve caminhos relativos à pasta `code/` — a **raiz pode ter qual
 └── data\       (feriados_anbima.csv  ← OBRIGATÓRIO; as subpastas logs/ relatorios/ etc. são criadas sozinhas)
 ```
 
-`trades.db` **não** vem do repo — é montado aqui pelo setup (passo 5).
+`trades.db` **não** vem do repo — é criado no Passo 5 (teste) e populado no Passo 6 (carga).
 
 ---
 
@@ -80,14 +81,13 @@ print('B3:', bool(get_secret('b3CalcToken')), '| FIkey:', bool(get_secret('fiana
 ```
 Tudo `True` = segredos resolvendo.
 
-## Passo 5 — Montar a base (`setup_inicial.ipynb`, bloco a bloco)
-Abra **`setup_inicial.ipynb`** a partir de `code\`. Rode a célula **Config** (calcula as janelas máximas de cada fonte automaticamente) e depois **um bloco por vez**:
-- **Blocos 1–8 (scraping):** Anbima Data (completa) · FI Analytics · deb · NTN-B · curva DI · CRI/CRA · boletim · Outstanding. Cada bloco já vem na **janela máxima** que a fonte entrega. Se um falhar (proxy, Playwright, login, Bloomberg), **o erro fica só nele** — corrija e **re-rode só esse bloco**.
-- **Blocos 9–14 (cálculo):** taxa → filtrar → spread Anbima → match → spread over → relatório. Idempotentes (re-rodar pula o já feito).
+## Passo 5 — Testar cada fluxo (`setup_1_teste.ipynb`)
+Abra **`setup_1_teste.ipynb`** a partir de `code\` e dê **`Run All`**. Ele **cria o `.db`** e roda **cada fluxo para 1 dia só** (o último dia útil), conferindo no banco que gravou linhas: cada bloco mostra `[OK]`/`[VAZIO]`. A célula final resume. Objetivo: **provar que todo fluxo funciona** antes de puxar histórico. Se um bloco der `[FALHA]`/`[VAZIO]` (proxy, Playwright, login), corrija e **re-rode só ele**. `outstanding` fica `[VAZIO]` fora do banco — normal.
 
-Ajuste `INICIO_BOLETIM`/`OUTSTANDING` na célula Config se quiser (no banco, deixe `OUTSTANDING` implícito rodando o bloco 8).
+## Passo 6 — Montar a base (`setup_2_carga.ipynb`)
+Com os fluxos validados, abra **`setup_2_carga.ipynb`** a partir de `code\` e dê **`Run All`** (é demorado — dá pra deixar rodando). Ele puxa o **máximo de histórico** de cada fonte (alvo: desde o começo do ano; cada fonte na janela que ainda entrega) e roda o cálculo dia a dia. **Anbima Data (o mais pesado) roda por último.** Cada bloco é idempotente: se um falhar, corrija e **re-rode só ele** (o cálculo/NTN-B pulam o já feito). Ajuste `INICIO` na célula Config se quiser outra janela.
 
-## Passo 6 — (Opcional) Agendar a rotina diária
+## Passo 7 — (Opcional) Agendar a rotina diária
 Use o **`pipeline.ipynb`** (Seção B) no dia a dia, ou agende no Task Scheduler:
 `python.exe <raiz>\code\scripts\run_diario.py` — reprocessa os últimos 5 dias úteis e regenera o relatório.
 

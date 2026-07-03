@@ -154,11 +154,13 @@ Sem duplicação de lógica: notebook e `run_diario` chamam as mesmas funções 
   - `run_dia(X)` — cadeia dos 13 passos para a liquidação X (raspa X **e** X-1u → Anbima por dtNegocio).
   - `run_ultimos_n(n=5)` — rotina diária: passos globais 1×, per-date em laço, relatório no fim.
   - `run_setup(inicio_boletim, dias_indicativas=130, dias_curva_di=20, dias_cricra=5, rodar_outstanding=False)` — bootstrap (§5). Tolerante a falha.
-- **`code/setup_inicial.ipynb`** — **bootstrap (roda 1 vez)**. 1 bloco por fonte (janelas máximas embutidas: Anbima Data completa; deb/NTN-B ~4 meses; DI ~20 pregões; CRI/CRA ~5 pregões; boletim desde `INI_BOLETIM`) + blocos de cálculo. Se um bloco falha, o erro fica **só nele** → corrige e re-roda só ele. Idempotente.
+**Três notebooks (rodar em sequência, 1 vez os dois de setup; o 3º é o dia a dia):**
+- **`code/setup_1_teste.ipynb`** — **smoke test (Run All)**. Bloco 0 **cria o `.db`** + schema; depois **1 bloco por fluxo rodando só 1 dia** (`D` = último dia útil) e **conferindo no `.db`** que gravou linhas (`[OK]`/`[VAZIO]`), com resumo no fim. Objetivo: provar que cada fluxo funciona antes de puxar histórico. `outstanding` fica `[VAZIO]` fora do banco (normal).
+- **`code/setup_2_carga.ipynb`** — **carga histórica (Run All, demorado)**. 1 bloco por fonte na **janela máxima** que entrega (alvo `INICIO` = começo do ano; deb/NTN-B ~4 meses; DI ~20 pregões; CRI/CRA ~5 pregões; **Anbima Data completa por último**) + blocos de cálculo dia a dia (`DIAS` = todos os pregões do ano). Idempotente: bloco que falha, re-roda só ele.
 - **`code/pipeline.ipynb`** — **uso diário** (rodar a partir de `code/`). **A)** testar/rodar um fluxo isolado (1 bloco por função, para debug); **B)** rotina diária (`N_DIAS` parametrizável) + rodar um dia único.
-- **`code/scripts/run_diario.py`** — **opcional**, só para o **Task Scheduler** (o Agendador não roda `.ipynb`, só `.py`). `--last N` (default 5); `--setup --inicio-boletim YYYY-MM-DD [--outstanding]`.
+- **`code/scripts/run_diario.py`** — **opcional**, só para o **Task Scheduler** (o Agendador não roda `.ipynb`, só `.py`). Chama **as mesmas funções** do `pipeline_core` que o `pipeline.ipynb` (Seção B) → muda-se o fluxo num lugar só. `--last N` (default 5); `--setup --inicio-boletim YYYY-MM-DD [--outstanding]`.
 
-**Fluxo no banco:** `setup_inicial.ipynb` bloco a bloco (isolar erros do ambiente + montar a base) → depois dia a dia via `pipeline.ipynb` Seção B ou agendando o `run_diario.py`.
+**Fluxo no banco:** `setup_1_teste.ipynb` (Run All → valida cada fluxo) → `setup_2_carga.ipynb` (Run All → monta a base) → depois dia a dia via `pipeline.ipynb` Seção B ou agendando o `run_diario.py`.
 
 Validado (02/07): datas corretas (pula fim de semana/feriado), notebook e scripts compilam, `check_no_secrets` verde.
 
@@ -172,7 +174,7 @@ Validado (02/07): datas corretas (pula fim de semana/feriado), notebook e script
 4. Criar as **variáveis de ambiente da conta** (§3) se ainda não existirem; conferir `proxy_http`/`proxy_https`.
 5. Criar `code/destinatarios.py` a partir do `.example` e preencher.
 6. `python scripts\scrape_outstanding_bloomberg.py ...` disponível (terminal Bloomberg logado).
-7. `python scripts\run_diario.py --setup` (ou rodar a seção SETUP do notebook) → base montada.
+7. `setup_1_teste.ipynb` (Run All → valida cada fluxo) → `setup_2_carga.ipynb` (Run All → base montada).
 8. Agendar `run_diario.py` no Task Scheduler (manhã) → rotina diária.
 
 ---
@@ -183,13 +185,13 @@ Validado (02/07): datas corretas (pula fim de semana/feriado), notebook e script
 - **Fase 1 — ✅ COMPLETA (02/07/2026):** orquestração (`pipeline_core.py`, `pipeline.ipynb`, `run_diario.py` — §8) + Anbima por `dtNegocio` (§7). Tudo validado.
 - **Fase 2 — ✅ COMPLETA (02/07/2026): repo PÚBLICO + transferência pronta.** Push feito, histórico verificado limpo, `bundle_banco.py` para transferência em 1 download. Do lado do PC pessoal, a migração está fechada.
 - **Limpeza de schema morto (02/07):** removidos `MtmBloomberg` (tabela), `vrSpreadOverAnbima` (coluna) e config keys `[calc].retries`/`[spread]`/`[email].assuntoPrefixo`. Ver [[04 - Banco de Dados]] e [[09 - Progresso]].
-- **Setup em notebook próprio (`setup_inicial.ipynb`, 1 bloco/fonte, Run All-friendly)** e `pipeline.ipynb` só diário — ver §8.
+- **Setup em dois notebooks próprios** (`setup_1_teste.ipynb` = smoke test 1 dia/fluxo com conferência no `.db`; `setup_2_carga.ipynb` = carga histórica desde o começo do ano, Anbima Data por último), ambos Run All-friendly; `pipeline.ipynb` só diário — ver §8.
 
 ## 11. Pendências abertas (todas no banco — o usuário executa)
 
 Runbook completo: `INSTALACAO_BANCO.md`.
 - Baixar `bundle_banco.py` → `python bundle_banco.py` (recria a árvore).
 - Setar variáveis da conta + criar `destinatarios.py` + `pip install` + `playwright install`.
-- Rodar `setup_inicial.ipynb` bloco a bloco (janelas máximas já embutidas; ajustar `INI_BOLETIM` se quiser).
+- Rodar `setup_1_teste.ipynb` (Run All → valida cada fluxo) e depois `setup_2_carga.ipynb` (Run All → monta a base; ajustar `INICIO` se quiser).
 - Agendar `run_diario.py` no Task Scheduler (ou usar `pipeline.ipynb` Seção B).
 - Testar Playwright incremental (`scrape_anbima_data_ativos`) e `scrape_outstanding_bloomberg` (Bloomberg) — só validáveis no banco.
