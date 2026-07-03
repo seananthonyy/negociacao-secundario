@@ -63,14 +63,42 @@ def get_secret(logical_key: str, default: str | None = None) -> str | None:
 
 def _apply_proxy_env() -> None:
     """Copia o proxy resolvido (nomes do banco, ex.: proxy_https) para as
-    variáveis padrão HTTP_PROXY/HTTPS_PROXY que httpx e Playwright leem
-    nativamente. Respeita valores já presentes no ambiente."""
+    variáveis padrão HTTP_PROXY/HTTPS_PROXY que o httpx lê nativamente.
+    Respeita valores já presentes no ambiente.
+
+    ATENÇÃO: o Chromium do Playwright NÃO lê HTTP_PROXY/HTTPS_PROXY do ambiente
+    — para os scrapers Playwright use get_playwright_proxy() e passe o resultado
+    em chromium.launch(proxy=...)."""
     for logical, target in (("httpProxy", "HTTP_PROXY"), ("httpsProxy", "HTTPS_PROXY")):
         if os.getenv(target):
             continue
         val = get_secret(logical)
         if val:
             os.environ[target] = val
+
+
+def get_playwright_proxy() -> dict | None:
+    """Proxy no formato do Playwright ({'server': 'http://host:port', ...}) ou
+    None se não houver proxy configurado.
+
+    O Chromium do Playwright ignora HTTP_PROXY/HTTPS_PROXY do ambiente; o proxy
+    precisa ser passado explicitamente em chromium.launch(proxy=...). No PC
+    pessoal (sem proxy) retorna None → launch sem proxy (comportamento atual).
+    No banco resolve proxy_https/proxy_http das variáveis da conta."""
+    url = get_secret("httpsProxy") or get_secret("httpProxy")
+    if not url:
+        return None
+    from urllib.parse import urlparse
+    p = urlparse(url if "://" in url else f"http://{url}")
+    server = p.scheme + "://" + (p.hostname or "")
+    if p.port:
+        server += f":{p.port}"
+    proxy: dict = {"server": server}
+    if p.username:
+        proxy["username"] = p.username
+    if p.password:
+        proxy["password"] = p.password
+    return proxy
 
 
 def get_email_list(which: str) -> list[str]:

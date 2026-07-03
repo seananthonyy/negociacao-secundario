@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from playwright.async_api import async_playwright, Download, Page, BrowserContext
 
 from lib.db import get_db
-from lib.config import cfg
+from lib.config import cfg, get_playwright_proxy
 from lib.logger import get_logger
 from lib.email_outlook import send_completion_email
 
@@ -937,6 +937,7 @@ async def _MainAsync(args: argparse.Namespace) -> str:
             browser = await pw.chromium.launch(
                 headless=args.headless,
                 slow_mo=200,
+                proxy=get_playwright_proxy(),  # None no PC pessoal; proxy da conta no banco
             )
 
             # Para ranges, tenta um POST unico com Date != FinalDate.

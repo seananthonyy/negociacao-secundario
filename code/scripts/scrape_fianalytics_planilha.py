@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from playwright.async_api import async_playwright
 
-from lib.config import cfg, get_secret
+from lib.config import cfg, get_secret, get_playwright_proxy
 from lib.db import get_db
 from lib.logger import get_logger
 from lib.email_outlook import send_completion_email
@@ -386,7 +386,7 @@ async def _MainAsync(args: argparse.Namespace, log) -> list[tuple[str, int]]:
 
     try:
         async with async_playwright() as pw:
-            browser = await pw.chromium.launch(headless=args.headless)
+            browser = await pw.chromium.launch(headless=args.headless, proxy=get_playwright_proxy())
             context = await browser.new_context(
                 accept_downloads=True,
                 viewport={"width": 1400, "height": 900},

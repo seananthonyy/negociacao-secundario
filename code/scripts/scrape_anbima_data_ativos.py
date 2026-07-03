@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from playwright.async_api import async_playwright
 
-from lib.config import cfg
+from lib.config import cfg, get_playwright_proxy
 from lib.db import get_db
 from lib.email_outlook import send_completion_email
 from lib.logger import get_logger
@@ -642,7 +642,7 @@ async def _Main():
              'novos_tickers': []}   # tickers novos scrappados nessa run
 
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
+        browser = await pw.chromium.launch(headless=True, proxy=get_playwright_proxy())
 
         # ── fase 1: coleta de tickers ─────────────────────────────────────────
         tickers: list[tuple[str, str]] = []
