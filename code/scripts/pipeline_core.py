@@ -230,14 +230,16 @@ def run_dia(X: date | str, resultados: list | None = None,
     return res
 
 
-def run_ultimos_n(n: int = 5) -> list:
-    """Rotina diária: roda a cadeia para os últimos n dias úteis (pega alterações
-    retroativas) e gera o relatório 1× no fim. Passos globais (fianalytics,
-    anbima_data, match_ref) rodam uma vez sobre a janela inteira."""
+def _run_cadeia_dias(dias: list[date], rotulo: str) -> list:
+    """Roda a cadeia completa dos 13 passos para uma lista de liquidações `dias`
+    (cronológica) e gera o relatório 1× no fim. Passos globais (fianalytics,
+    anbima_data, match_ref) rodam uma vez sobre a janela inteira. Base das duas
+    rotinas públicas: run_ultimos_n (padrão) e run_intervalo (range explícito)."""
+    if not dias:
+        raise SystemExit("Sem dias úteis para processar — confira as datas.")
     res: list[tuple[str, bool]] = []
-    dias = ultimos_n_dias_uteis(n)
     Xant0 = dia_util_anterior(dias[0])
-    print(f"Rotina diária — liquidações {dias[0]} .. {dias[-1]} (n={n}); X-1u da 1ª = {Xant0}")
+    print(f"{rotulo} — liquidações {dias[0]} .. {dias[-1]} ({len(dias)} dias); X-1u da 1ª = {Xant0}")
 
     fianalytics(resultados=res)
 
@@ -267,6 +269,18 @@ def run_ultimos_n(n: int = 5) -> list:
     relatorio(resultados=res)
     _resumo(res)
     return res
+
+
+def run_ultimos_n(n: int = 5) -> list:
+    """MODO PADRÃO da rotina diária: reprocessa os últimos `n` dias úteis (pega
+    alterações retroativas). É o que o run_diario.py roda sem argumentos."""
+    return _run_cadeia_dias(ultimos_n_dias_uteis(n), f"Rotina diária (últimos {n})")
+
+
+def run_intervalo(inicio: date | str, fim: date | str) -> list:
+    """MODO INTERVALO: reprocessa TODOS os dias úteis de [inicio, fim] (inclusive).
+    Use para refazer um período específico. Mesma cadeia da rotina diária."""
+    return _run_cadeia_dias(dias_uteis_entre(inicio, fim), f"Intervalo {_iso(inicio)}..{_iso(fim)}")
 
 
 # ---------------------------------------------------------------------------

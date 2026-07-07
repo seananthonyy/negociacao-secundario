@@ -46,7 +46,7 @@ Use `/agents` no Claude Code pra ver/invocar.
 - **Email no fim de cada script** via Outlook (`pywin32`), sucesso ou erro
 - **Filtro de duplicados**: union-find, status só `PRIMARY` ou `DUPLICATE`
 - **Cascata calculadoras**: FI Analytics → B3 → NULL (só Deb/CRI/CRA)
-- **Match de referência** (`IPCA→NTN-B`, `PREFIXADO→DI Futuro`): script separado, só roda com `--force`
+- **Match de referência** (`IPCA→NTN-B`, `PREFIXADO→DI1`): script separado (`match_referencias.py`), sem args — roda idempotente sobre a base toda a cada ciclo do pipeline. Duration-match data-exata contra `MtmAnbima`; não sobrescreve refs da Anbima (`cdFonteReferencia='Anbima'`)
 - **Relatório agrupa por `dtLiquidacao`**, não `dtNegocio`
 
 ## Estado atual

@@ -12,6 +12,24 @@ _tokenLock = threading.Lock()
 
 # Proxy: httpx lê HTTPS_PROXY / HTTP_PROXY do ambiente automaticamente (trust_env=True).
 
+# Client HTTP compartilhado por processo, com pool de conexões keepalive.
+# Reusar a conexão evita re-handshake (TCP+TLS) a cada trade — ganho grande quando
+# o tráfego passa por proxy (banco), onde cada CONNECT novo é caro. httpx.Client é
+# thread-safe: suporta chamadas concorrentes dos workers do ThreadPoolExecutor.
+_client: httpx.Client | None = None
+_clientLock = threading.Lock()
+
+
+def _GetClient() -> httpx.Client:
+    global _client
+    if _client is not None:
+        return _client
+    with _clientLock:
+        if _client is None:
+            limits = httpx.Limits(max_connections=64, max_keepalive_connections=64, keepalive_expiry=30.0)
+            _client = httpx.Client(limits=limits, trust_env=True)
+    return _client
+
 # Sentinel para distinguir "não está no cache" de "está no cache como None".
 _CACHE_MISS = object()
 
@@ -38,7 +56,7 @@ def _Login() -> str:
 
     timeout = cfg["calc"]["timeoutSeconds"]
     log.debug("b3_calc_api: obtendo token via POST /login")
-    resp = httpx.post(f"{baseUrl}/login", json={"token": rawToken}, timeout=timeout)
+    resp = _GetClient().post(f"{baseUrl}/login", json={"token": rawToken}, timeout=timeout)
     resp.raise_for_status()
 
     data = resp.json()
@@ -67,7 +85,7 @@ def _DoRequest(url: str, timeout: int) -> httpx.Response | None:
     """
     token = _EnsureToken()
     try:
-        resp = httpx.get(url, headers={"Authorization": token}, timeout=timeout)
+        resp = _GetClient().get(url, headers={"Authorization": token}, timeout=timeout)
     except (httpx.TimeoutException, httpx.RequestError) as exc:
         log.warning("b3_calc_api: erro na chamada para %s: %s", url, exc)
         return None
@@ -77,7 +95,7 @@ def _DoRequest(url: str, timeout: int) -> httpx.Response | None:
         ResetToken()
         token = _EnsureToken()
         try:
-            resp = httpx.get(url, headers={"Authorization": token}, timeout=timeout)
+            resp = _GetClient().get(url, headers={"Authorization": token}, timeout=timeout)
         except (httpx.TimeoutException, httpx.RequestError) as exc:
             log.warning("b3_calc_api: erro após renovação de token para %s: %s", url, exc)
             return None

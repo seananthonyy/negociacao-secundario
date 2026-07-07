@@ -864,62 +864,13 @@ async def _ClickCsvButton(page: Page, target_date: date, log) -> str | None:
 # Main async
 # ---------------------------------------------------------------------------
 
-async def _TryRangePost(page: Page, start: date, end: date, log) -> str | None:
-    """
-    Tenta baixar trades para um range inteiro em uma unica chamada POST.
-    O endpoint BDI aceita Date != FinalDate — retorna CSV com todos os dias do range.
-    Retorna o texto CSV ou None se falhar.
-    """
-    export_url = "https://arquivos.b3.com.br/bdi/table/export/csv?lang=pt-BR"
-    body = {
-        "Name": "Trade",
-        "Date": start.strftime("%Y-%m-%d"),
-        "FinalDate": end.strftime("%Y-%m-%d"),
-        "ClientId": "",
-        "Filters": {},
-    }
-    log.info(f"Tentando POST range {start} → {end}: {body}")
-    try:
-        resp = await page.request.post(
-            export_url,
-            data=body,
-            headers={"Content-Type": "application/json"},
-            timeout=60_000,
-        )
-        log.info(f"  Status: {resp.status}")
-        if resp.status != 200:
-            return None
-        content_type = resp.headers.get("content-type", "")
-        if "text/html" in content_type.lower():
-            log.warning("  Retornou HTML — range nao suportado pela API")
-            return None
-        body_bytes = await resp.body()
-        if len(body_bytes) < 50:
-            log.warning("  Resposta muito pequena — ignorando")
-            return None
-        for enc in ("utf-8-sig", "utf-8", "latin-1"):
-            try:
-                text = body_bytes.decode(enc)
-                log.info(f"  CSV range decodificado ({len(body_bytes)} bytes, enc={enc})")
-                return text
-            except UnicodeDecodeError:
-                continue
-    except Exception as e:
-        log.warning(f"  Erro no POST range: {e}")
-    return None
-
-
 async def _MainAsync(args: argparse.Namespace) -> str:
     log = get_logger("scrape_b3_boletim")
 
-    is_range = bool(args.start)
     if args.date:
         dates = [date.fromisoformat(args.date)]
-        start_date = end_date = dates[0]
     else:
         dates = _DateRange(args.start, args.end)
-        start_date = dates[0]
-        end_date   = dates[-1]
 
     log.info(f"Datas a processar: {[str(d) for d in dates]}")
     log.info(f"headless={args.headless}, debug_only={args.debug_only}")
@@ -940,59 +891,11 @@ async def _MainAsync(args: argparse.Namespace) -> str:
                 proxy=get_playwright_proxy(),  # None no PC pessoal; proxy da conta no banco
             )
 
-            # Para ranges, tenta um POST unico com Date != FinalDate.
-            # Se funcionar, evita abrir browser N vezes.
-            if is_range and len(dates) > 1:
-                context = await browser.new_context(
-                    accept_downloads=True,
-                    viewport={"width": 1400, "height": 900},
-                )
-                page = await context.new_page()
-                try:
-                    # Visita o iframe para estabelecer sessao/cookies
-                    await page.goto(IFRAME_URL, wait_until="domcontentloaded", timeout=30_000)
-                    await page.wait_for_timeout(2000)
-
-                    csv_text = await _TryRangePost(page, start_date, end_date, log)
-                    if csv_text:
-                        rows = _ParseCsv(csv_text, log)
-                        ins, upd = _UpsertRows(conn, rows, log)
-
-                        # Soft-cancel por data: agrupa IDs baixados por dtNegocio
-                        from collections import defaultdict
-                        ids_by_date: dict[str, set] = defaultdict(set)
-                        for r in rows:
-                            ids_by_date[r["dtNegocio"]].add(r["cdIdentificadorNegocio"])
-                        cnl = sum(
-                            _SoftCancelMissing(conn, d, ids, log)
-                            for d, ids in ids_by_date.items()
-                        )
-
-                        total_inserted  += ins
-                        total_updated   += upd
-                        total_cancelled += cnl
-                        results.append(
-                            f"{start_date} → {end_date}: {ins} inseridos, {upd} atualizados, "
-                            f"{cnl} cancelados (range único)"
-                        )
-                        log.info(f"Range único bem-sucedido: {ins} inseridos, {upd} atualizados, {cnl} cancelados")
-                        await context.close()
-                        await browser.close()
-                        conn.close()
-                        summary = (
-                            f"Operações inseridas:   {total_inserted}\n"
-                            f"Operações atualizadas: {total_updated}\n"
-                            f"Operações canceladas:  {total_cancelled}\n\n"
-                            f"Datas processadas:\n" + "\n".join(f"  {r}" for r in results)
-                        )
-                        log.info(summary)
-                        return summary
-                    else:
-                        log.info("POST range falhou — caindo para loop por data")
-                finally:
-                    await context.close()
-
-            # Fallback: loop data por data (também usado para --date único)
+            # Loop data por data. (Antes havia um atalho de POST-range único para
+            # --start/--end, mas a API BDI da B3 só retornava as duas PONTAS do
+            # intervalo — não os pregões do meio — e ainda com status 200, então o
+            # fallback nunca disparava e dias sumiam silenciosamente. Removido: cada
+            # pregão é baixado individualmente, idempotente via UPSERT.)
             for target_date in dates:
                 date_str = str(target_date)
                 context = await browser.new_context(

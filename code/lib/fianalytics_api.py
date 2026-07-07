@@ -10,6 +10,25 @@ log = logging.getLogger(__name__)
 
 # Proxy: httpx lê HTTPS_PROXY / HTTP_PROXY do ambiente automaticamente (trust_env=True).
 
+# Client HTTP compartilhado por processo, com pool de conexões keepalive.
+# Reusar a conexão evita re-handshake (TCP+TLS) a cada trade — ganho grande quando
+# o tráfego passa por proxy (banco), onde cada CONNECT novo é caro. httpx.Client é
+# thread-safe: suporta chamadas concorrentes dos workers do ThreadPoolExecutor.
+_client: httpx.Client | None = None
+_clientLock = threading.Lock()
+
+
+def _GetClient() -> httpx.Client:
+    global _client
+    if _client is not None:
+        return _client
+    with _clientLock:
+        if _client is None:
+            limits = httpx.Limits(max_connections=64, max_keepalive_connections=64, keepalive_expiry=30.0)
+            _client = httpx.Client(limits=limits, trust_env=True)
+    return _client
+
+
 # Sentinel para distinguir "não está no cache" de "está no cache como None".
 _CACHE_MISS = object()
 
@@ -68,7 +87,7 @@ def _CallPrimary(cdTicker: str, cdInstrumento: str, dtLiquidacao: str, vrPU: flo
 
     try:
         log.debug("fianalytics_api: POST %s ticker=%s date=%s", url, cdTicker, dtLiquidacao)
-        resp = httpx.post(url, json={"ticker": cdTicker, "date": dtLiquidacao, "pu": vrPU}, headers=_GetHeaders(), timeout=timeout)
+        resp = _GetClient().post(url, json={"ticker": cdTicker, "date": dtLiquidacao, "pu": vrPU}, headers=_GetHeaders(), timeout=timeout)
     except (httpx.TimeoutException, httpx.RequestError) as exc:
         log.warning("fianalytics_api: erro na chamada primária para %s: %s", cdTicker, exc)
         return None
@@ -114,7 +133,7 @@ def _GetUserBonds() -> list[dict] | None:
 
         try:
             log.debug("fianalytics_api: POST %s (getUserBonds — único fetch da sessão)", url)
-            resp = httpx.post(url, json=body, headers=_GetHeaders(), timeout=timeout)
+            resp = _GetClient().post(url, json=body, headers=_GetHeaders(), timeout=timeout)
         except (httpx.TimeoutException, httpx.RequestError) as exc:
             log.warning("fianalytics_api: erro ao buscar user bonds: %s", exc)
             _userBondsFetched = True
@@ -156,7 +175,7 @@ def _CallBondbuilder(docId: str, cdTicker: str, dtLiquidacao: str, vrPU: float) 
 
     try:
         log.debug("fianalytics_api: POST %s (bondbuilder) ticker=%s date=%s", url, cdTicker, dtLiquidacao)
-        resp = httpx.post(url, json={"doc_id": docId, "date": dtLiquidacao, "pu": vrPU}, headers=_GetHeaders(), timeout=timeout)
+        resp = _GetClient().post(url, json={"doc_id": docId, "date": dtLiquidacao, "pu": vrPU}, headers=_GetHeaders(), timeout=timeout)
     except (httpx.TimeoutException, httpx.RequestError) as exc:
         log.warning("fianalytics_api: erro no bondbuilder para %s: %s", cdTicker, exc)
         return None
