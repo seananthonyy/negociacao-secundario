@@ -109,9 +109,9 @@ def _ParseArgs() -> argparse.Namespace:
     p.add_argument("--end",     metavar="YYYY-MM-DD", help="Fim do intervalo (requer --start)")
     p.add_argument(
         "--headless",
-        action="store_true",
-        default=False,
-        help="Rodar Playwright em modo headless (padrao: False para debug visual)",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Rodar Playwright em modo headless (padrao: True; use --no-headless para debug visual)",
     )
     p.add_argument(
         "--debug-only",

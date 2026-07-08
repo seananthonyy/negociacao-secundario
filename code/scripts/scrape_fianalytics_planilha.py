@@ -427,9 +427,9 @@ def _ParseArgs() -> argparse.Namespace:
     )
     parser.add_argument(
         "--headless",
-        action="store_true",
-        default=False,
-        help="Rodar Playwright em modo headless (padrão: False para debug visual).",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Rodar Playwright em modo headless (padrão: True; use --no-headless para debug visual).",
     )
     return parser.parse_args()
 
