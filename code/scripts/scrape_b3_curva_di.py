@@ -28,27 +28,27 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from lib.db import get_db
-from lib.logger import get_logger
-from lib.email_outlook import send_completion_email
+from lib.db import ObterBanco
+from lib.logger import ObterLogger
+from lib.email_outlook import EnviarEmailConclusao
 
 # ---------------------------------------------------------------------------
 # Constantes
 # ---------------------------------------------------------------------------
 
-_SCRIPT_NAME = "scrape_b3_curva_di"
+NOME_SCRIPT = "scrape_b3_curva_di"
 
-_API_BASE = "https://sistemaswebb3-derivativos.b3.com.br/referenceRatesProxy/"
-_PRODUCT  = "PRE"
+API_BASE = "https://sistemaswebb3-derivativos.b3.com.br/referenceRatesProxy/"
+PRODUTO  = "PRE"
 
-_CONTRATOS = [
+CONTRATOS = [
     "DI1F27", "DI1F28", "DI1F29", "DI1F30",
     "DI1F31", "DI1F32", "DI1F33", "DI1F34",
 ]
 
-_FERIADOS_PATH = Path("data/feriados_anbima.csv")
+FERIADOS_PATH = Path("data/feriados_anbima.csv")
 
-_SQL_UPSERT = """
+SQL_UPSERT = """
 INSERT INTO MtmAnbima (cdTicker, dtReferencia, vrTaxa, vrDuration)
 VALUES (?, ?, ?, ?)
 ON CONFLICT(cdTicker, dtReferencia) DO UPDATE SET
@@ -56,17 +56,17 @@ ON CONFLICT(cdTicker, dtReferencia) DO UPDATE SET
     vrDuration = excluded.vrDuration
 """
 
-_HEADERS = {"Accept": "application/json", "User-Agent": "Mozilla/5.0"}
+HEADERS = {"Accept": "application/json", "User-Agent": "Mozilla/5.0"}
 
 # ---------------------------------------------------------------------------
 # Feriados
 # ---------------------------------------------------------------------------
 
-def _LoadFeriados() -> frozenset:
-    if not _FERIADOS_PATH.exists():
-        raise FileNotFoundError(f"Feriados nao encontrado: {_FERIADOS_PATH.resolve()}")
+def CarregarFeriados() -> frozenset:
+    if not FERIADOS_PATH.exists():
+        raise FileNotFoundError(f"Feriados nao encontrado: {FERIADOS_PATH.resolve()}")
     feriados = set()
-    with open(_FERIADOS_PATH, encoding="utf-8", newline="") as fh:
+    with open(FERIADOS_PATH, encoding="utf-8", newline="") as fh:
         for row in csv.DictReader(fh):
             raw = (row.get("data") or "").strip()
             if raw:
@@ -81,14 +81,14 @@ def _LoadFeriados() -> frozenset:
 # Cálculo de vencimento e du
 # ---------------------------------------------------------------------------
 
-def _VencimentoDI(ano: int, feriados: frozenset) -> date:
+def VencimentoDi(ano: int, feriados: frozenset) -> date:
     d = date(ano, 1, 1)
     while d.weekday() >= 5 or d in feriados:
         d += timedelta(days=1)
     return d
 
 
-def _CalcDu(dtRef: date, dtVenc: date, feriados: frozenset) -> int:
+def CalcularDu(dtRef: date, dtVenc: date, feriados: frozenset) -> int:
     du = 0
     cur = dtRef + timedelta(days=1)
     while cur <= dtVenc:
@@ -98,7 +98,7 @@ def _CalcDu(dtRef: date, dtVenc: date, feriados: frozenset) -> int:
     return du
 
 
-def _AnoDoTicker(ticker: str) -> int:
+def AnoDoTicker(ticker: str) -> int:
     return 2000 + int(ticker[-2:])
 
 
@@ -106,24 +106,24 @@ def _AnoDoTicker(ticker: str) -> int:
 # API B3
 # ---------------------------------------------------------------------------
 
-def _ApiCall(client: httpx.Client, path: str, params: dict) -> bytes:
+def ChamarApi(client: httpx.Client, path: str, params: dict) -> bytes:
     encoded = base64.b64encode(json.dumps(params).encode()).decode()
-    url = _API_BASE + path + "/" + encoded
-    resp = client.get(url, headers=_HEADERS, timeout=20)
+    url = API_BASE + path + "/" + encoded
+    resp = client.get(url, headers=HEADERS, timeout=20)
     resp.raise_for_status()
     return resp.content
 
 
-def _GetDatasDisponiveis(client: httpx.Client) -> list[date]:
-    raw = _ApiCall(client, "Search/GetDate", {"language": "pt-br", "id": _PRODUCT})
+def DatasDisponiveis(client: httpx.Client) -> list[date]:
+    raw = ChamarApi(client, "Search/GetDate", {"language": "pt-br", "id": PRODUTO})
     data = json.loads(raw)
     if isinstance(data, str):
         data = json.loads(data)
     return [date.fromisoformat(d[:10]) for d in data]
 
 
-def _GetCsvDuMap(client: httpx.Client, dtStr: str, log) -> dict[int, float] | None:
-    raw = _ApiCall(client, "Search/GetDownloadFile", {"language": "pt-br", "id": _PRODUCT, "date": dtStr})
+def CsvDuMap(client: httpx.Client, dtStr: str, log) -> dict[int, float] | None:
+    raw = ChamarApi(client, "Search/GetDownloadFile", {"language": "pt-br", "id": PRODUTO, "date": dtStr})
     csvBytes = base64.b64decode(raw)
     try:
         csvText = csvBytes.decode("utf-8")
@@ -152,7 +152,7 @@ def _GetCsvDuMap(client: httpx.Client, dtStr: str, log) -> dict[int, float] | No
 # Processamento dos contratos
 # ---------------------------------------------------------------------------
 
-def _ProcessDuMap(
+def ProcessarDuMap(
     duMap: dict[int, float],
     dtRef: date,
     feriados: frozenset,
@@ -162,10 +162,10 @@ def _ProcessDuMap(
     upsertRows: list[tuple] = []
     semMatch:   list[str]   = []
 
-    for ticker in _CONTRATOS:
-        ano    = _AnoDoTicker(ticker)
-        dtVenc = _VencimentoDI(ano, feriados)
-        du     = _CalcDu(dtRef, dtVenc, feriados)
+    for ticker in CONTRATOS:
+        ano    = AnoDoTicker(ticker)
+        dtVenc = VencimentoDi(ano, feriados)
+        du     = CalcularDu(dtRef, dtVenc, feriados)
 
         if du not in duMap:
             log.warning("curva_di: %s — %s: du=%d nao encontrado (venc=%s)", dtStr, ticker, du, dtVenc)
@@ -184,7 +184,7 @@ def _ProcessDuMap(
 # CLI
 # ---------------------------------------------------------------------------
 
-def _ParseArgs() -> argparse.Namespace:
+def LerArgumentos() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Baixa a curva DI x pre da B3 e popula MtmAnbima."
     )
@@ -192,7 +192,7 @@ def _ParseArgs() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _BuildSummary(dtStr: str, upserted: int, semMatch: list[str], taxas: dict[str, float]) -> str:
+def MontarResumo(dtStr: str, upserted: int, semMatch: list[str], taxas: dict[str, float]) -> str:
     lines = ["Resultado:", f"Data: {dtStr}", f"Contratos salvos: {upserted}"]
     if semMatch:
         lines.append(f"Sem match du: {', '.join(semMatch)}")
@@ -206,9 +206,9 @@ def _BuildSummary(dtStr: str, upserted: int, semMatch: list[str], taxas: dict[st
 # Entrypoint
 # ---------------------------------------------------------------------------
 
-def Main() -> None:
-    log     = get_logger(_SCRIPT_NAME)
-    args    = _ParseArgs()
+def Principal() -> None:
+    log     = ObterLogger(NOME_SCRIPT)
+    args    = LerArgumentos()
     summary = ""
     success = True
 
@@ -216,12 +216,12 @@ def Main() -> None:
         dtRef  = date.fromisoformat(args.date)
         dtStr  = dtRef.isoformat()
 
-        feriados = _LoadFeriados()
+        feriados = CarregarFeriados()
         log.info("curva_di: %d feriados carregados", len(feriados))
 
         with httpx.Client() as client:
             # Verifica disponibilidade
-            datasDisponiveis = _GetDatasDisponiveis(client)
+            datasDisponiveis = DatasDisponiveis(client)
             log.info("curva_di: %d datas disponiveis, mais recente: %s", len(datasDisponiveis), datasDisponiveis[0] if datasDisponiveis else "?")
 
             if dtRef not in datasDisponiveis:
@@ -231,23 +231,23 @@ def Main() -> None:
                     f"Disponiveis: {datas}"
                 )
 
-            duMap = _GetCsvDuMap(client, dtStr, log)
+            duMap = CsvDuMap(client, dtStr, log)
             if duMap is None:
                 raise ValueError(f"CSV vazio para {dtStr}")
 
-        upsertRows, semMatch = _ProcessDuMap(duMap, dtRef, feriados, dtStr, log)
+        upsertRows, semMatch = ProcessarDuMap(duMap, dtRef, feriados, dtStr, log)
 
-        conn = get_db()
+        conn = ObterBanco()
         try:
             if upsertRows:
-                conn.executemany(_SQL_UPSERT, upsertRows)
+                conn.executemany(SQL_UPSERT, upsertRows)
                 conn.commit()
             log.info("curva_di: %s — %d contratos salvos em MtmAnbima", dtStr, len(upsertRows))
         finally:
             conn.close()
 
         taxas   = {row[0]: row[2] for row in upsertRows}
-        summary = _BuildSummary(dtStr, len(upsertRows), semMatch, taxas)
+        summary = MontarResumo(dtStr, len(upsertRows), semMatch, taxas)
         log.info("curva_di: concluido.\n%s", summary)
 
     except Exception:
@@ -256,8 +256,8 @@ def Main() -> None:
         log.exception("curva_di: erro inesperado")
 
     finally:
-        send_completion_email(_SCRIPT_NAME, success, summary, logger=log)
+        EnviarEmailConclusao(NOME_SCRIPT, success, summary, logger=log)
 
 
 if __name__ == "__main__":
-    Main()
+    Principal()

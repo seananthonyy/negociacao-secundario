@@ -142,3 +142,52 @@ FROM FluxoAtivos WHERE cdTicker = ? ORDER BY dtEvento;
 6. Entregar a **lista de colunas trocadas** para o add-in.
 7. Documenter atualiza o vault.
 8. Backup antigo guardado até validação final.
+
+---
+
+# Fase 2 — Identificadores Python (08/07/2026, EXECUTADA)
+
+> A padronização de 29/06 renomeou o **banco**. Esta renomeou o **código Python**: 1.937 tokens em 24 arquivos + 3 notebooks. Notas antigas do vault ainda citam os nomes velhos — use a tabela abaixo para traduzir.
+
+## Regras aplicadas
+- **Funções e classes:** PascalCase, em português, **sem `_` inicial**.
+- **Variáveis e parâmetros:** camelCase, em português.
+- **Constantes de módulo:** UPPER_SNAKE, sem `_` inicial (`_SQL_UPSERT` → `SQL_UPSERT`).
+- **Ficam em inglês:** jargão de mercado (`vrSpreadOver`, `vrDuration`, `vrPU`, `cdISIN`, `Mtm*`, `Outstanding`, `Broker`, `Yield`), API de terceiros (`parse_args`, `status_code`), **nomes de arquivo** (`run_diario.py`, `pipeline_core.py`) e **chaves de contrato** (colunas do DB, `data_json` do template Jinja).
+- `dest=` explícito no argparse quando a flag tem hífen (`--email-dia` → `dest="emailDia"`).
+
+## API pública das libs
+
+| Antes | Agora |
+|---|---|
+| `lib.db.get_db` | **`ObterBanco`** |
+| `lib.db.get_connection` | **`ObterConexao`** |
+| `lib.db.get_readonly_connection` | **`ObterConexaoLeitura`** |
+| `lib.db.bootstrap` | **`Bootstrap`** |
+| `lib.logger.get_logger` | **`ObterLogger`** |
+| `lib.config.get_secret` | **`ObterSegredo`** |
+| `lib.config.get_env` | **`ObterEnv`** |
+| `lib.config.get_email_list` | **`ObterListaEmails`** |
+| `lib.config.get_playwright_proxy` | **`ObterProxyPlaywright`** |
+| `lib.email_outlook.send_completion_email` | **`EnviarEmailConclusao`** |
+| `lib.email_outlook.send_html_email` | **`EnviarEmailHtml`** |
+| `lib.b3_calc_api.CalcYield` | **`CalcularYield`** |
+| `lib.b3_calc_api.CalcPuGov` | **`CalcularPuGov`** |
+| `lib.fianalytics_api.CalcRate` | **`CalcularTaxa`** |
+
+`lib.config.cfg` (o proxy lazy) **não mudou**.
+
+## Fluxos do `pipeline_core`
+
+`boletim`→**`Boletim`** · `anbima_deb`→**`AnbimaDeb`** · `anbima_cricra`→**`AnbimaCriCra`** · `fianalytics`→**`FiAnalytics`** · `anbima_data`→**`AnbimaData`** · `ntnb`→**`Ntnb`** · `curva_di`→**`CurvaDi`** · `outstanding`→**`Outstanding`** · `calc_taxa`→**`CalcTaxa`** · `filtrar`→**`Filtrar`** · `spread_anbima`→**`SpreadAnbima`** · `match_ref`→**`MatchRef`** · `spread_over`→**`SpreadOver`** · `relatorio`→**`Relatorio`**
+
+Helpers: `dia_util_anterior`→**`DiaUtilAnterior`** · `ultimos_n_dias_uteis`→**`UltimosNDiasUteis`** · `dias_uteis_entre`→**`DiasUteisEntre`** · `run_step`→**`RodarPasso`** · `run_dia`→**`RodarDia`** · `run_ultimos_n`→**`RodarUltimosN`** · `run_intervalo`→**`RodarIntervalo`** · `run_setup`→**`RodarSetup`**
+
+## Padrões comuns dos scripts CLI
+
+`_ParseArgs`→**`LerArgumentos`** · `_ProcessDate`→**`ProcessarData`** · `_BuildDateRange`→**`MontarIntervaloDatas`** · `_BuildSummary`→**`MontarResumo`** · `Main`→**`Principal`** · `_MainAsync`→**`PrincipalAsync`** · `_DateStats`→**`EstatisticasData`** · `_SCRIPT_NAME`→**`NOME_SCRIPT`**
+
+## Como foi feito (e por que é seguro)
+Renomeação via `tokenize`, tocando **só tokens `NAME`** — strings (todo o SQL!), comentários e docstrings ficaram intactos por construção. Depois: `py_compile` nos 24 arquivos, checagem AST de nome-usado-mas-não-definido, `--help` nos 16 scripts, cadeia de cálculo real contra o `trades.db`, 3 scrapers reais (incl. Playwright), e **A/B do relatório**: HTML gerado pelo código pré-rename e pós-rename contra o mesmo banco saiu **byte a byte idêntico** (md5 `77c35a32…`).
+
+**Dois bugs que só apareceram em runtime** (nenhum check estático pega): `args.email_dia` e `args.inicio_boletim`/`args.outstanding` deixaram de existir quando o `dest` do argparse não acompanhou o rename. Daí a regra do `dest=` explícito.

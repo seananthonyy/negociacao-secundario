@@ -9,10 +9,15 @@ Baixa o CSV de taxas indicativas de CRIs e CRAs da Anbima via Playwright
 
 CRI ou CRA é determinado pelo ticker: começa com 'CRA' → CRA, senão → CRI.
 
+**O CSV do portal já traz os ~5 últimos pregões de uma vez** (coluna
+"Data de Referência"). Por isso o script faz UM download por rodada e distribui
+as linhas pelas datas pedidas — o seletor de data da página é irrelevante e não
+é tocado. Datas fora da janela de ~5 pregões simplesmente não existem no CSV.
+
 CLI:
     python scripts/scrape_anbima_cri_cra.py --date 2026-05-29
     python scripts/scrape_anbima_cri_cra.py --start 2026-05-01 --end 2026-05-29
-    python scripts/scrape_anbima_cri_cra.py --date 2026-05-29 --headless
+    python scripts/scrape_anbima_cri_cra.py --date 2026-05-29 --no-headless
 """
 
 import argparse
@@ -29,23 +34,23 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from playwright.async_api import async_playwright, Page
 
-from lib.config import cfg, get_playwright_proxy
-from lib.db import get_db
-from lib.logger import get_logger
-from lib.email_outlook import send_completion_email
+from lib.config import cfg, ObterProxyPlaywright
+from lib.db import ObterBanco
+from lib.logger import ObterLogger
+from lib.email_outlook import EnviarEmailConclusao
 
 # ---------------------------------------------------------------------------
 # Constantes
 # ---------------------------------------------------------------------------
 
-_SQL_UPSERT_ANBIMA = """
+SQL_UPSERT_ANBIMA = """
 INSERT INTO AnbimaIndicativos (cdTicker, dtReferencia, vrTaxaAnbima, vrSpreadAnbima)
 VALUES (?, ?, ?, NULL)
 ON CONFLICT(cdTicker, dtReferencia) DO UPDATE SET
     vrTaxaAnbima = excluded.vrTaxaAnbima
 """
 
-_SQL_UPSERT_INFO = """
+SQL_UPSERT_INFO = """
 INSERT INTO InfoAtivos (
     cdTicker, cdInstrumento, cdEmissor, dtVencimento,
     vrDuration, dtAtualizacaoDuration, cdIndexador, cdReferencia, cdFonteReferencia, dtAtualizacao
@@ -68,12 +73,12 @@ ON CONFLICT(cdTicker) DO UPDATE SET
 # Helpers de parsing (compartilhados com scrape_anbima_debentures)
 # ---------------------------------------------------------------------------
 
-def _CleanEmissor(raw) -> str | None:
+def LimparEmissor(raw) -> str | None:
     s = re.sub(r'\s*\(\*+\)', '', str(raw)).strip()
     return s or None
 
 
-def _ParseFloat(raw) -> float | None:
+def AnalisarFloat(raw) -> float | None:
     s = str(raw).strip()
     if s in ('--', '', 'N/D', 'N/A'):
         return None
@@ -83,7 +88,7 @@ def _ParseFloat(raw) -> float | None:
         return None
 
 
-def _ParseDate(raw) -> str | None:
+def AnalisarData(raw) -> str | None:
     s = str(raw).strip()
     if not s or s in ('--', 'N/D'):
         return None
@@ -96,7 +101,7 @@ def _ParseDate(raw) -> str | None:
     return None
 
 
-def _NormalizeIndexador(raw) -> str | None:
+def NormalizarIndexador(raw) -> str | None:
     s = str(raw).strip().upper()
     if not s or s in ('--', 'N/D'):
         return None
@@ -111,7 +116,7 @@ def _NormalizeIndexador(raw) -> str | None:
     return None
 
 
-def _ParseRefNtnb(raw) -> str | None:
+def AnalisarRefNtnb(raw) -> str | None:
     s = str(raw).strip()
     if not s or s in ('--', 'N/D'):
         return None
@@ -122,11 +127,11 @@ def _ParseRefNtnb(raw) -> str | None:
     return None
 
 
-def _DeriveRef(cdIndexador: str | None, rawRefNtnb) -> str | None:
+def DerivarRef(cdIndexador: str | None, rawRefNtnb) -> str | None:
     if cdIndexador in ('CDI+', '%CDI'):
         return 'FUNDING'
     if cdIndexador == 'IPCA':
-        return _ParseRefNtnb(rawRefNtnb)
+        return AnalisarRefNtnb(rawRefNtnb)
     return None
 
 
@@ -134,7 +139,40 @@ def _DeriveRef(cdIndexador: str | None, rawRefNtnb) -> str | None:
 # Parsing do CSV
 # ---------------------------------------------------------------------------
 
-def _ParseCsv(content: bytes, dtRef: str, log) -> tuple[list, list]:
+def AnalisarLinha(row: dict, dtRef: str) -> tuple[tuple, tuple] | None:
+    """Converte uma linha do CSV em (anbimaRow, infoRow). None se o ticker for inválido."""
+    cdTicker = (row.get('Código') or row.get('Codigo') or '').strip()
+    if not cdTicker or ' ' in cdTicker:
+        return None
+
+    cdInstrumento = 'CRA' if cdTicker.upper().startswith('CRA') else 'CRI'
+    # 'Risco de Crédito' = empresa originadora; 'Emissor' = securitizadora
+    cdEmissor     = LimparEmissor(row.get('Risco de Crédito') or row.get('Risco de Credito') or '')
+    dtVencimento  = AnalisarData(row.get('Vencimento') or '')
+    rawIndexador  = row.get('Índice / Correção') or row.get('Indice / Correcao') or ''
+    cdIndexador   = NormalizarIndexador(rawIndexador) or 'PREFIXADO'
+    vrTaxaAnbima  = AnalisarFloat(row.get('Taxa Indicativa') or '')
+    rawDuration   = AnalisarFloat(row.get('Duration') or '')
+    vrDuration    = round(rawDuration / 252, 6) if rawDuration is not None else None
+    dtUpsertDur   = dtRef if vrDuration is not None else None
+    rawRefNtnb    = row.get('Referência NTNB') or row.get('Referencia NTNB') or ''
+    cdReferencia      = DerivarRef(cdIndexador, rawRefNtnb)
+    cdFonteReferencia = 'Anbima' if cdReferencia is not None else None
+
+    return (
+        (cdTicker, dtRef, vrTaxaAnbima),
+        (cdTicker, cdInstrumento, cdEmissor, dtVencimento,
+         vrDuration, dtUpsertDur, cdIndexador, cdReferencia, cdFonteReferencia),
+    )
+
+
+def AnalisarCsv(content: bytes, log) -> dict[str, tuple[list, list]]:
+    """Parseia o CSV inteiro e agrupa as linhas por 'Data de Referência' (ISO).
+
+    Retorna {dtRef: (anbimaRows, infoRows)}. O CSV do portal traz ~5 pregões.
+    Levanta RuntimeError se o CSV for indecifrável, sem header ou sem linha útil —
+    silêncio aqui foi a causa do bug de 01–06/07/2026 (ver [[09 - Progresso]]).
+    """
     textDecoded = None
     for enc in ('utf-8-sig', 'utf-8', 'latin-1', 'cp1252'):
         try:
@@ -143,8 +181,7 @@ def _ParseCsv(content: bytes, dtRef: str, log) -> tuple[list, list]:
         except UnicodeDecodeError:
             continue
     if textDecoded is None:
-        log.warning("anbima_cricra: não foi possível decodificar CSV de %s", dtRef)
-        return [], []
+        raise RuntimeError("não foi possível decodificar o CSV (nenhum encoding serviu)")
 
     # Detecta delimitador
     sample = textDecoded[:2048]
@@ -152,97 +189,83 @@ def _ParseCsv(content: bytes, dtRef: str, log) -> tuple[list, list]:
 
     reader = csv.DictReader(io.StringIO(textDecoded), delimiter=delimiter)
     if not reader.fieldnames:
-        log.warning("anbima_cricra: CSV de %s sem headers", dtRef)
-        return [], []
+        raise RuntimeError("CSV sem headers")
 
     # Header usa " ; " (com espaços) — strip para normalizar os nomes
     reader.fieldnames = [f.strip() for f in reader.fieldnames]
     log.debug("anbima_cricra: colunas CSV: %s", reader.fieldnames)
 
-    anbimaRows: list[tuple] = []
-    infoRows:   list[tuple] = []
+    porData: dict[str, tuple[list, list]] = {}
+    semData = 0
 
     for row in reader:
-        cdTicker = (row.get('Código') or row.get('Codigo') or '').strip()
-        if not cdTicker or ' ' in cdTicker:
+        rawDataRef = (row.get('Data Referência') or row.get('Data de Referência')
+                      or row.get('Data Referencia') or '')
+        dtLinhaRef = AnalisarData(rawDataRef.strip())
+        if not dtLinhaRef:
+            semData += 1
             continue
 
-        # Filtra linhas cuja data de referência não bate com dtRef
-        rawDataRef  = row.get('Data Referência') or row.get('Data de Referência') or row.get('Data Referencia') or ''
-        dtLinhaRef  = _ParseDate(rawDataRef.strip())
-        if dtLinhaRef and dtLinhaRef != dtRef:
+        parsed = AnalisarLinha(row, dtLinhaRef)
+        if parsed is None:
             continue
 
-        cdInstrumento = 'CRA' if cdTicker.upper().startswith('CRA') else 'CRI'
-        # 'Risco de Crédito' = empresa originadora; 'Emissor' = securitizadora
-        cdEmissor     = _CleanEmissor(row.get('Risco de Crédito') or row.get('Risco de Credito') or '')
-        dtVencimento  = _ParseDate(row.get('Vencimento') or '')
-        rawIndexador  = row.get('Índice / Correção') or row.get('Indice / Correcao') or ''
-        cdIndexador   = _NormalizeIndexador(rawIndexador) or 'PREFIXADO'
-        vrTaxaAnbima  = _ParseFloat(row.get('Taxa Indicativa') or '')
-        rawDuration   = _ParseFloat(row.get('Duration') or '')
-        vrDuration    = round(rawDuration / 252, 6) if rawDuration is not None else None
-        dtUpsertDur   = dtRef if vrDuration is not None else None
-        rawRefNtnb    = row.get('Referência NTNB') or row.get('Referencia NTNB') or ''
-        cdReferencia         = _DeriveRef(cdIndexador, rawRefNtnb)
-        cdFonteReferencia   = 'Anbima' if cdReferencia is not None else None
+        anbimaRow, infoRow = parsed
+        anbimaRows, infoRows = porData.setdefault(dtLinhaRef, ([], []))
+        anbimaRows.append(anbimaRow)
+        infoRows.append(infoRow)
 
-        anbimaRows.append((cdTicker, dtRef, vrTaxaAnbima))
-        infoRows.append((cdTicker, cdInstrumento, cdEmissor, dtVencimento,
-                         vrDuration, dtUpsertDur, cdIndexador, cdReferencia, cdFonteReferencia))
+    if semData:
+        log.warning("anbima_cricra: %d linha(s) sem 'Data de Referência' parseável — ignoradas", semData)
+    if not porData:
+        raise RuntimeError(f"CSV baixado ({len(content)} bytes) não produziu nenhuma linha útil "
+                           f"— colunas: {reader.fieldnames}")
 
-    return anbimaRows, infoRows
+    log.info("anbima_cricra: CSV cobre %d data(s): %s",
+             len(porData), ", ".join(sorted(porData)))
+    return porData
 
 
 # ---------------------------------------------------------------------------
-# Playwright: download por data
+# Playwright: um único download (o CSV já traz os ~5 últimos pregões)
 # ---------------------------------------------------------------------------
 
-async def _SetDate(page: Page, dtStr: str, log) -> None:
-    d       = date.fromisoformat(dtStr)
-    dtInput = d.strftime('%d/%m/%Y')
+# Seletores estáveis (data-testid). As classes do portal são CSS-modules com hash
+# (ex.: '_menuFiles_727cw_116') e mudam a cada build — nunca usar classe aqui.
+SEL_LINK_CSV = 'ul[data-testid="toolbar-file-list"] a'
 
-    # Tenta preencher o input de data (selector do componente Anbima)
-    dateLocator = page.locator('input.anbima-ui-input__input').first
+
+async def BaixarCsv(page: Page, log) -> bytes:
+    """Baixa o CSV único do portal. Levanta se o link sumir ou o download falhar."""
+    csvLocator = page.locator(SEL_LINK_CSV).filter(has_text='CSV')
     try:
-        await dateLocator.click(click_count=3)
-        await dateLocator.fill(dtInput)
-        await dateLocator.press('Enter')
-        await page.wait_for_timeout(2500)
-        log.debug("anbima_cricra: data setada para %s", dtInput)
+        await csvLocator.wait_for(state='visible', timeout=30_000)
     except Exception as exc:
-        log.warning("anbima_cricra: erro ao setar data %s: %s", dtInput, exc)
+        raise RuntimeError(
+            f"link de CSV não encontrado ({SEL_LINK_CSV!r}) — o portal Anbima mudou de layout: {exc}"
+        ) from exc
 
+    async with page.expect_download(timeout=20_000) as dlInfo:
+        await csvLocator.click()
+    dl      = await dlInfo.value
+    dlPath  = await dl.path()
+    with open(dlPath, 'rb') as fh:
+        content = fh.read()
 
-async def _DownloadCsv(page: Page, dtStr: str, log) -> bytes | None:
-    await _SetDate(page, dtStr, log)
+    if not content:
+        raise RuntimeError("CSV baixado veio vazio (0 bytes)")
 
-    # Tenta intercept de download via botão CSV
-    csvLocator = page.locator('ul.anbima-ui-toolbar__menu-files a').filter(has_text='CSV')
-    try:
-        async with page.expect_download(timeout=20_000) as dlInfo:
-            await csvLocator.click()
-        dl      = await dlInfo.value
-        dlPath  = await dl.path()
-        with open(dlPath, 'rb') as fh:
-            content = fh.read()
-        log.info("anbima_cricra: %s — CSV baixado (%d bytes)", dtStr, len(content))
-        return content
-    except Exception as exc:
-        log.warning("anbima_cricra: %s — erro ao baixar CSV: %s", dtStr, exc)
-        return None
+    log.info("anbima_cricra: CSV baixado (%d bytes)", len(content))
+    return content
 
 
 # ---------------------------------------------------------------------------
 # Processamento por data
 # ---------------------------------------------------------------------------
 
-def _SaveToDb(conn, anbimaRows: list, infoRows: list, dtStr: str, log) -> tuple[int, int]:
-    if not anbimaRows:
-        log.warning("anbima_cricra: %s — nenhum ticker extraído do CSV", dtStr)
-        return 0, 0
-    conn.executemany(_SQL_UPSERT_ANBIMA, anbimaRows)
-    conn.executemany(_SQL_UPSERT_INFO,   infoRows)
+def GravarNoBanco(conn, anbimaRows: list, infoRows: list, dtStr: str, log) -> tuple[int, int]:
+    conn.executemany(SQL_UPSERT_ANBIMA, anbimaRows)
+    conn.executemany(SQL_UPSERT_INFO,   infoRows)
     conn.commit()
     log.info("anbima_cricra: %s — %d AnbimaIndicativos, %d InfoAtivos",
              dtStr, len(anbimaRows), len(infoRows))
@@ -253,47 +276,52 @@ def _SaveToDb(conn, anbimaRows: list, infoRows: list, dtStr: str, log) -> tuple[
 # Main assíncrono
 # ---------------------------------------------------------------------------
 
-async def _MainAsync(args: argparse.Namespace, log) -> list[tuple[str, int, int]]:
-    datas   = _BuildDateRange(args)
+async def PrincipalAsync(args: argparse.Namespace, log) -> tuple[list[tuple[str, int, int]], list[str]]:
+    """Baixa o CSV uma vez e distribui as linhas pelas datas pedidas.
+    Retorna (resultados por data, datas disponíveis no CSV)."""
+    datas   = MontarIntervaloDatas(args)
     pageUrl = cfg["scrape"]["anbima"]["cricraUrl"]
     results: list[tuple[str, int, int]] = []
-    conn    = get_db()
+    conn    = ObterBanco()
 
     try:
         async with async_playwright() as pw:
-            browser = await pw.chromium.launch(headless=args.headless, proxy=get_playwright_proxy())
+            browser = await pw.chromium.launch(headless=args.headless, proxy=ObterProxyPlaywright())
             context = await browser.new_context(
                 accept_downloads=True,
                 viewport={"width": 1400, "height": 900},
             )
             page = await context.new_page()
+            try:
+                log.info("anbima_cricra: navegando para %s", pageUrl)
+                await page.goto(pageUrl, wait_until="domcontentloaded", timeout=45_000)
+                content = await BaixarCsv(page, log)
+            finally:
+                await browser.close()
 
-            log.info("anbima_cricra: navegando para %s", pageUrl)
-            await page.goto(pageUrl, wait_until="networkidle", timeout=45_000)
-            await page.wait_for_timeout(2000)
+        porData = AnalisarCsv(content, log)   # {dtRef: (anbimaRows, infoRows)}
 
-            for d in datas:
-                dtStr   = d.isoformat()
-                content = await _DownloadCsv(page, dtStr, log)
-                if content is None:
-                    results.append((dtStr, 0, 0))
-                    continue
-                anbimaRows, infoRows = _ParseCsv(content, dtStr, log)
-                nAnbima, nInfo       = _SaveToDb(conn, anbimaRows, infoRows, dtStr, log)
-                results.append((dtStr, nAnbima, nInfo))
-
-            await browser.close()
+        for d in datas:
+            dtStr = d.isoformat()
+            if dtStr not in porData:
+                log.warning("anbima_cricra: %s — não está no CSV (o portal só publica os "
+                            "~5 últimos pregões; disponíveis: %s)", dtStr, ", ".join(sorted(porData)))
+                results.append((dtStr, 0, 0))
+                continue
+            anbimaRows, infoRows = porData[dtStr]
+            nAnbima, nInfo       = GravarNoBanco(conn, anbimaRows, infoRows, dtStr, log)
+            results.append((dtStr, nAnbima, nInfo))
     finally:
         conn.close()
 
-    return results
+    return results, sorted(porData)
 
 
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
-def _ParseArgs() -> argparse.Namespace:
+def LerArgumentos() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Baixa taxas indicativas de CRI/CRA da Anbima via Playwright."
     )
@@ -315,7 +343,7 @@ def _ParseArgs() -> argparse.Namespace:
     return args
 
 
-def _BuildDateRange(args: argparse.Namespace) -> list[date]:
+def MontarIntervaloDatas(args: argparse.Namespace) -> list[date]:
     if args.date:
         return [date.fromisoformat(args.date)]
     startDate = date.fromisoformat(args.start)
@@ -329,7 +357,7 @@ def _BuildDateRange(args: argparse.Namespace) -> list[date]:
     return datas
 
 
-def _BuildSummary(results: list[tuple[str, int, int]]) -> str:
+def MontarResumo(results: list[tuple[str, int, int]], disponiveis: list[str]) -> str:
     lines = ["Resultado por data:", ""]
     lines.append(f"{'Data':<12}  {'Anbima':>7}  {'InfoAtivos':>10}")
     lines.append("-" * 34)
@@ -340,6 +368,14 @@ def _BuildSummary(results: list[tuple[str, int, int]]) -> str:
         totalInfo   += nInfo
     lines.append("-" * 34)
     lines.append(f"{'TOTAL':<12}  {totalAnbima:>7}  {totalInfo:>10}")
+    lines.append("")
+    lines.append(f"Datas publicadas no CSV do portal: {', '.join(disponiveis)}")
+
+    faltando = [d for d, n, _ in results if n == 0]
+    if faltando:
+        lines.append("")
+        lines.append(f"ATENCAO: {len(faltando)} data(s) pedida(s) sem linha no CSV: {', '.join(faltando)}")
+        lines.append("(o portal Anbima só publica os ~5 últimos pregões de CRI/CRA)")
     return "\n".join(lines)
 
 
@@ -347,16 +383,24 @@ def _BuildSummary(results: list[tuple[str, int, int]]) -> str:
 # Entrypoint
 # ---------------------------------------------------------------------------
 
-def Main() -> None:
-    log     = get_logger("scrape_anbima_cri_cra")
-    args    = _ParseArgs()
+def Principal() -> None:
+    log     = ObterLogger("scrape_anbima_cri_cra")
+    args    = LerArgumentos()
     summary = ""
     success = True
 
     try:
-        results = asyncio.run(_MainAsync(args, log))
-        summary = _BuildSummary(results)
+        results, disponiveis = asyncio.run(PrincipalAsync(args, log))
+        summary = MontarResumo(results, disponiveis)
         log.info("anbima_cricra: concluído.\n%s", summary)
+
+        # Nenhuma linha gravada em NENHUMA data pedida = scraper quebrado, não
+        # "não tem dado". Falha alto — foi exatamente isso que passou batido em
+        # 01-06/07/2026 (exit 0 com 0 linhas). Data individual ausente é só WARNING.
+        if not any(n > 0 for _, n, _ in results):
+            success = False
+            summary = ("NENHUMA linha gravada para as datas pedidas.\n\n" + summary)
+            log.error("anbima_cricra: 0 linhas gravadas em todas as datas pedidas — falhando")
 
     except Exception:
         success = False
@@ -364,8 +408,11 @@ def Main() -> None:
         log.exception("anbima_cricra: erro inesperado")
 
     finally:
-        send_completion_email("scrape_anbima_cri_cra", success, summary, logger=log)
+        EnviarEmailConclusao("scrape_anbima_cri_cra", success, summary, logger=log)
+
+    if not success:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    Main()
+    Principal()

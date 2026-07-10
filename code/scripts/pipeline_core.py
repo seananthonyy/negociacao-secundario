@@ -2,7 +2,9 @@
 pipeline_core.py
 ================
 Lógica compartilhada de orquestração do pipeline. Usado por:
-  - pipeline.ipynb        (interativo, 1 bloco por fluxo)
+  - setup_teste.ipynb     (smoke test — cada fluxo no menor range possível)
+  - setup_inicial.ipynb   (carga histórica — range definido pelo usuário)
+  - run_secundario.ipynb  (rotina diária — liquidações D-3 .. D-1)
   - scripts/run_diario.py (entrypoint agendável no Task Scheduler)
 
 Cada passo é executado como subprocesso do CLI que já existe em scripts/ — não
@@ -11,15 +13,15 @@ duplica lógica e mantém cada script independente (com seu próprio log/email).
 **Fonte única do CLI:** cada fluxo tem UMA função (boletim, anbima_deb, ntnb,
 calc_taxa, ...). O comando de linha de cada script fica escrito num único lugar
 (essa função). Se o CLI de um script mudar, altera-se só a função aqui — o
-notebook e as rotinas (run_dia/run_ultimos_n/run_setup) chamam essas funções.
+notebook e as rotinas (RodarDia/RodarUltimosN/RodarSetup) chamam essas funções.
 
 Datas seguem a lógica de liquidação X / X-1u de [[11 - Pipeline de Execucao]].
 
 Uso típico:
     import pipeline_core as pc
-    pc.boletim(Xant, X)          # testar um fluxo isolado
-    pc.run_ultimos_n(5)          # rotina diária
-    pc.run_setup("2026-03-02")   # bootstrap inicial
+    pc.Boletim(Xant, X)          # testar um fluxo isolado
+    pc.RodarUltimosN(5)          # rotina diária (usada pelo run_diario.py)
+    pc.RodarIntervalo(ini, fim)  # reprocessar um range
 """
 
 import csv
@@ -28,20 +30,20 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
-_ROOT = Path(__file__).parent.parent          # code/
-_SCRIPTS = Path(__file__).parent              # code/scripts/
-_FERIADOS_CSV = _ROOT / "data" / "feriados_anbima.csv"
+RAIZ = Path(__file__).parent.parent          # code/
+SCRIPTS = Path(__file__).parent              # code/scripts/
+FERIADOS_CSV = RAIZ / "data" / "feriados_anbima.csv"
 
 
 # ---------------------------------------------------------------------------
 # Dias úteis (feriados Anbima + fim de semana)
 # ---------------------------------------------------------------------------
 
-def _feriados() -> set[date]:
+def Feriados() -> set[date]:
     """Feriados Anbima a partir de data/feriados_anbima.csv (coluna 'data', ISO)."""
     fer: set[date] = set()
-    if _FERIADOS_CSV.exists():
-        with _FERIADOS_CSV.open(encoding="utf-8") as f:
+    if FERIADOS_CSV.exists():
+        with FERIADOS_CSV.open(encoding="utf-8") as f:
             for row in csv.DictReader(f):
                 try:
                     fer.add(date.fromisoformat(row["data"].strip()))
@@ -50,41 +52,41 @@ def _feriados() -> set[date]:
     return fer
 
 
-def _eh_dia_util(d: date, fer: set[date]) -> bool:
+def EhDiaUtil(d: date, fer: set[date]) -> bool:
     return d.weekday() < 5 and d not in fer
 
 
-def dia_util_anterior(d: date | str, fer: set[date] | None = None) -> date:
+def DiaUtilAnterior(d: date | str, fer: set[date] | None = None) -> date:
     """Dia útil imediatamente anterior a d (exclui fim de semana e feriados)."""
-    fer = fer if fer is not None else _feriados()
+    fer = fer if fer is not None else Feriados()
     d = date.fromisoformat(d) if isinstance(d, str) else d
     d -= timedelta(days=1)
-    while not _eh_dia_util(d, fer):
+    while not EhDiaUtil(d, fer):
         d -= timedelta(days=1)
     return d
 
 
-def ultimos_n_dias_uteis(n: int, ref: date | str | None = None) -> list[date]:
+def UltimosNDiasUteis(n: int, ref: date | str | None = None) -> list[date]:
     """Os n dias úteis mais recentes até `ref` (inclusive se ref for dia útil),
     em ordem cronológica (mais antigo → mais recente)."""
-    fer = _feriados()
+    fer = Feriados()
     d = date.today() if ref is None else (date.fromisoformat(ref) if isinstance(ref, str) else ref)
     dias: list[date] = []
     while len(dias) < n:
-        if _eh_dia_util(d, fer):
+        if EhDiaUtil(d, fer):
             dias.append(d)
         d -= timedelta(days=1)
     return list(reversed(dias))
 
 
-def dias_uteis_entre(inicio: date | str, fim: date | str) -> list[date]:
+def DiasUteisEntre(inicio: date | str, fim: date | str) -> list[date]:
     """Dias úteis no intervalo [inicio, fim] (cronológico)."""
-    fer = _feriados()
+    fer = Feriados()
     ini = date.fromisoformat(inicio) if isinstance(inicio, str) else inicio
     end = date.fromisoformat(fim) if isinstance(fim, str) else fim
     out, cur = [], ini
     while cur <= end:
-        if _eh_dia_util(cur, fer):
+        if EhDiaUtil(cur, fer):
             out.append(cur)
         cur += timedelta(days=1)
     return out
@@ -94,29 +96,29 @@ def dias_uteis_entre(inicio: date | str, fim: date | str) -> list[date]:
 # Runner de subprocesso
 # ---------------------------------------------------------------------------
 
-def _iso(d: date | str) -> str:
+def Iso(d: date | str) -> str:
     return d.isoformat() if isinstance(d, date) else d
 
 
-def run_step(script: str, *args: str, resultados: list | None = None,
-             parar_em_erro: bool = False) -> bool:
+def RodarPasso(script: str, *args: str, resultados: list | None = None,
+             pararEmErro: bool = False) -> bool:
     """Executa `python scripts/<script>.py <args>` como subprocesso.
     Retorna True se exit code == 0. Loga cabeçalho e OK/FALHA.
-    Se `resultados` for passado, anexa (rótulo, ok). `parar_em_erro` re-levanta."""
-    cmd = [sys.executable, str(_SCRIPTS / f"{script}.py"), *[_iso(a) for a in args]]
-    rotulo = f"{script} {' '.join(_iso(a) for a in args)}".strip()
+    Se `resultados` for passado, anexa (rótulo, ok). `pararEmErro` re-levanta."""
+    cmd = [sys.executable, str(SCRIPTS / f"{script}.py"), *[Iso(a) for a in args]]
+    rotulo = f"{script} {' '.join(Iso(a) for a in args)}".strip()
     print(f"\n{'=' * 70}\n>> {rotulo}\n{'=' * 70}", flush=True)
-    proc = subprocess.run(cmd, cwd=str(_ROOT))
+    proc = subprocess.run(cmd, cwd=str(RAIZ))
     ok = proc.returncode == 0
     print(f"{'[OK]   ' if ok else '[FALHA]'} {rotulo} -- exit {proc.returncode}", flush=True)
     if resultados is not None:
         resultados.append((rotulo, ok))
-    if not ok and parar_em_erro:
+    if not ok and pararEmErro:
         raise RuntimeError(f"Passo falhou: {rotulo} (exit {proc.returncode})")
     return ok
 
 
-def _resumo(resultados: list[tuple[str, bool]]) -> None:
+def ImprimirResumo(resultados: list[tuple[str, bool]]) -> None:
     print(f"\n{'#' * 70}\n# RESUMO — {sum(1 for _, ok in resultados if ok)}/{len(resultados)} passos OK\n{'#' * 70}")
     for rotulo, ok in resultados:
         print(f"  {'OK  ' if ok else 'FALHA'}  {rotulo}")
@@ -125,7 +127,7 @@ def _resumo(resultados: list[tuple[str, bool]]) -> None:
         print(f"\n{len(falhas)} passo(s) com falha — revisar acima.")
 
 
-def _date_args(inicio, fim):
+def ArgsData(inicio, fim):
     """('--date', d) para data única; ('--start', i, '--end', f) para intervalo."""
     return ("--date", inicio) if fim is None else ("--start", inicio, "--end", fim)
 
@@ -135,199 +137,215 @@ def _date_args(inicio, fim):
 # (mude aqui se o CLI de um script mudar; notebook e rotinas chamam estas funções)
 # ---------------------------------------------------------------------------
 
-def boletim(inicio, fim, resultados=None) -> bool:
-    """Boletim B3 (negócios). Na diária: inicio=X-1u, fim=X."""
-    return run_step("scrape_b3_boletim", "--start", inicio, "--end", fim, resultados=resultados)
+def Boletim(inicio, fim=None, resultados=None) -> bool:
+    """Boletim B3 (negócios). Na diária: inicio=X-1u, fim=X. fim=None → 1 pregão só."""
+    return RodarPasso("scrape_b3_boletim", *ArgsData(inicio, fim), resultados=resultados)
 
-def anbima_deb(inicio, fim=None, resultados=None) -> bool:
+def AnbimaDeb(inicio, fim=None, resultados=None) -> bool:
     """Anbima debêntures (taxa indicativa). Aceita data única ou intervalo."""
-    return run_step("scrape_anbima_debentures", *_date_args(inicio, fim), resultados=resultados)
+    return RodarPasso("scrape_anbima_debentures", *ArgsData(inicio, fim), resultados=resultados)
 
-def anbima_cricra(inicio, fim=None, resultados=None) -> bool:
+def AnbimaCriCra(inicio, fim=None, resultados=None) -> bool:
     """Anbima CRI/CRA (taxa indicativa) — Playwright. Data única ou intervalo."""
-    return run_step("scrape_anbima_cri_cra", *_date_args(inicio, fim), resultados=resultados)
+    return RodarPasso("scrape_anbima_cri_cra", *ArgsData(inicio, fim), resultados=resultados)
 
-def fianalytics(resultados=None) -> bool:
+def FiAnalytics(resultados=None) -> bool:
     """FI Analytics planilha (características) — Playwright + login. Sem data."""
-    return run_step("scrape_fianalytics_planilha", resultados=resultados)
+    return RodarPasso("scrape_fianalytics_planilha", resultados=resultados)
 
-def anbima_data(inicio=None, fim=None, full=False, resultados=None) -> bool:
+def AnbimaData(inicio=None, fim=None, full=False, limit=None, force=False,
+                resultados=None) -> bool:
     """Anbima Data (características + fluxo) — Playwright.
-    full=True → `--mode full` (universo completo, setup); senão intervalo incremental."""
+    full=True → `--mode full` (universo completo, setup); senão intervalo incremental.
+    limit/force: só para smoke test (raspar N tickers ignorando o cache)."""
+    extra = []
+    if limit is not None:
+        extra += ["--limit", str(limit)]
+    if force:
+        extra += ["--force"]
     if full:
-        return run_step("scrape_anbima_data_ativos", "--mode", "full", resultados=resultados)
-    return run_step("scrape_anbima_data_ativos", *_date_args(inicio, fim), resultados=resultados)
+        return RodarPasso("scrape_anbima_data_ativos", "--mode", "full", *extra, resultados=resultados)
+    return RodarPasso("scrape_anbima_data_ativos", *ArgsData(inicio, fim), *extra, resultados=resultados)
 
-def ntnb(inicio, fim=None, resultados=None) -> bool:
+def Ntnb(inicio, fim=None, workers=None, resultados=None) -> bool:
     """Anbima NTN-B (MtM). Na diária: intervalo X-1u..X."""
-    return run_step("scrape_anbima_ntnb", *_date_args(inicio, fim), resultados=resultados)
+    extra = ["--workers", str(workers)] if workers else []
+    return RodarPasso("scrape_anbima_ntnb", *ArgsData(inicio, fim), *extra, resultados=resultados)
 
-def curva_di(d, resultados=None) -> bool:
+def CurvaDi(d, resultados=None) -> bool:
     """Curva DI B3 (MtM). Só aceita data única — rodar 1× por pregão."""
-    return run_step("scrape_b3_curva_di", "--date", d, resultados=resultados)
+    return RodarPasso("scrape_b3_curva_di", "--date", d, resultados=resultados)
 
-def outstanding(inicio, fim=None, resultados=None) -> bool:
+def Outstanding(inicio, fim=None, resultados=None) -> bool:
     """Outstanding via Bloomberg — SÓ NO BANCO. Data única ou intervalo."""
-    return run_step("scrape_outstanding_bloomberg", *_date_args(inicio, fim), resultados=resultados)
+    return RodarPasso("scrape_outstanding_bloomberg", *ArgsData(inicio, fim), resultados=resultados)
 
-def calc_taxa(X, resultados=None) -> bool:
-    """Calcula taxa por trade (cascata FI Analytics → B3). ANTES de filtrar."""
-    return run_step("calc_taxa_negocios", "--date", X, resultados=resultados)
+def CalcTaxa(X, workers=None, limit=None, force=False, resultados=None) -> bool:
+    """Calcula taxa por trade (cascata FI Analytics → B3). ANTES de filtrar.
+    limit: só para smoke test (N trades, priorizando os que precisam de API)."""
+    extra = []
+    if workers:
+        extra += ["--workers", str(workers)]
+    if limit is not None:
+        extra += ["--limit", str(limit)]
+    if force:
+        extra += ["--force"]
+    return RodarPasso("calc_taxa_negocios", "--date", X, *extra, resultados=resultados)
 
-def filtrar(X, resultados=None) -> bool:
+def Filtrar(X, resultados=None) -> bool:
     """Classifica VALIDO / FUNDO / BROKER / PF."""
-    return run_step("filtrar_trades", "--date", X, resultados=resultados)
+    return RodarPasso("filtrar_trades", "--date", X, resultados=resultados)
 
-def spread_anbima(d, resultados=None) -> bool:
+def SpreadAnbima(d, resultados=None) -> bool:
     """Spread Anbima das indicativas na data d."""
-    return run_step("calc_spread_anbima", "--date", d, resultados=resultados)
+    return RodarPasso("calc_spread_anbima", "--date", d, resultados=resultados)
 
-def match_ref(resultados=None) -> bool:
+def MatchRef(resultados=None) -> bool:
     """Preenche cdReferencia faltante (global, sem data). ANTES de spread_over."""
-    return run_step("match_referencias", resultados=resultados)
+    return RodarPasso("match_referencias", resultados=resultados)
 
-def spread_over(X, resultados=None) -> bool:
+def SpreadOver(X, resultados=None) -> bool:
     """Spread dos trades vs MtM (casado por dtNegocio)."""
-    return run_step("calc_spread_over", "--date", X, resultados=resultados)
+    return RodarPasso("calc_spread_over", "--date", X, resultados=resultados)
 
-def relatorio(resultados=None) -> bool:
+def Relatorio(resultados=None) -> bool:
     """Regenera o relatório HTML (toda a base)."""
-    return run_step("gerar_relatorio_credito", resultados=resultados)
+    return RodarPasso("gerar_relatorio_credito", resultados=resultados)
 
 
 # ---------------------------------------------------------------------------
 # Cadeia diária — liquidação X
 # ---------------------------------------------------------------------------
 
-def run_dia(X: date | str, resultados: list | None = None,
-            gerar_relatorio: bool = True) -> list:
+def RodarDia(X: date | str, resultados: list | None = None,
+            gerarRelatorio: bool = True) -> list:
     """Cadeia completa dos 13 passos para a liquidação X (ver [[11 - Pipeline de Execucao]]).
     Raspa Anbima deb/CRI/CRA de X E X-1u (Anbima casado por dtNegocio).
-    Passe gerar_relatorio=False ao rodar em loop (relatório 1× no fim)."""
+    Passe gerarRelatorio=False ao rodar em loop (relatório 1× no fim)."""
     res = resultados if resultados is not None else []
-    Xant = dia_util_anterior(X)
+    Xant = DiaUtilAnterior(X)
 
-    boletim(Xant, X, resultados=res)
+    Boletim(Xant, X, resultados=res)
     for d in (Xant, X):
-        anbima_deb(d, resultados=res)
-        anbima_cricra(d, resultados=res)
-    fianalytics(resultados=res)
-    anbima_data(Xant, X, resultados=res)
-    ntnb(Xant, X, resultados=res)
+        AnbimaDeb(d, resultados=res)
+        AnbimaCriCra(d, resultados=res)
+    FiAnalytics(resultados=res)
+    AnbimaData(Xant, X, resultados=res)
+    Ntnb(Xant, X, resultados=res)
     for d in (Xant, X):
-        curva_di(d, resultados=res)
+        CurvaDi(d, resultados=res)
 
-    calc_taxa(X, resultados=res)
-    filtrar(X, resultados=res)
+    CalcTaxa(X, resultados=res)
+    Filtrar(X, resultados=res)
     for d in (Xant, X):
-        spread_anbima(d, resultados=res)
-    match_ref(resultados=res)
-    spread_over(X, resultados=res)
+        SpreadAnbima(d, resultados=res)
+    MatchRef(resultados=res)
+    SpreadOver(X, resultados=res)
 
-    if gerar_relatorio:
-        relatorio(resultados=res)
-        _resumo(res)
+    if gerarRelatorio:
+        Relatorio(resultados=res)
+        ImprimirResumo(res)
     return res
 
 
-def _run_cadeia_dias(dias: list[date], rotulo: str) -> list:
+def RodarCadeiaDias(dias: list[date], rotulo: str) -> list:
     """Roda a cadeia completa dos 13 passos para uma lista de liquidações `dias`
     (cronológica) e gera o relatório 1× no fim. Passos globais (fianalytics,
     anbima_data, match_ref) rodam uma vez sobre a janela inteira. Base das duas
-    rotinas públicas: run_ultimos_n (padrão) e run_intervalo (range explícito)."""
+    rotinas públicas: RodarUltimosN (padrão) e RodarIntervalo (range explícito)."""
     if not dias:
         raise SystemExit("Sem dias úteis para processar — confira as datas.")
     res: list[tuple[str, bool]] = []
-    Xant0 = dia_util_anterior(dias[0])
+    Xant0 = DiaUtilAnterior(dias[0])
     print(f"{rotulo} — liquidações {dias[0]} .. {dias[-1]} ({len(dias)} dias); X-1u da 1ª = {Xant0}")
 
-    fianalytics(resultados=res)
+    FiAnalytics(resultados=res)
 
     for X in dias:
-        Xant = dia_util_anterior(X)
-        boletim(Xant, X, resultados=res)
-        anbima_deb(X, resultados=res)
-        anbima_cricra(X, resultados=res)
-        ntnb(Xant, X, resultados=res)
-        curva_di(X, resultados=res)
+        Xant = DiaUtilAnterior(X)
+        Boletim(Xant, X, resultados=res)
+        AnbimaDeb(X, resultados=res)
+        AnbimaCriCra(X, resultados=res)
+        Ntnb(Xant, X, resultados=res)
+        CurvaDi(X, resultados=res)
     # a ponta X-1u da 1ª liquidação (fora do laço acima)
-    anbima_deb(Xant0, resultados=res)
-    anbima_cricra(Xant0, resultados=res)
-    curva_di(Xant0, resultados=res)
+    AnbimaDeb(Xant0, resultados=res)
+    AnbimaCriCra(Xant0, resultados=res)
+    CurvaDi(Xant0, resultados=res)
 
-    anbima_data(Xant0, dias[-1], resultados=res)
+    AnbimaData(Xant0, dias[-1], resultados=res)
 
     for X in dias:
-        calc_taxa(X, resultados=res)
-        filtrar(X, resultados=res)
-        spread_anbima(X, resultados=res)
-    spread_anbima(Xant0, resultados=res)
-    match_ref(resultados=res)
+        CalcTaxa(X, resultados=res)
+        Filtrar(X, resultados=res)
+        SpreadAnbima(X, resultados=res)
+    SpreadAnbima(Xant0, resultados=res)
+    MatchRef(resultados=res)
     for X in dias:
-        spread_over(X, resultados=res)
+        SpreadOver(X, resultados=res)
 
-    relatorio(resultados=res)
-    _resumo(res)
+    Relatorio(resultados=res)
+    ImprimirResumo(res)
     return res
 
 
-def run_ultimos_n(n: int = 5) -> list:
+def RodarUltimosN(n: int = 5) -> list:
     """MODO PADRÃO da rotina diária: reprocessa os últimos `n` dias úteis (pega
     alterações retroativas). É o que o run_diario.py roda sem argumentos."""
-    return _run_cadeia_dias(ultimos_n_dias_uteis(n), f"Rotina diária (últimos {n})")
+    return RodarCadeiaDias(UltimosNDiasUteis(n), f"Rotina diária (últimos {n})")
 
 
-def run_intervalo(inicio: date | str, fim: date | str) -> list:
+def RodarIntervalo(inicio: date | str, fim: date | str) -> list:
     """MODO INTERVALO: reprocessa TODOS os dias úteis de [inicio, fim] (inclusive).
     Use para refazer um período específico. Mesma cadeia da rotina diária."""
-    return _run_cadeia_dias(dias_uteis_entre(inicio, fim), f"Intervalo {_iso(inicio)}..{_iso(fim)}")
+    return RodarCadeiaDias(DiasUteisEntre(inicio, fim), f"Intervalo {Iso(inicio)}..{Iso(fim)}")
 
 
 # ---------------------------------------------------------------------------
 # Setup inicial — bootstrap da base
 # ---------------------------------------------------------------------------
 
-def run_setup(inicio_boletim: date | str,
-              dias_indicativas: int = 130,
-              dias_curva_di: int = 20,
-              dias_cricra: int = 5,
-              rodar_outstanding: bool = False) -> list:
+def RodarSetup(inicioBoletim: date | str,
+              diasIndicativas: int = 130,
+              diasCurvaDi: int = 20,
+              diasCriCra: int = 5,
+              rodarOutstanding: bool = False) -> list:
     """Bootstrap da base no banco (roda 1 vez). Raspa o histórico largo que cada
     fonte ainda entrega e roda a cadeia de cálculo sobre todos os pregões da
     janela do boletim. Tolerante a falha (segue em frente; resumo no fim).
     Ver [[13 - Migracao Banco]] §5.
 
-      inicio_boletim   : 1º dia do boletim B3 (define a janela do relatório)
-      dias_indicativas : janela (dias corridos) de deb/NTN-B — fonte guarda ~4 meses
-      dias_curva_di    : nº de pregões da curva DI B3 (guarda ~20)
-      dias_cricra      : nº de pregões de CRI/CRA (portal guarda ~5)
-      rodar_outstanding: True só no banco (terminal Bloomberg)
+      inicioBoletim    : 1º dia do boletim B3 (define a janela do relatório)
+      diasIndicativas  : janela (dias corridos) de deb/NTN-B — fonte guarda ~4 meses
+      diasCurvaDi      : nº de pregões da curva DI B3 (guarda ~20)
+      diasCriCra       : nº de pregões de CRI/CRA (portal guarda ~5)
+      rodarOutstanding : True só no banco (terminal Bloomberg)
     """
     res: list[tuple[str, bool]] = []
     hoje = date.today()
-    ini_ind = hoje - timedelta(days=dias_indicativas)
+    iniInd = hoje - timedelta(days=diasIndicativas)
 
-    anbima_data(full=True, resultados=res)                 # universo completo (o mais pesado)
-    fianalytics(resultados=res)
-    anbima_deb(ini_ind, hoje, resultados=res)              # ~4 meses
-    ntnb(ini_ind, hoje, resultados=res)                    # ~4 meses
-    for d in ultimos_n_dias_uteis(dias_curva_di, ref=hoje):
-        curva_di(d, resultados=res)                        # ~20 pregões
-    for d in ultimos_n_dias_uteis(dias_cricra, ref=hoje):
-        anbima_cricra(d, resultados=res)                   # ~5 pregões
-    boletim(inicio_boletim, hoje, resultados=res)          # janela escolhida
-    if rodar_outstanding:
-        outstanding(inicio_boletim, hoje, resultados=res)  # só no banco
+    AnbimaData(full=True, resultados=res)                 # universo completo (o mais pesado)
+    FiAnalytics(resultados=res)
+    AnbimaDeb(iniInd, hoje, resultados=res)              # ~4 meses
+    Ntnb(iniInd, hoje, resultados=res)                    # ~4 meses
+    for d in UltimosNDiasUteis(diasCurvaDi, ref=hoje):
+        CurvaDi(d, resultados=res)                        # ~20 pregões
+    for d in UltimosNDiasUteis(diasCriCra, ref=hoje):
+        AnbimaCriCra(d, resultados=res)                   # ~5 pregões
+    Boletim(inicioBoletim, hoje, resultados=res)          # janela escolhida
+    if rodarOutstanding:
+        Outstanding(inicioBoletim, hoje, resultados=res)  # só no banco
 
-    dias = dias_uteis_entre(inicio_boletim, hoje)
+    dias = DiasUteisEntre(inicioBoletim, hoje)
     for X in dias:
-        calc_taxa(X, resultados=res)
-        filtrar(X, resultados=res)
-        spread_anbima(X, resultados=res)
-    match_ref(resultados=res)
+        CalcTaxa(X, resultados=res)
+        Filtrar(X, resultados=res)
+        SpreadAnbima(X, resultados=res)
+    MatchRef(resultados=res)
     for X in dias:
-        spread_over(X, resultados=res)
+        SpreadOver(X, resultados=res)
 
-    relatorio(resultados=res)
-    _resumo(res)
+    Relatorio(resultados=res)
+    ImprimirResumo(res)
     return res

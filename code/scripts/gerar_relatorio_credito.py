@@ -28,18 +28,18 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from jinja2 import Environment, FileSystemLoader
 
-from lib.config import cfg, get_email_list
-from lib.db import get_db
-from lib.email_outlook import send_completion_email, send_html_email
-from lib.logger import get_logger
+from lib.config import cfg, ObterListaEmails
+from lib.db import ObterBanco
+from lib.email_outlook import EnviarEmailConclusao, EnviarEmailHtml
+from lib.logger import ObterLogger
 
-_SCRIPT_NAME = "gerar_relatorio_credito"
+NOME_SCRIPT = "gerar_relatorio_credito"
 
 # ---------------------------------------------------------------------------
 # Helpers compartilhados com gerar_relatorio_html.py
 # ---------------------------------------------------------------------------
 
-def _LoadFeriados() -> set[date]:
+def CarregarFeriados() -> set[date]:
     """Feriados Anbima a partir de data/feriados_anbima.csv (set de date)."""
     feriadosPath = Path(cfg["paths"]["dbFile"]).parent / "feriados_anbima.csv"
     feriados: set[date] = set()
@@ -53,7 +53,7 @@ def _LoadFeriados() -> set[date]:
     return feriados
 
 
-def _WeightedAvg(valores: list[tuple[float | None, float]]) -> float | None:
+def MediaPonderada(valores: list[tuple[float | None, float]]) -> float | None:
     num = den = 0.0
     for v, w in valores:
         if v is not None:
@@ -62,7 +62,7 @@ def _WeightedAvg(valores: list[tuple[float | None, float]]) -> float | None:
     return num / den if den else None
 
 
-def _TipoExibicao(cdInstrumento: str | None, cdIndexador: str | None) -> str | None:
+def TipoExibicao(cdInstrumento: str | None, cdIndexador: str | None) -> str | None:
     """
     Tipo usado apenas para exibição/filtro. Debênture indexada a IPCA ou
     PREFIXADO é classificada como 'DEB 12.431' (incentivada). Demais
@@ -74,7 +74,7 @@ def _TipoExibicao(cdInstrumento: str | None, cdIndexador: str | None) -> str | N
 
 
 @dataclass
-class _TradeRow:
+class LinhaNegocio:
     cdTicker: str
     cdEmissor: str
     cdInstrumento: str
@@ -105,28 +105,28 @@ class _TradeRow:
 #   CDI+ / IPCA / PREFIXADO  → |spread| <= 15%
 #   %CDI                     → 60% <= spread <= 180%  (multiplicador, banda bilateral)
 #   indexador desconhecido   → não filtra (grupo '?' não é plotado mesmo)
-_BANDA_SPREAD = (
+BANDA_SPREAD = (
     "((ia.cdIndexador = '%CDI' AND t.vrSpreadOver BETWEEN 60.0 AND 180.0) "
     "OR (ia.cdIndexador IN ('CDI+','IPCA','PREFIXADO') AND ABS(t.vrSpreadOver) <= 15.0) "
     "OR ia.cdIndexador IS NULL "
     "OR ia.cdIndexador NOT IN ('%CDI','CDI+','IPCA','PREFIXADO'))"
 )
 
-_SQL_DIARIO = f"""
+SQL_DIARIO = f"""
 SELECT
     t.dtLiquidacao,
     SUM(t.vrVolume) / 1e6                                               AS vrVolumeM,
     SUM(CASE WHEN COALESCE(ia.cdIndexador,'') != '%CDI'
-                  AND t.vrSpreadOver IS NOT NULL AND {_BANDA_SPREAD}
+                  AND t.vrSpreadOver IS NOT NULL AND {BANDA_SPREAD}
              THEN t.vrSpreadOver * 100.0 * t.vrVolume ELSE 0 END)
     / NULLIF(SUM(CASE WHEN COALESCE(ia.cdIndexador,'') != '%CDI'
-                           AND t.vrSpreadOver IS NOT NULL AND {_BANDA_SPREAD}
+                           AND t.vrSpreadOver IS NOT NULL AND {BANDA_SPREAD}
                       THEN t.vrVolume ELSE 0 END), 0)   AS vrSpreadBps,
     SUM(CASE WHEN COALESCE(ia.cdIndexador,'') = '%CDI'
-                  AND t.vrSpreadOver IS NOT NULL AND {_BANDA_SPREAD}
+                  AND t.vrSpreadOver IS NOT NULL AND {BANDA_SPREAD}
              THEN t.vrSpreadOver * t.vrVolume ELSE 0 END)
     / NULLIF(SUM(CASE WHEN COALESCE(ia.cdIndexador,'') = '%CDI'
-                           AND t.vrSpreadOver IS NOT NULL AND {_BANDA_SPREAD}
+                           AND t.vrSpreadOver IS NOT NULL AND {BANDA_SPREAD}
                       THEN t.vrVolume ELSE 0 END), 0)   AS vrSpreadPctCdi
 FROM NegociosProcessados t
 LEFT JOIN InfoAtivos ia ON ia.cdTicker = t.cdTicker
@@ -135,14 +135,14 @@ GROUP BY t.dtLiquidacao
 ORDER BY t.dtLiquidacao
 """
 
-_SQL_DIARIO_IDX = f"""
+SQL_DIARIO_IDX = f"""
 SELECT
     t.dtLiquidacao,
     COALESCE(ia.cdIndexador, '?')  AS cdIndexador,
     SUM(t.vrVolume) / 1e6          AS vrVolumeM,
-    SUM(CASE WHEN t.vrSpreadOver IS NOT NULL AND {_BANDA_SPREAD}
+    SUM(CASE WHEN t.vrSpreadOver IS NOT NULL AND {BANDA_SPREAD}
              THEN t.vrSpreadOver * t.vrVolume ELSE 0 END)
-    / NULLIF(SUM(CASE WHEN t.vrSpreadOver IS NOT NULL AND {_BANDA_SPREAD}
+    / NULLIF(SUM(CASE WHEN t.vrSpreadOver IS NOT NULL AND {BANDA_SPREAD}
                       THEN t.vrVolume ELSE 0 END), 0)   AS vrSpreadRaw
 FROM NegociosProcessados t
 LEFT JOIN InfoAtivos ia ON ia.cdTicker = t.cdTicker
@@ -151,7 +151,7 @@ GROUP BY t.dtLiquidacao, ia.cdIndexador
 ORDER BY t.dtLiquidacao
 """
 
-_SQL_TICKER = """
+SQL_TICKER = """
 SELECT
     t.dtLiquidacao,
     t.cdTicker,
@@ -169,7 +169,7 @@ GROUP BY t.dtLiquidacao, t.cdTicker, ia.cdEmissor, ia.cdIndexador
 ORDER BY t.dtLiquidacao, t.cdTicker
 """
 
-_SQL_DURATION = """
+SQL_DURATION = """
 SELECT
     t.dtLiquidacao,
     t.cdTicker,
@@ -203,7 +203,7 @@ ORDER BY t.dtLiquidacao, vrVolumeM DESC
 # a Visão Anbima fica sem dados. As demais abas não usam este CTE.
 # (Histórico: até 28/06/2026 o peso era `InfoAtivos.vrQuantidadeEmissao`, um
 #  proxy CONSTANTE por data, sem casa de data no JOIN.)
-_PESO_CTE = """
+PESO_CTE = """
 Peso AS (
     SELECT cdTicker, dtOutstanding AS dtPeso, vrOutstanding AS vrPeso
     FROM Outstanding
@@ -216,8 +216,8 @@ Peso AS (
 # que o usuário deixar selecionados no filtro manual por indexador da Visão Anbima —
 # assim ele tira na mão os high-yield estressados sem filtro estatístico automático.
 # População: ativos com peso > 0 (JOIN Peso).
-_SQL_ANBIMA_IDX = f"""
-WITH {_PESO_CTE}
+SQL_ANBIMA_IDX = f"""
+WITH {PESO_CTE}
 SELECT
     ai.dtReferencia,
     COALESCE(ia.cdIndexador, '?') AS cdIndexador,
@@ -237,8 +237,8 @@ ORDER BY ai.dtReferencia
 # SEM vértice de referência (CDI+ e %CDI). Alimenta as "curvas por duration" da
 # Visão Anbima: x = duration do ativo, y = spread/nominal, uma curva por data.
 # Mesma população (Peso > 0); exige duration conhecida.
-_SQL_ANBIMA_DUR = f"""
-WITH {_PESO_CTE}
+SQL_ANBIMA_DUR = f"""
+WITH {PESO_CTE}
 SELECT
     ai.dtReferencia,
     ia.cdIndexador,
@@ -258,9 +258,9 @@ ORDER BY ai.dtReferencia, ia.vrDuration
 
 # Linha POR TICKER (spread + taxa nominal Anbima + tipo de instrumento) por
 # (data, referência NTN-B / DI1). A mediana por vértice é feita no CLIENTE, filtrável
-# por tipo de instrumento (DEB/DEB 12.431/CRI/CRA). Mesma população do _SQL_ANBIMA_IDX.
-_SQL_ANBIMA_REF = f"""
-WITH {_PESO_CTE}
+# por tipo de instrumento (DEB/DEB 12.431/CRI/CRA). Mesma população do SQL_ANBIMA_IDX.
+SQL_ANBIMA_REF = f"""
+WITH {PESO_CTE}
 SELECT
     ai.dtReferencia,
     ia.cdReferencia,
@@ -281,7 +281,7 @@ ORDER BY ai.dtReferencia, ia.cdReferencia
 # SQL — Boletim Diário
 # ---------------------------------------------------------------------------
 
-_SQL_DATAS_BOLETIM = """
+SQL_DATAS_BOLETIM = """
 SELECT DISTINCT dtLiquidacao
 FROM NegociosProcessados
 WHERE cdStatus IN ('VALIDO', 'BROKER')
@@ -291,7 +291,7 @@ ORDER BY dtLiquidacao
 # Anbima casado por dtNegocio: cada trade compara com a indicativa mais recente
 # com dtReferencia <= o próprio dtNegocio do trade (reflete o mercado no momento
 # em que o negócio foi fechado). Simétrico ao MtM de calc_spread_over.
-_SQL_FETCH_VALIDO = """
+SQL_BUSCAR_VALIDO = """
 WITH AnbimaMatch AS (
     SELECT tp.idTrade AS idTrade, ai.vrTaxaAnbima, ai.vrSpreadAnbima,
            ROW_NUMBER() OVER (PARTITION BY tp.idTrade ORDER BY ai.dtReferencia DESC) AS rn
@@ -311,7 +311,7 @@ LEFT JOIN AnbimaMatch am ON am.idTrade = tp.idTrade AND am.rn = 1
 WHERE tp.dtLiquidacao = ? AND tp.cdStatus = 'VALIDO' AND tr.cdSituacao != 'Cancelado'
 """
 
-_SQL_FETCH_BROKER = """
+SQL_BUSCAR_BROKER = """
 WITH AnbimaMatch AS (
     SELECT tp.idTrade AS idTrade, ai.vrTaxaAnbima, ai.vrSpreadAnbima,
            ROW_NUMBER() OVER (PARTITION BY tp.idTrade ORDER BY ai.dtReferencia DESC) AS rn
@@ -332,13 +332,13 @@ WHERE tp.dtLiquidacao = ? AND tp.cdStatus = 'BROKER'
   AND tp.idGrupoNegocio IS NOT NULL AND tr.cdSituacao != 'Cancelado'
 """
 
-_SQL_MTM_RATE = "SELECT vrTaxa FROM MtmAnbima WHERE cdTicker = ? AND dtReferencia = ?"
+SQL_MTM_TAXA = "SELECT vrTaxa FROM MtmAnbima WHERE cdTicker = ? AND dtReferencia = ?"
 
 # ---------------------------------------------------------------------------
 # SQL — Info Ativos (uma linha por ticker negociado)
 # ---------------------------------------------------------------------------
 
-_SQL_INFO_ATIVOS = """
+SQL_INFO_ATIVOS = """
 WITH UltTrade AS (
     SELECT cdTicker, MAX(dtLiquidacao) AS dtUltimo
     FROM NegociosProcessados
@@ -385,8 +385,8 @@ ORDER BY tt.cdTicker
 # Data loading — Visão Geral / Por Ticker / Duration
 # ---------------------------------------------------------------------------
 
-def _LoadDiario(conn) -> list[dict]:
-    rows = conn.execute(_SQL_DIARIO).fetchall()
+def CarregarDiario(conn) -> list[dict]:
+    rows = conn.execute(SQL_DIARIO).fetchall()
     return [
         {
             "dt":           r[0],
@@ -398,11 +398,11 @@ def _LoadDiario(conn) -> list[dict]:
     ]
 
 
-def _LoadDiarioIdx(conn) -> list[dict]:
+def CarregarDiarioIdx(conn) -> list[dict]:
     """Volume e spread ponderado por volume, quebrados por (dia, indexador).
     spreadRaw fica em % para CDI+/IPCA/PREFIXADO (multiplicar por 100 = bps no
     template) e já é o spread direto para %CDI."""
-    rows = conn.execute(_SQL_DIARIO_IDX).fetchall()
+    rows = conn.execute(SQL_DIARIO_IDX).fetchall()
     return [
         {
             "dt":        r[0],
@@ -414,7 +414,7 @@ def _LoadDiarioIdx(conn) -> list[dict]:
     ]
 
 
-def _LoadAnbimaIdx(conn) -> list[dict]:
+def CarregarAnbimaIdx(conn) -> list[dict]:
     """Linha por ticker (spread Anbima + peso) por (dia, indexador). A média ponderada
     por emissão é feita no cliente, sobre os tickers selecionados no filtro manual.
     spreadRaw em % para os não-%CDI (×100 = bps no template); direto para %CDI."""
@@ -424,15 +424,15 @@ def _LoadAnbimaIdx(conn) -> list[dict]:
             "indexador": r[1],
             "ticker":    r[2],
             "emissor":   r[3] or "",
-            "tipo":      _TipoExibicao(r[4], r[1]) or "—",
+            "tipo":      TipoExibicao(r[4], r[1]) or "—",
             "spreadRaw": round(r[5], 6) if r[5] is not None else None,
             "peso":      r[6],
         }
-        for r in conn.execute(_SQL_ANBIMA_IDX).fetchall()
+        for r in conn.execute(SQL_ANBIMA_IDX).fetchall()
     ]
 
 
-def _LoadAnbimaDur(conn) -> list[dict]:
+def CarregarAnbimaDur(conn) -> list[dict]:
     """Linha por ticker (duration + spread + taxa nominal Anbima) para CDI+ e %CDI.
     Alimenta as curvas por duration da Visão Anbima (x = duration, y = spread/nominal,
     uma curva por data). spreadRaw em % para CDI+ (×100 = bps no template); direto
@@ -442,16 +442,16 @@ def _LoadAnbimaDur(conn) -> list[dict]:
             "dt":        r[0],
             "indexador": r[1],
             "ticker":    r[2],
-            "tipo":      _TipoExibicao(r[3], r[1]) or "—",
+            "tipo":      TipoExibicao(r[3], r[1]) or "—",
             "duration":  round(r[4], 4) if r[4] is not None else None,
             "spreadRaw": round(r[5], 6) if r[5] is not None else None,
             "taxa":      round(r[6], 6) if r[6] is not None else None,
         }
-        for r in conn.execute(_SQL_ANBIMA_DUR).fetchall()
+        for r in conn.execute(SQL_ANBIMA_DUR).fetchall()
     ]
 
 
-def _LoadAnbimaRef(conn) -> list[dict]:
+def CarregarAnbimaRef(conn) -> list[dict]:
     """Linha por ticker (spread + taxa nominal Anbima + tipo de instrumento) por
     (dia, ref NTN-B/DI1). A mediana por vértice é feita no cliente (robusta a outlier),
     filtrável por tipo de instrumento (DEB/DEB 12.431/CRI/CRA)."""
@@ -460,16 +460,16 @@ def _LoadAnbimaRef(conn) -> list[dict]:
             "dt":        r[0],
             "ref":       r[1],
             "ticker":    r[2],
-            "tipo":      _TipoExibicao(r[3], r[4]) or "—",
+            "tipo":      TipoExibicao(r[3], r[4]) or "—",
             "spreadRaw": round(r[5], 6) if r[5] is not None else None,
             "taxa":      round(r[6], 6) if r[6] is not None else None,
         }
-        for r in conn.execute(_SQL_ANBIMA_REF).fetchall()
+        for r in conn.execute(SQL_ANBIMA_REF).fetchall()
     ]
 
 
-def _LoadTicker(conn) -> list[dict]:
-    rows = conn.execute(_SQL_TICKER).fetchall()
+def CarregarTicker(conn) -> list[dict]:
+    rows = conn.execute(SQL_TICKER).fetchall()
     return [
         {
             "dt":        r[0],
@@ -483,8 +483,8 @@ def _LoadTicker(conn) -> list[dict]:
     ]
 
 
-def _LoadDuration(conn) -> list[dict]:
-    rows = conn.execute(_SQL_DURATION).fetchall()
+def CarregarDuration(conn) -> list[dict]:
+    rows = conn.execute(SQL_DURATION).fetchall()
     return [
         {
             "dt":        r[0],
@@ -499,14 +499,14 @@ def _LoadDuration(conn) -> list[dict]:
     ]
 
 
-def _LoadInfoAtivos(conn) -> list[dict]:
+def CarregarInfoAtivos(conn) -> list[dict]:
     """Uma linha por ticker negociado: cadastro + taxa Anbima e taxa de trade mais recentes."""
-    rows = conn.execute(_SQL_INFO_ATIVOS).fetchall()
+    rows = conn.execute(SQL_INFO_ATIVOS).fetchall()
     return [
         {
             "ticker":     r["cdTicker"],
             "emissor":    r["cdEmissor"] or "",
-            "tipo":       _TipoExibicao(r["cdInstrumento"], r["cdIndexador"]) or "",
+            "tipo":       TipoExibicao(r["cdInstrumento"], r["cdIndexador"]) or "",
             "duration":   round(r["vrDuration"], 4)  if r["vrDuration"]  is not None else None,
             "indexador":  r["cdIndexador"] or "",
             "taxaAnbima": round(r["vrTaxaAnbima"], 4) if r["vrTaxaAnbima"] is not None else None,
@@ -518,7 +518,7 @@ def _LoadInfoAtivos(conn) -> list[dict]:
     ]
 
 
-def _GetTickersByVolume(tickerRows: list[dict]) -> list[str]:
+def TickersPorVolume(tickerRows: list[dict]) -> list[str]:
     vol: dict[str, float] = {}
     for r in tickerRows:
         vol[r["ticker"]] = vol.get(r["ticker"], 0.0) + r["volume"]
@@ -529,10 +529,10 @@ def _GetTickersByVolume(tickerRows: list[dict]) -> list[str]:
 # Boletim Diário — agrega por pregão, replica lógica de gerar_relatorio_html
 # ---------------------------------------------------------------------------
 
-def _FetchTrades(conn, dtLiquidacao: str) -> list[_TradeRow]:
-    rows = conn.execute(_SQL_FETCH_VALIDO, (dtLiquidacao, dtLiquidacao)).fetchall()
+def BuscarNegocios(conn, dtLiquidacao: str) -> list[LinhaNegocio]:
+    rows = conn.execute(SQL_BUSCAR_VALIDO, (dtLiquidacao, dtLiquidacao)).fetchall()
     return [
-        _TradeRow(
+        LinhaNegocio(
             cdTicker=r["cdTicker"],
             cdEmissor=r["cdEmissor"] or "",
             cdInstrumento=r["cdInstrumento"],
@@ -551,14 +551,14 @@ def _FetchTrades(conn, dtLiquidacao: str) -> list[_TradeRow]:
     ]
 
 
-def _FetchBrokerGroups(conn, dtLiquidacao: str) -> list[_TradeRow]:
-    rows = conn.execute(_SQL_FETCH_BROKER, (dtLiquidacao, dtLiquidacao)).fetchall()
+def BuscarGruposBroker(conn, dtLiquidacao: str) -> list[LinhaNegocio]:
+    rows = conn.execute(SQL_BUSCAR_BROKER, (dtLiquidacao, dtLiquidacao)).fetchall()
     if not rows:
         return []
     grupos: dict[str, list] = {}
     for r in rows:
         grupos.setdefault(r["idGrupoNegocio"], []).append(r)
-    result: list[_TradeRow] = []
+    result: list[LinhaNegocio] = []
     for trades in grupos.values():
         taxas = [t["vrTaxaCalculada"] for t in trades if t["vrTaxaCalculada"] is not None]
         if not taxas:
@@ -572,10 +572,10 @@ def _FetchBrokerGroups(conn, dtLiquidacao: str) -> list[_TradeRow]:
         if cdReferencia == "FUNDING":
             vrSpreadOver = taxaMedia
         elif cdReferencia is not None:
-            mtm = conn.execute(_SQL_MTM_RATE, (cdReferencia, rep["dtNegocio"])).fetchone()
+            mtm = conn.execute(SQL_MTM_TAXA, (cdReferencia, rep["dtNegocio"])).fetchone()
             if mtm:
                 vrSpreadOver = ((1 + taxaMedia / 100) / (1 + mtm["vrTaxa"] / 100) - 1) * 100
-        result.append(_TradeRow(
+        result.append(LinhaNegocio(
             cdTicker=rep["cdTicker"],
             cdEmissor=rep["cdEmissor"] or "",
             cdInstrumento=rep["cdInstrumento"],
@@ -594,20 +594,20 @@ def _FetchBrokerGroups(conn, dtLiquidacao: str) -> list[_TradeRow]:
     return result
 
 
-def _AggregateTicker(cdTicker: str, grupo: list[_TradeRow]) -> dict:
+def AgregarTicker(cdTicker: str, grupo: list[LinhaNegocio]) -> dict:
     p            = grupo[0]
     vrVolumeTotal  = sum(t.vrVolume for t in grupo)
-    vrTaxaMedia    = _WeightedAvg([(t.vrTaxaCalculada, t.vrVolume) for t in grupo])
-    vrSpreadOver   = _WeightedAvg([(t.vrSpreadOver,    t.vrVolume) for t in grupo])
+    vrTaxaMedia    = MediaPonderada([(t.vrTaxaCalculada, t.vrVolume) for t in grupo])
+    vrSpreadOver   = MediaPonderada([(t.vrSpreadOver,    t.vrVolume) for t in grupo])
     # Anbima também ponderado por volume: trades do mesmo ticker podem ter
     # dtNegocio (logo indicativa Anbima) diferentes dentro da mesma liquidação.
-    vrTaxaAnbima   = _WeightedAvg([(t.vrTaxaAnbima,   t.vrVolume) for t in grupo])
-    vrSpreadAnbima = _WeightedAvg([(t.vrSpreadAnbima, t.vrVolume) for t in grupo])
+    vrTaxaAnbima   = MediaPonderada([(t.vrTaxaAnbima,   t.vrVolume) for t in grupo])
+    vrSpreadAnbima = MediaPonderada([(t.vrSpreadAnbima, t.vrVolume) for t in grupo])
     return {
         "cdTicker":          cdTicker,
         "cdEmissor":         p.cdEmissor,
         "cdInstrumento":     p.cdInstrumento or "—",
-        "cdTipo":            _TipoExibicao(p.cdInstrumento, p.cdIndexador) or "—",
+        "cdTipo":            TipoExibicao(p.cdInstrumento, p.cdIndexador) or "—",
         "cdIndexador":       p.cdIndexador,
         "cdReferencia":             p.cdReferencia,
         "vrDuration":        round(p.vrDuration, 4)  if p.vrDuration  is not None else None,
@@ -622,15 +622,15 @@ def _AggregateTicker(cdTicker: str, grupo: list[_TradeRow]) -> dict:
     }
 
 
-def _LoadBoletim(conn, log) -> dict:
+def CarregarBoletim(conn, log) -> dict:
     """Retorna {dtLiquidacao: {tickers, resumo, totais}} para todos os pregões."""
-    datas     = [r[0] for r in conn.execute(_SQL_DATAS_BOLETIM).fetchall()]
+    datas     = [r[0] for r in conn.execute(SQL_DATAS_BOLETIM).fetchall()]
     ordemInstr = {"DEB": 0, "DEB 12.431": 1, "CRI": 2, "CRA": 3}
     boletim: dict[str, dict] = {}
 
     for dt in datas:
-        linhas   = _FetchTrades(conn, dt)
-        linhas.extend(_FetchBrokerGroups(conn, dt))
+        linhas   = BuscarNegocios(conn, dt)
+        linhas.extend(BuscarGruposBroker(conn, dt))
         if not linhas:
             continue
 
@@ -639,7 +639,7 @@ def _LoadBoletim(conn, log) -> dict:
             gruposTicker.setdefault(ln.cdTicker, []).append(ln)
 
         tickers = sorted(
-            [_AggregateTicker(tk, grp) for tk, grp in gruposTicker.items()],
+            [AgregarTicker(tk, grp) for tk, grp in gruposTicker.items()],
             key=lambda t: (ordemInstr.get(t["cdTipo"] or "", 99), -(t["vrVolumeTotal"] or 0)),
         )
 
@@ -675,16 +675,16 @@ def _LoadBoletim(conn, log) -> dict:
 # ---------------------------------------------------------------------------
 
 # Destinatários do rascunho do relatório do dia: resolvidos em runtime via
-# lib.config.get_email_list("destinatarios") (destinatarios.py → var EMAIL_DESTINATARIOS).
+# lib.config.ObterListaEmails("destinatarios") (destinatarios.py → var EMAIL_DESTINATARIOS).
 
 # Paleta Itaú (mesma do template relatorio_secundario.html)
-_ITAU_NAVY   = "#003087"
-_ITAU_NAVY2  = "#002370"
-_ITAU_ORANGE = "#EC7000"
-_ITAU_LITE   = "#fff3e8"
+ITAU_NAVY   = "#003087"
+ITAU_NAVY2  = "#002370"
+ITAU_ORANGE = "#EC7000"
+ITAU_LITE   = "#fff3e8"
 
 
-def _FmtBR(v: float | None, dec: int) -> str:
+def FmtBr(v: float | None, dec: int) -> str:
     """Número no padrão BR (milhar '.', decimal ','). None → travessão."""
     if v is None:
         return "—"
@@ -692,7 +692,7 @@ def _FmtBR(v: float | None, dec: int) -> str:
     return s.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
-def _DataBR(iso: str) -> str:
+def DataBr(iso: str) -> str:
     """YYYY-MM-DD → DD/MM/AAAA."""
     try:
         return datetime.strptime(iso, "%Y-%m-%d").strftime("%d/%m/%Y")
@@ -700,7 +700,7 @@ def _DataBR(iso: str) -> str:
         return iso
 
 
-def _RefDispEmail(ref: str | None) -> str:
+def RefDisplayEmail(ref: str | None) -> str:
     """NTN-B 35 → B35+; demais inalterados (espelha bRefDisp do template)."""
     if not ref:
         return "—"
@@ -709,16 +709,16 @@ def _RefDispEmail(ref: str | None) -> str:
     return ref
 
 
-def _SpreadEmail(v: float | None, cdIndexador: str | None) -> str:
+def SpreadEmail(v: float | None, cdIndexador: str | None) -> str:
     """%CDI → multiplicador direto; demais → ×100 = bps (espelha bSpreadDisp)."""
     if v is None:
         return "—"
     if cdIndexador == "%CDI":
-        return _FmtBR(v, 0)
-    return _FmtBR(v * 100, 0) + " bps"
+        return FmtBr(v, 0)
+    return FmtBr(v * 100, 0) + " bps"
 
 
-def _BuildEmailHtml(dtX: str, top: list[dict], diaInfo: dict) -> str:
+def MontarEmailHtml(dtX: str, top: list[dict], diaInfo: dict) -> str:
     """Tabela HTML formatada (tons Itaú) com os top 20 ativos por volume do pregão."""
     cols = [
         ("Instrumento",          "left"),
@@ -734,9 +734,9 @@ def _BuildEmailHtml(dtX: str, top: list[dict], diaInfo: dict) -> str:
         ("Spread Anbima Média",  "right"),
     ]
     thStyle = (
-        f"background:{_ITAU_NAVY};color:#fff;font-size:11px;font-weight:700;"
+        f"background:{ITAU_NAVY};color:#fff;font-size:11px;font-weight:700;"
         "text-transform:uppercase;letter-spacing:.4px;padding:8px 10px;"
-        "border-bottom:2px solid " + _ITAU_ORANGE + ";white-space:nowrap;text-align:"
+        "border-bottom:2px solid " + ITAU_ORANGE + ";white-space:nowrap;text-align:"
     )
     head = "".join(f'<th style="{thStyle}{align};">{name}</th>' for name, align in cols)
 
@@ -749,19 +749,19 @@ def _BuildEmailHtml(dtX: str, top: list[dict], diaInfo: dict) -> str:
             (t["cdTipo"] or "—",                                                       "left"),
             (t["cdTicker"],                                                            "left"),
             (t["cdEmissor"] or "—",                                                    "left"),
-            (_FmtBR(vol / 1e6 if vol is not None else None, 2) + " MM",                "right"),
+            (FmtBr(vol / 1e6 if vol is not None else None, 2) + " MM",                "right"),
             (idx or "—",                                                               "left"),
-            (_FmtBR(t["vrDuration"], 2),                                               "right"),
-            (_RefDispEmail(t["cdReferencia"]),                                                "left"),
-            ((_FmtBR(t["vrTaxaMedia"], 2) + "%") if t["vrTaxaMedia"] is not None else "—",       "right"),
-            (_SpreadEmail(t["vrSpreadOverMedio"], idx),                                "right"),
-            ((_FmtBR(t["vrTaxaAnbima"], 2) + "%") if t["vrTaxaAnbima"] is not None else "—",      "right"),
-            (_SpreadEmail(t["vrSpreadAnbima"], idx),                                   "right"),
+            (FmtBr(t["vrDuration"], 2),                                               "right"),
+            (RefDisplayEmail(t["cdReferencia"]),                                                "left"),
+            ((FmtBr(t["vrTaxaMedia"], 2) + "%") if t["vrTaxaMedia"] is not None else "—",       "right"),
+            (SpreadEmail(t["vrSpreadOverMedio"], idx),                                "right"),
+            ((FmtBr(t["vrTaxaAnbima"], 2) + "%") if t["vrTaxaAnbima"] is not None else "—",      "right"),
+            (SpreadEmail(t["vrSpreadAnbima"], idx),                                   "right"),
         ]
         tds = "".join(
             f'<td style="padding:7px 10px;font-size:12px;color:#222;'
             f'border-bottom:1px solid #e6e9ef;text-align:{align};'
-            f'{"font-family:Consolas,monospace;font-weight:600;color:" + _ITAU_NAVY + ";" if j == 1 else ""}'
+            f'{"font-family:Consolas,monospace;font-weight:600;color:" + ITAU_NAVY + ";" if j == 1 else ""}'
             f'white-space:nowrap;">{val}</td>'
             for j, (val, align) in enumerate(cells)
         )
@@ -775,19 +775,19 @@ def _BuildEmailHtml(dtX: str, top: list[dict], diaInfo: dict) -> str:
 <html><head><meta charset="utf-8"></head>
 <body style="margin:0;padding:0;background:#eef0f3;font-family:Segoe UI,Arial,sans-serif;">
   <div style="max-width:1100px;margin:0 auto;padding:18px;">
-    <div style="background:{_ITAU_NAVY};color:#fff;padding:16px 22px;border-radius:6px 6px 0 0;">
+    <div style="background:{ITAU_NAVY};color:#fff;padding:16px 22px;border-radius:6px 6px 0 0;">
       <div style="font-size:17px;font-weight:700;letter-spacing:.3px;">
         Relatório Diário de Negociação — Crédito Privado
       </div>
       <div style="font-size:12px;color:#cdd6ea;margin-top:3px;">
         Top 20 ativos por <b style="color:#fff;">volume negociado</b> ·
-        data de <b style="color:#fff;">liquidação {_DataBR(dtX)}</b>
+        data de <b style="color:#fff;">liquidação {DataBr(dtX)}</b>
       </div>
     </div>
-    <div style="background:{_ITAU_LITE};border-left:4px solid {_ITAU_ORANGE};
-                padding:10px 16px;font-size:12px;color:{_ITAU_NAVY};">
+    <div style="background:{ITAU_LITE};border-left:4px solid {ITAU_ORANGE};
+                padding:10px 16px;font-size:12px;color:{ITAU_NAVY};">
       Ranking pelos 20 maiores volumes negociados no pregão de liquidação
-      <b>{_DataBR(dtX)}</b> ({nrTickers} ativos no dia · R$ {_FmtBR(volTotMM, 2)} MM no total).
+      <b>{DataBr(dtX)}</b> ({nrTickers} ativos no dia · R$ {FmtBr(volTotMM, 2)} MM no total).
       O relatório completo e interativo (todas as abas e pregões) segue em anexo
       (<b>relatorio_secundario.html</b>). Taxas em % a.a.; spreads em bps
       (exceto %&nbsp;CDI, que é multiplicador).
@@ -806,30 +806,30 @@ def _BuildEmailHtml(dtX: str, top: list[dict], diaInfo: dict) -> str:
 </body></html>"""
 
 
-def _EnviarEmailDia(dtX: str, boletim: dict, htmlPath: Path, log) -> None:
+def EnviarEmailDia(dtX: str, boletim: dict, htmlPath: Path, log) -> None:
     """Monta e envia o email do dia X (top 20 por volume) com o HTML em anexo."""
     try:
         date.fromisoformat(dtX)
     except ValueError:
-        log.error("%s: --email-dia invalido (use YYYY-MM-DD): %s", _SCRIPT_NAME, dtX)
+        log.error("%s: --email-dia invalido (use YYYY-MM-DD): %s", NOME_SCRIPT, dtX)
         return
 
     diaInfo = boletim.get(dtX)
     if not diaInfo or not diaInfo.get("tickers"):
         log.warning("%s: sem negocios para liquidacao %s — email do dia nao enviado.",
-                    _SCRIPT_NAME, dtX)
+                    NOME_SCRIPT, dtX)
         return
 
-    destinatarios = get_email_list("destinatarios")
+    destinatarios = ObterListaEmails("destinatarios")
     if not destinatarios:
         log.warning("%s: sem destinatarios (destinatarios.py / EMAIL_DESTINATARIOS) — rascunho nao salvo.",
-                    _SCRIPT_NAME)
+                    NOME_SCRIPT)
         return
 
     top = sorted(diaInfo["tickers"], key=lambda t: -(t["vrVolumeTotal"] or 0))[:20]
-    html = _BuildEmailHtml(dtX, top, diaInfo)
-    subject = f"Relatório Crédito Privado — Top 20 volume · liquidação {_DataBR(dtX)}"
-    send_html_email(
+    html = MontarEmailHtml(dtX, top, diaInfo)
+    subject = f"Relatório Crédito Privado — Top 20 volume · liquidação {DataBr(dtX)}"
+    EnviarEmailHtml(
         subject, html,
         attachments=[str(htmlPath)],
         logger=log,
@@ -837,14 +837,14 @@ def _EnviarEmailDia(dtX: str, boletim: dict, htmlPath: Path, log) -> None:
         draft=True,
     )
     log.info("%s: rascunho do dia %s salvo (top %d de %d ativos) para %s",
-             _SCRIPT_NAME, dtX, len(top), diaInfo["nrTickers"], "; ".join(destinatarios))
+             NOME_SCRIPT, dtX, len(top), diaInfo["nrTickers"], "; ".join(destinatarios))
 
 
 # ---------------------------------------------------------------------------
 # Render
 # ---------------------------------------------------------------------------
 
-def _RenderHtml(
+def RenderizarHtml(
     diario:      list[dict],
     diarioIdx:   list[dict],
     anbimaIdx:   list[dict],
@@ -858,7 +858,7 @@ def _RenderHtml(
     dtStart:     str,
     dtEnd:       str,
 ) -> str:
-    tickers = _GetTickersByVolume(ticker)
+    tickers = TickersPorVolume(ticker)
     datas   = sorted({r["dt"] for r in ticker})
 
     payload = {
@@ -876,7 +876,7 @@ def _RenderHtml(
         "boletim":     boletim,
         "diasBoletim": diasBoletim,
         "infoAtivos":  infoAtivos,
-        "feriados":    sorted(d.isoformat() for d in _LoadFeriados()),
+        "feriados":    sorted(d.isoformat() for d in CarregarFeriados()),
     }
 
     templatesDir = Path(cfg["paths"].get("templatesDir", "templates"))
@@ -889,7 +889,7 @@ def _RenderHtml(
     )
 
 
-def _BuildSummary(diario: list[dict], ticker: list[dict]) -> str:
+def MontarResumo(diario: list[dict], ticker: list[dict]) -> str:
     totalVol     = sum(r["volume"] for r in diario)
     totalTickers = len({r["ticker"] for r in ticker})
     dtStart = diario[0]["dt"]  if diario else "?"
@@ -907,7 +907,7 @@ def _BuildSummary(diario: list[dict], ticker: list[dict]) -> str:
 # CLI / Main
 # ---------------------------------------------------------------------------
 
-def _ParseArgs() -> argparse.Namespace:
+def LerArgumentos() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Gera relatório HTML interativo de crédito privado (todos os dados da base)."
     )
@@ -915,36 +915,37 @@ def _ParseArgs() -> argparse.Namespace:
         "--email-dia",
         metavar="YYYY-MM-DD",
         default=None,
+        dest="emailDia",
         help="Envia email com o top 20 ativos por volume da data de LIQUIDAÇÃO informada "
              "(corpo HTML formatado) e o relatório completo em anexo.",
     )
     return parser.parse_args()
 
 
-def Main() -> None:
-    log     = get_logger(_SCRIPT_NAME)
-    args    = _ParseArgs()
+def Principal() -> None:
+    log     = ObterLogger(NOME_SCRIPT)
+    args    = LerArgumentos()
     summary = ""
     success = True
 
     try:
-        log.info("%s: iniciando", _SCRIPT_NAME)
+        log.info("%s: iniciando", NOME_SCRIPT)
 
-        conn = get_db()
+        conn = ObterBanco()
         try:
-            diario    = _LoadDiario(conn)
-            diarioIdx = _LoadDiarioIdx(conn)
-            anbimaIdx = _LoadAnbimaIdx(conn)
-            anbimaRef = _LoadAnbimaRef(conn)
-            anbimaDur = _LoadAnbimaDur(conn)
-            ticker    = _LoadTicker(conn)
-            duration = _LoadDuration(conn)
+            diario    = CarregarDiario(conn)
+            diarioIdx = CarregarDiarioIdx(conn)
+            anbimaIdx = CarregarAnbimaIdx(conn)
+            anbimaRef = CarregarAnbimaRef(conn)
+            anbimaDur = CarregarAnbimaDur(conn)
+            ticker    = CarregarTicker(conn)
+            duration = CarregarDuration(conn)
             log.info("%s: %d pregões | %d ticker-dias | %d duration-rows",
-                     _SCRIPT_NAME, len(diario), len(ticker), len(duration))
-            log.info("%s: carregando boletim por pregão...", _SCRIPT_NAME)
-            boletim  = _LoadBoletim(conn, log)
-            infoAtivos = _LoadInfoAtivos(conn)
-            log.info("%s: %d ativos em Info Ativos", _SCRIPT_NAME, len(infoAtivos))
+                     NOME_SCRIPT, len(diario), len(ticker), len(duration))
+            log.info("%s: carregando boletim por pregão...", NOME_SCRIPT)
+            boletim  = CarregarBoletim(conn, log)
+            infoAtivos = CarregarInfoAtivos(conn)
+            log.info("%s: %d ativos em Info Ativos", NOME_SCRIPT, len(infoAtivos))
         finally:
             conn.close()
 
@@ -952,7 +953,7 @@ def Main() -> None:
         dtStart = diario[0]["dt"]  if diario else date.today().isoformat()
         dtEnd   = diario[-1]["dt"] if diario else date.today().isoformat()
 
-        html = _RenderHtml(diario, diarioIdx, anbimaIdx, anbimaRef, anbimaDur, ticker, duration,
+        html = RenderizarHtml(diario, diarioIdx, anbimaIdx, anbimaRef, anbimaDur, ticker, duration,
                            boletim, diasBoletim, infoAtivos, dtStart, dtEnd)
 
         relDir = Path(cfg["paths"]["relatoriosDir"])
@@ -960,21 +961,21 @@ def Main() -> None:
         outPath = relDir / "relatorio_secundario.html"
         outPath.write_text(html, encoding="utf-8")
 
-        summary = _BuildSummary(diario, ticker)
-        log.info("%s: HTML salvo em %s\n%s", _SCRIPT_NAME, outPath, summary)
+        summary = MontarResumo(diario, ticker)
+        log.info("%s: HTML salvo em %s\n%s", NOME_SCRIPT, outPath, summary)
         print(f"Arquivo: {outPath}\n{summary}".encode("ascii", errors="replace").decode())
 
-        if args.email_dia:
-            _EnviarEmailDia(args.email_dia, boletim, outPath, log)
+        if args.emailDia:
+            EnviarEmailDia(args.emailDia, boletim, outPath, log)
 
     except Exception:
         success = False
         summary = traceback.format_exc()
-        log.exception("%s: erro inesperado", _SCRIPT_NAME)
+        log.exception("%s: erro inesperado", NOME_SCRIPT)
 
     finally:
-        send_completion_email(_SCRIPT_NAME, success, summary, logger=log)
+        EnviarEmailConclusao(NOME_SCRIPT, success, summary, logger=log)
 
 
 if __name__ == "__main__":
-    Main()
+    Principal()

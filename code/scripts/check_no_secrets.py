@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from lib.config import get_secret
+from lib.config import ObterSegredo
 
 ROOT    = Path(__file__).parent.parent   # code/
 PROJECT = ROOT.parent                    # raiz do projeto
@@ -40,10 +40,10 @@ SUSPICIOUS = re.compile(
 CODE_SUFFIX = {".py", ".toml", ".js"}
 # Valores tipo slug/identificador (só minúsculas/dígitos/-/_) não são segredos
 # (ex.: api_key = 'debentures'). Segredos reais têm maiúsculas/símbolos misturados.
-_SLUG = re.compile(r'^[a-z][a-z0-9_-]*$')
+SLUG = re.compile(r'^[a-z][a-z0-9_-]*$')
 
 
-def _publishable_files():
+def ArquivosPublicaveis():
     for p in PROJECT.rglob("*"):
         if not p.is_file():
             continue
@@ -55,16 +55,16 @@ def _publishable_files():
         yield p
 
 
-def main() -> None:
+def Principal() -> None:
     problems: list[str] = []
 
     secrets = {}
     for k in SECRET_KEYS:
-        v = get_secret(k)
+        v = ObterSegredo(k)
         if v and len(v) >= 6:
             secrets[k] = v
 
-    files = list(_publishable_files())
+    files = list(ArquivosPublicaveis())
     for f in files:
         try:
             txt = f.read_text(encoding="utf-8", errors="ignore")
@@ -77,7 +77,7 @@ def main() -> None:
         if f.suffix in CODE_SUFFIX:
             for m in SUSPICIOUS.finditer(txt):
                 val = m.group(2)
-                if _SLUG.fullmatch(val):
+                if SLUG.fullmatch(val):
                     continue  # slug/identificador, não é segredo
                 snippet = m.group(0)[:70]
                 if any(w in snippet.lower() for w in ("exemplo", "preencher", "config")):
@@ -99,4 +99,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    Principal()

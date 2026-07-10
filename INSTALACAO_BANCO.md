@@ -32,7 +32,7 @@ O código resolve caminhos relativos à pasta `code/` — a **raiz pode ter qual
 ```
 <raiz>\code\
 ├── config.toml, requirements.txt, destinatarios.example.py
-│   setup_1_teste.ipynb, setup_2_carga.ipynb, pipeline.ipynb
+│   setup_teste.ipynb, setup_inicial.ipynb, run_secundario.ipynb
 ├── lib\        (__init__.py, config.py, db.py, logger.py, email_outlook.py, b3_calc_api.py, fianalytics_api.py)
 ├── scripts\    (scrape_*.py, calc_*.py, filtrar_trades.py, gerar_*.py, match_referencias.py,
 │                pipeline_core.py, run_diario.py, check_no_secrets.py)
@@ -51,7 +51,7 @@ Verifique que os arquivos acima estão nos caminhos certos e que `code/data/feri
 A partir da pasta `code\`:
 ```powershell
 pip install -r requirements.txt
-pip install jupyter          # se for abrir o pipeline.ipynb fora do VSCode
+pip install jupyter          # se for abrir os .ipynb fora do VSCode
 playwright install chromium
 ```
 
@@ -81,15 +81,17 @@ print('B3:', bool(get_secret('b3CalcToken')), '| FIkey:', bool(get_secret('fiana
 ```
 Tudo `True` = segredos resolvendo.
 
-## Passo 5 — Testar cada fluxo (`setup_1_teste.ipynb`)
-Abra **`setup_1_teste.ipynb`** a partir de `code\` e dê **`Run All`**. Ele **cria o `.db`** e roda **cada fluxo para 1 dia só** (o último dia útil), conferindo no banco que gravou linhas: cada bloco mostra `[OK]`/`[VAZIO]`. A célula final resume. Objetivo: **provar que todo fluxo funciona** antes de puxar histórico. Se um bloco der `[FALHA]`/`[VAZIO]` (proxy, Playwright, login), corrija e **re-rode só ele**. `outstanding` fica `[VAZIO]` fora do banco — normal.
+## Passo 5 — Testar cada fluxo (`setup_teste.ipynb`)
+Abra **`setup_teste.ipynb`** a partir de `code\` e dê **`Run All`**. Ele **cria o `.db`** e roda **cada fluxo no menor período possível** (1 pregão; `calc_taxa` e `anbima_data` com `--limit`), conferindo no banco que gravou o que devia: cada bloco mostra `[OK]`/`[VAZIO]`. A célula final resume. Objetivo: **provar que todo fluxo funciona, rápido**, antes de puxar histórico. Se um bloco der `[FALHA]`/`[VAZIO]` (proxy, Playwright, login), corrija e **re-rode só ele**. `outstanding` fica `[VAZIO]` fora do banco — normal.
 
-## Passo 6 — Montar a base (`setup_2_carga.ipynb`)
-Com os fluxos validados, abra **`setup_2_carga.ipynb`** a partir de `code\` e dê **`Run All`** (é demorado — dá pra deixar rodando). Ele puxa o **máximo de histórico** de cada fonte (alvo: desde o começo do ano; cada fonte na janela que ainda entrega) e roda o cálculo dia a dia. **Anbima Data (o mais pesado) roda por último.** Cada bloco é idempotente: se um falhar, corrija e **re-rode só ele** (o cálculo/NTN-B pulam o já feito). Ajuste `INICIO` na célula Config se quiser outra janela.
+## Passo 6 — Montar a base (`setup_inicial.ipynb`)
+Com os fluxos validados, abra **`setup_inicial.ipynb`** a partir de `code\` e **defina `INICIO`/`FIM` na primeira célula** — é a janela da carga. Dê **`Run All`** (é demorado — dá pra deixar rodando). As fontes de histórico curto (deb/NTN-B ~4 meses, DI ~20 pregões, CRI/CRA ~5 pregões) já têm a janela máxima **hardcoded** na config; você não mexe nelas. **Anbima Data (o mais pesado) roda por último.** Cada bloco é idempotente e confere no `.db` quantos pregões ficaram cobertos: se um falhar, corrija e **re-rode só ele**.
 
-## Passo 7 — (Opcional) Agendar a rotina diária
-Use o **`pipeline.ipynb`** (Seção B) no dia a dia, ou agende no Task Scheduler:
-`python.exe <raiz>\code\scripts\run_diario.py` — reprocessa os últimos 5 dias úteis e regenera o relatório.
+## Passo 7 — Rotina diária (`run_secundario.ipynb`)
+No dia a dia abra **`run_secundario.ipynb`** a partir de `code\` e dê **`Run All`**: 1 bloco por fluxo, processando as liquidações **D-3 .. D-1** (dias úteis) e regenerando o relatório no fim.
+
+Para agendar no Task Scheduler (o Agendador não roda `.ipynb`), o equivalente é:
+`python.exe <raiz>\code\scripts\run_diario.py --last 3` — mesma cadeia, mesmos fluxos.
 
 ---
 

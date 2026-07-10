@@ -3,18 +3,18 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from lib.config import cfg, get_email_list
+from lib.config import cfg, ObterListaEmails
 
-_EMAIL_TIMEOUT = 20  # segundos antes de desistir e logar warning
+EMAIL_TIMEOUT = 20  # segundos antes de desistir e logar warning
 
 
-def _resolve_destinatarios(log: logging.Logger) -> list[str]:
-    """Destinatários dos emails [OK]/[ERROR]. Resolvidos via lib.config.get_email_list
+def ResolverDestinatarios(log: logging.Logger) -> list[str]:
+    """Destinatários dos emails [OK]/[ERROR]. Resolvidos via lib.config.ObterListaEmails
     (destinatarios.py → variável OUTLOOK_TO). Retorna [] se nada configurado."""
-    return get_email_list("outlook")
+    return ObterListaEmails("outlook")
 
 
-def _dispatch_email(subject: str, body: str, destinatarios: list[str], log: logging.Logger) -> None:
+def DespacharEmail(subject: str, body: str, destinatarios: list[str], log: logging.Logger) -> None:
     """
     Cria e envia itens de email via Outlook COM.
     Deve rodar em thread separada com CoInitialize já chamado.
@@ -39,11 +39,11 @@ def _dispatch_email(subject: str, body: str, destinatarios: list[str], log: logg
         pythoncom.CoUninitialize()
 
 
-def send_completion_email(
-    script_name: str,
+def EnviarEmailConclusao(
+    nomeScript: str,
     success: bool,
-    summary_text: str,
-    error_traceback: str | None = None,
+    textoResumo: str,
+    tracebackErro: str | None = None,
     logger: Optional[logging.Logger] = None,
 ) -> None:
     """
@@ -59,33 +59,33 @@ def send_completion_email(
             return
 
         status = "OK" if success else "ERROR"
-        subject = f"[{status}] {script_name}"
-        body = f"Script: {script_name}\nStatus: {status}\n\nResumo:\n{summary_text}"
-        if error_traceback:
-            body += f"\n\nTraceback:\n{error_traceback}"
+        subject = f"[{status}] {nomeScript}"
+        body = f"Script: {nomeScript}\nStatus: {status}\n\nResumo:\n{textoResumo}"
+        if tracebackErro:
+            body += f"\n\nTraceback:\n{tracebackErro}"
 
-        destinatarios = _resolve_destinatarios(log)
+        destinatarios = ResolverDestinatarios(log)
         if not destinatarios:
             log.warning("OUTLOOK_TO nao configurado — email nao enviado.")
             return
 
         t = threading.Thread(
-            target=_dispatch_email,
+            target=DespacharEmail,
             args=(subject, body, destinatarios, log),
             daemon=True,
         )
         t.start()
-        t.join(timeout=_EMAIL_TIMEOUT)
+        t.join(timeout=EMAIL_TIMEOUT)
         if t.is_alive():
-            log.warning("Email nao enviado em %ds — verificar dialog de permissao no Outlook.", _EMAIL_TIMEOUT)
+            log.warning("Email nao enviado em %ds — verificar dialog de permissao no Outlook.", EMAIL_TIMEOUT)
 
     except Exception as e:
         log.error("Falha ao enviar email via Outlook: %s", e)
 
 
-def _dispatch_html_email(
+def DespacharEmailHtml(
     subject: str,
-    html_body: str,
+    corpoHtml: str,
     destinatarios: list[str],
     attachments: list[str],
     log: logging.Logger,
@@ -100,7 +100,7 @@ def _dispatch_html_email(
     import pythoncom  # type: ignore[import]
     import win32com.client  # type: ignore[import]
 
-    def _anexar(mail) -> None:
+    def Anexar(mail) -> None:
         for att in attachments:
             if Path(att).exists():
                 mail.Attachments.Add(att)
@@ -116,8 +116,8 @@ def _dispatch_html_email(
             mail = outlook.CreateItem(0)
             mail.To = "; ".join(destinatarios)
             mail.Subject = subject
-            mail.HTMLBody = html_body
-            _anexar(mail)
+            mail.HTMLBody = corpoHtml
+            Anexar(mail)
             mail.Save()  # vai para a pasta Rascunhos; nao dispara dialog de envio
             log.info("Rascunho salvo (Rascunhos) para %s: %s", "; ".join(destinatarios), subject)
             return
@@ -126,8 +126,8 @@ def _dispatch_html_email(
             mail = outlook.CreateItem(0)
             mail.To = dest
             mail.Subject = subject
-            mail.HTMLBody = html_body
-            _anexar(mail)
+            mail.HTMLBody = corpoHtml
+            Anexar(mail)
             mail.Send()
             log.info("Email (HTML) enfileirado para %s: %s", dest, subject)
         ns.SendAndReceive(False)
@@ -136,9 +136,9 @@ def _dispatch_html_email(
         pythoncom.CoUninitialize()
 
 
-def send_html_email(
+def EnviarEmailHtml(
     subject: str,
-    html_body: str,
+    corpoHtml: str,
     attachments: Optional[list[str]] = None,
     logger: Optional[logging.Logger] = None,
     to: Optional[list[str]] = None,
@@ -158,7 +158,7 @@ def send_html_email(
             log.info("Email desativado por config.toml — nao gerado.")
             return
 
-        destinatarios = to if to else _resolve_destinatarios(log)
+        destinatarios = to if to else ResolverDestinatarios(log)
         if not destinatarios:
             log.warning("Sem destinatarios (OUTLOOK_TO vazio) — email nao gerado.")
             return
@@ -166,15 +166,15 @@ def send_html_email(
         absAttachments = [str(Path(a).resolve()) for a in (attachments or [])]
 
         t = threading.Thread(
-            target=_dispatch_html_email,
-            args=(subject, html_body, destinatarios, absAttachments, log, draft),
+            target=DespacharEmailHtml,
+            args=(subject, corpoHtml, destinatarios, absAttachments, log, draft),
             daemon=True,
         )
         t.start()
-        t.join(timeout=_EMAIL_TIMEOUT)
+        t.join(timeout=EMAIL_TIMEOUT)
         if t.is_alive():
             acao = "rascunho nao salvo" if draft else "email nao enviado"
-            log.warning("%s em %ds — verificar Outlook.", acao, _EMAIL_TIMEOUT)
+            log.warning("%s em %ds — verificar Outlook.", acao, EMAIL_TIMEOUT)
 
     except Exception as e:
         log.error("Falha ao gerar email HTML via Outlook: %s", e)

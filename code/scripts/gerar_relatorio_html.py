@@ -28,10 +28,10 @@ from pathlib import Path
 # Formatação pt-BR (usada como filtros Jinja2)
 # ---------------------------------------------------------------------------
 
-_MESES_PT = ["jan","fev","mar","abr","mai","jun","jul","ago","set","out","nov","dez"]
+MESES_PT = ["jan","fev","mar","abr","mai","jun","jul","ago","set","out","nov","dez"]
 
 
-def _FmtBR(value, dec: int = 2) -> str | None:
+def FmtBr(value, dec: int = 2) -> str | None:
     """Número em pt-BR: ponto como milhar, vírgula como decimal."""
     if value is None:
         return None
@@ -39,7 +39,7 @@ def _FmtBR(value, dec: int = 2) -> str | None:
     return s.replace(",", "\x00").replace(".", ",").replace("\x00", ".")
 
 
-def _FmtIntBR(value) -> str | None:
+def FmtIntBr(value) -> str | None:
     """Inteiro com ponto como separador de milhar, sem decimais."""
     if value is None:
         return None
@@ -47,18 +47,18 @@ def _FmtIntBR(value) -> str | None:
     return s.replace(",", ".")
 
 
-def _FmtMesAno(s) -> str | None:
+def FmtMesAno(s) -> str | None:
     """'YYYY-MM-DD' → 'mmm/aa'. Ex: '2026-12-01' → 'dez/26'."""
     if not s:
         return None
     try:
         dt = datetime.fromisoformat(str(s)[:10])
-        return f"{_MESES_PT[dt.month - 1]}/{dt.strftime('%y')}"
+        return f"{MESES_PT[dt.month - 1]}/{dt.strftime('%y')}"
     except Exception:
         return str(s)
 
 
-def _TipoExibicao(cdInstrumento: str | None, cdIndexador: str | None) -> str | None:
+def TipoExibicao(cdInstrumento: str | None, cdIndexador: str | None) -> str | None:
     """
     Tipo usado apenas para exibição/filtro no relatório. Debênture indexada a
     IPCA ou PREFIXADO é classificada como 'DEB 12.431' (incentivada). Demais
@@ -71,11 +71,11 @@ def _TipoExibicao(cdInstrumento: str | None, cdIndexador: str | None) -> str | N
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from lib.config import cfg
-from lib.db import get_db
-from lib.logger import get_logger
+from lib.db import ObterBanco
+from lib.logger import ObterLogger
 
 
-def _CalcDMenos1(dtLiquidacao: str) -> str:
+def CalcularDMenos1(dtLiquidacao: str) -> str:
     """Retorna o dia útil anterior a dtLiquidacao excluindo fins de semana e feriados Anbima."""
     import csv
     from datetime import date, timedelta
@@ -101,7 +101,7 @@ def _CalcDMenos1(dtLiquidacao: str) -> str:
 # ---------------------------------------------------------------------------
 
 @dataclass
-class _TradeRow:
+class LinhaNegocio:
     """Uma linha individual (VALIDO) ou grupo virtual (BROKER) antes da agregação."""
     cdTicker: str
     cdEmissor: str
@@ -120,7 +120,7 @@ class _TradeRow:
 
 
 @dataclass
-class _TickerAgregado:
+class TickerAgregado:
     cdTicker: str
     cdEmissor: str
     cdInstrumento: str
@@ -141,7 +141,7 @@ class _TickerAgregado:
 # SQL
 # ---------------------------------------------------------------------------
 
-_SQL_FETCH = """
+SQL_BUSCAR = """
 WITH AnbimaLatest AS (
     SELECT cdTicker,
            vrTaxaAnbima,
@@ -173,7 +173,7 @@ WHERE tp.dtLiquidacao = ?
   AND tr.cdSituacao != 'Cancelado'
 """
 
-_SQL_FETCH_BROKER = """
+SQL_BUSCAR_BROKER = """
 WITH AnbimaLatest AS (
     SELECT cdTicker,
            vrTaxaAnbima,
@@ -207,7 +207,7 @@ WHERE tp.dtLiquidacao = ?
   AND tr.cdSituacao != 'Cancelado'
 """
 
-_SQL_FETCH_MTM_RATE = """
+SQL_MTM_TAXA = """
 SELECT vrTaxa FROM MtmAnbima WHERE cdTicker = ? AND dtReferencia = ?
 """
 
@@ -216,7 +216,7 @@ SELECT vrTaxa FROM MtmAnbima WHERE cdTicker = ? AND dtReferencia = ?
 # Lógica de aggregação
 # ---------------------------------------------------------------------------
 
-def _WeightedAvg(valores: list[tuple[float | None, float]]) -> float | None:
+def MediaPonderada(valores: list[tuple[float | None, float]]) -> float | None:
     """
     Calcula média ponderada de (valor, peso). Pares com valor=None são ignorados.
     Retorna None se nenhum par tiver valor.
@@ -232,12 +232,12 @@ def _WeightedAvg(valores: list[tuple[float | None, float]]) -> float | None:
     return numerador / denominador
 
 
-def _FetchTrades(conn, dtLiquidacao: str, dtAnbima: str) -> list[_TradeRow]:
+def BuscarNegocios(conn, dtLiquidacao: str, dtAnbima: str) -> list[LinhaNegocio]:
     """Executa o SELECT principal e retorna lista de _TradeRow."""
-    rows = conn.execute(_SQL_FETCH, (dtAnbima, dtLiquidacao)).fetchall()
-    result: list[_TradeRow] = []
+    rows = conn.execute(SQL_BUSCAR, (dtAnbima, dtLiquidacao)).fetchall()
+    result: list[LinhaNegocio] = []
     for r in rows:
-        result.append(_TradeRow(
+        result.append(LinhaNegocio(
             cdTicker=r["cdTicker"],
             cdEmissor=r["cdEmissor"],
             cdInstrumento=r["cdInstrumento"],
@@ -255,12 +255,12 @@ def _FetchTrades(conn, dtLiquidacao: str, dtAnbima: str) -> list[_TradeRow]:
     return result
 
 
-def _FetchBrokerGroups(conn, dtLiquidacao: str, dtAnbima: str) -> list[_TradeRow]:
+def BuscarGruposBroker(conn, dtLiquidacao: str, dtAnbima: str) -> list[LinhaNegocio]:
     """
     Busca grupos BROKER, agrega por idGrupoNegocio e retorna _TradeRow virtuais
     (uma por grupo): taxa=(MAX+MIN)/2, volume=SUM/2, spread calculado em Python.
     """
-    rows = conn.execute(_SQL_FETCH_BROKER, (dtAnbima, dtLiquidacao)).fetchall()
+    rows = conn.execute(SQL_BUSCAR_BROKER, (dtAnbima, dtLiquidacao)).fetchall()
     if not rows:
         return []
 
@@ -268,7 +268,7 @@ def _FetchBrokerGroups(conn, dtLiquidacao: str, dtAnbima: str) -> list[_TradeRow
     for r in rows:
         grupos.setdefault(r["idGrupoNegocio"], []).append(r)
 
-    result: list[_TradeRow] = []
+    result: list[LinhaNegocio] = []
     for trades in grupos.values():
         taxas = [t["vrTaxaCalculada"] for t in trades if t["vrTaxaCalculada"] is not None]
         if not taxas:
@@ -287,11 +287,11 @@ def _FetchBrokerGroups(conn, dtLiquidacao: str, dtAnbima: str) -> list[_TradeRow
         if cdReferencia == "FUNDING":
             vrSpreadOver = taxaMedia
         elif cdReferencia is not None:
-            mtm = conn.execute(_SQL_FETCH_MTM_RATE, (cdReferencia, dtNegocio)).fetchone()
+            mtm = conn.execute(SQL_MTM_TAXA, (cdReferencia, dtNegocio)).fetchone()
             if mtm:
                 vrSpreadOver = ((1 + taxaMedia / 100) / (1 + mtm["vrTaxa"] / 100) - 1) * 100
 
-        result.append(_TradeRow(
+        result.append(LinhaNegocio(
             cdTicker=rep["cdTicker"],
             cdEmissor=rep["cdEmissor"],
             cdInstrumento=rep["cdInstrumento"],
@@ -311,7 +311,7 @@ def _FetchBrokerGroups(conn, dtLiquidacao: str, dtAnbima: str) -> list[_TradeRow
     return result
 
 
-def _AggregateTicker(cdTicker: str, grupo: list[_TradeRow]) -> _TickerAgregado:
+def AgregarTicker(cdTicker: str, grupo: list[LinhaNegocio]) -> TickerAgregado:
     """
     Agrega uma lista de _TradeRow do mesmo ticker em um único _TickerAgregado.
     Atributos do ativo (cdIndexador, vrDuration, dtVencimento, etc.) são
@@ -321,14 +321,14 @@ def _AggregateTicker(cdTicker: str, grupo: list[_TradeRow]) -> _TickerAgregado:
     vrVolumeTotal = sum(t.vrVolume for t in grupo)
     vrQuantidadeTotal = sum(t.vrQuantidade for t in grupo)
     nrTrades = sum(t.nrTrades for t in grupo)
-    vrTaxaMedia = _WeightedAvg([(t.vrTaxaCalculada, t.vrVolume) for t in grupo])
-    vrSpreadOverMedio = _WeightedAvg([(t.vrSpreadOver, t.vrVolume) for t in grupo])
+    vrTaxaMedia = MediaPonderada([(t.vrTaxaCalculada, t.vrVolume) for t in grupo])
+    vrSpreadOverMedio = MediaPonderada([(t.vrSpreadOver, t.vrVolume) for t in grupo])
 
     # Anbima e atributos do ativo: pegar da primeira linha (são idênticos por ticker)
     vrTaxaAnbima = primeira.vrTaxaAnbima
     vrSpreadAnbima = primeira.vrSpreadAnbima
 
-    return _TickerAgregado(
+    return TickerAgregado(
         cdTicker=cdTicker,
         cdEmissor=primeira.cdEmissor,
         cdInstrumento=primeira.cdInstrumento,
@@ -346,10 +346,10 @@ def _AggregateTicker(cdTicker: str, grupo: list[_TradeRow]) -> _TickerAgregado:
     )
 
 
-def _BuildContext(
+def MontarContexto(
     dtLiquidacao: str,
     modo: str,
-    tickers: list[_TickerAgregado],
+    tickers: list[TickerAgregado],
 ) -> dict:
     """
     Monta o dicionário de contexto passado ao template Jinja2.
@@ -362,18 +362,18 @@ def _BuildContext(
 
     ordemInstr = {"DEB": 0, "DEB 12.431": 1, "CRI": 2, "CRA": 3}
 
-    def _TipoDe(t: _TickerAgregado) -> str:
-        return _TipoExibicao(t.cdInstrumento, t.cdIndexador) or "OUTRO"
+    def TipoDe(t: TickerAgregado) -> str:
+        return TipoExibicao(t.cdInstrumento, t.cdIndexador) or "OUTRO"
 
     tickersSorted = sorted(
         tickers,
-        key=lambda t: (ordemInstr.get(_TipoDe(t), 99), -(t.vrVolumeTotal or 0)),
+        key=lambda t: (ordemInstr.get(TipoDe(t), 99), -(t.vrVolumeTotal or 0)),
     )
 
     # Resumo por tipo de exibição (DEB / DEB 12.431 / CRI / CRA) para chips no cabeçalho
     resumoMap: dict[str, dict] = {}
     for t in tickers:
-        tipo = _TipoDe(t)
+        tipo = TipoDe(t)
         if tipo not in resumoMap:
             resumoMap[tipo] = {"cdTipo": tipo, "nrTickers": 0, "vrVolume": 0.0, "nrTrades": 0}
         resumoMap[tipo]["nrTickers"] += 1
@@ -397,7 +397,7 @@ def _BuildContext(
             "cdTicker": t.cdTicker,
             "cdEmissor": t.cdEmissor,
             "cdInstrumento": t.cdInstrumento or "—",
-            "cdTipo": _TipoExibicao(t.cdInstrumento, t.cdIndexador) or "—",
+            "cdTipo": TipoExibicao(t.cdInstrumento, t.cdIndexador) or "—",
             "cdIndexador": t.cdIndexador,
             "cdReferencia": t.cdReferencia,
             "vrDuration": t.vrDuration,
@@ -429,21 +429,21 @@ def _BuildContext(
     }
 
 
-def _RenderHtml(contexto: dict, log) -> str:
+def RenderizarHtml(contexto: dict, log) -> str:
     from jinja2 import Environment, FileSystemLoader
 
     templatesDir = Path(cfg["paths"]["templatesDir"])
     env = Environment(loader=FileSystemLoader(str(templatesDir)), autoescape=True)
-    env.filters["br"] = lambda v, dec=2: _FmtBR(v, dec)
-    env.filters["intbr"] = _FmtIntBR
-    env.filters["mesbr"] = _FmtMesAno
+    env.filters["br"] = lambda v, dec=2: FmtBr(v, dec)
+    env.filters["intbr"] = FmtIntBr
+    env.filters["mesbr"] = FmtMesAno
     template = env.get_template("relatorio.html.j2")
     html = template.render(**contexto)
     log.debug("gerar_relatorio_html: HTML renderizado (%d bytes)", len(html))
     return html
 
 
-def _BuildOutputPath(dtLiquidacao: str, modo: str) -> Path:
+def MontarCaminhoSaida(dtLiquidacao: str, modo: str) -> Path:
     """
     Retorna o Path do arquivo HTML de saída.
     Prévia: DD_MM_YYYY_previa_HHMM.html
@@ -464,7 +464,7 @@ def _BuildOutputPath(dtLiquidacao: str, modo: str) -> Path:
     return relatoriosDir / nomeArquivo
 
 
-def _SendEmailWithAttachment(
+def EnviarEmailComAnexo(
     scriptName: str,
     success: bool,
     summaryText: str,
@@ -476,7 +476,7 @@ def _SendEmailWithAttachment(
     Roda em thread separada com CoInitialize + timeout de 60s.
     Falha silenciosa: loga erro, não propaga.
     """
-    from lib.config import get_email_list
+    from lib.config import ObterListaEmails
 
     if not cfg["email"]["ativo"]:
         log.info("Email desativado por config.toml — nao enviado.")
@@ -486,14 +486,14 @@ def _SendEmailWithAttachment(
     subject = f"[{status}] {scriptName}"
     body = f"Script: {scriptName}\nStatus: {status}\n\nResumo:\n{summaryText}"
 
-    destinatarios = get_email_list("outlook")
+    destinatarios = ObterListaEmails("outlook")
     if not destinatarios:
         log.warning("Sem destinatarios (OUTLOOK_TO / destinatarios.py) — email nao enviado.")
         return
 
     anexo = str(caminhoHtml.resolve()) if caminhoHtml and caminhoHtml.exists() else None
 
-    def _run():
+    def Rodar():
         import pythoncom  # type: ignore[import]
         import win32com.client  # type: ignore[import]
         pythoncom.CoInitialize()
@@ -516,7 +516,7 @@ def _SendEmailWithAttachment(
         finally:
             pythoncom.CoUninitialize()
 
-    t = threading.Thread(target=_run, daemon=True)
+    t = threading.Thread(target=Rodar, daemon=True)
     t.start()
     t.join(timeout=60)
     if t.is_alive():
@@ -527,7 +527,7 @@ def _SendEmailWithAttachment(
 # CLI
 # ---------------------------------------------------------------------------
 
-def _ParseArgs() -> argparse.Namespace:
+def LerArgumentos() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Gera relatório HTML de crédito privado por dtLiquidacao, "
@@ -553,14 +553,14 @@ def _ParseArgs() -> argparse.Namespace:
 # Entrypoint
 # ---------------------------------------------------------------------------
 
-def Main() -> None:
-    log = get_logger("gerar_relatorio_html")
-    args = _ParseArgs()
+def Principal() -> None:
+    log = ObterLogger("gerar_relatorio_html")
+    args = LerArgumentos()
 
     dtLiquidacao: str = args.date
     modo: str = args.mode
 
-    conn = get_db()
+    conn = ObterBanco()
     summary = ""
     success = True
     caminhoHtml: Path | None = None
@@ -573,11 +573,11 @@ def Main() -> None:
 
         # 1. Buscar trades VALIDO + grupos BROKER agregados
         # Taxa/spread Anbima sempre de D-1 (dia útil anterior à liquidação)
-        dtAnbima = _CalcDMenos1(dtLiquidacao)
+        dtAnbima = CalcularDMenos1(dtLiquidacao)
         log.info("gerar_relatorio_html: dtAnbima (D-1) = %s", dtAnbima)
 
-        linhas = _FetchTrades(conn, dtLiquidacao, dtAnbima)
-        linhasBroker = _FetchBrokerGroups(conn, dtLiquidacao, dtAnbima)
+        linhas = BuscarNegocios(conn, dtLiquidacao, dtAnbima)
+        linhasBroker = BuscarGruposBroker(conn, dtLiquidacao, dtAnbima)
         linhas.extend(linhasBroker)
         log.info(
             "gerar_relatorio_html: %d linha(s) VALIDO + %d grupo(s) BROKER",
@@ -591,23 +591,23 @@ def Main() -> None:
             )
 
         # 2. Agregar por ticker
-        gruposTicker: dict[str, list[_TradeRow]] = {}
+        gruposTicker: dict[str, list[LinhaNegocio]] = {}
         for linha in linhas:
             gruposTicker.setdefault(linha.cdTicker, []).append(linha)
 
         tickers = [
-            _AggregateTicker(cdTicker, grupo)
+            AgregarTicker(cdTicker, grupo)
             for cdTicker, grupo in gruposTicker.items()
         ]
 
         # 3. Montar contexto para o template
-        contexto = _BuildContext(dtLiquidacao, modo, tickers)
+        contexto = MontarContexto(dtLiquidacao, modo, tickers)
 
         # 4. Renderizar HTML
-        htmlStr = _RenderHtml(contexto, log)
+        htmlStr = RenderizarHtml(contexto, log)
 
         # 5. Salvar arquivo
-        caminhoHtml = _BuildOutputPath(dtLiquidacao, modo)
+        caminhoHtml = MontarCaminhoSaida(dtLiquidacao, modo)
         caminhoHtml.write_text(htmlStr, encoding="utf-8")
         log.info("gerar_relatorio_html: HTML salvo em %s", caminhoHtml)
 
@@ -637,7 +637,7 @@ def Main() -> None:
 
     finally:
         conn.close()
-        _SendEmailWithAttachment(
+        EnviarEmailComAnexo(
             "gerar_relatorio_html",
             success,
             summary,
@@ -647,4 +647,4 @@ def Main() -> None:
 
 
 if __name__ == "__main__":
-    Main()
+    Principal()

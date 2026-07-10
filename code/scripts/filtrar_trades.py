@@ -61,9 +61,9 @@ from uuid import uuid4
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from lib.config import cfg
-from lib.db import get_db
-from lib.logger import get_logger
-from lib.email_outlook import send_completion_email
+from lib.db import ObterBanco
+from lib.logger import ObterLogger
+from lib.email_outlook import EnviarEmailConclusao
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +71,7 @@ from lib.email_outlook import send_completion_email
 # ---------------------------------------------------------------------------
 
 @dataclass
-class _Trade:
+class Negocio:
     idTrade: int
     cdTicker: str
     dtLiquidacao: str
@@ -82,11 +82,11 @@ class _Trade:
     cdIndexador: str | None              # de InfoAtivos; None se não cadastrado
     cdStatus: str = 'VALIDO'
     idGrupoNegocio: str | None = None
-    _paired: bool = field(default=False, repr=False)  # True após inclusão em qualquer grupo
+    pareados: bool = field(default=False, repr=False)  # True após inclusão em qualquer grupo
 
 
 @dataclass
-class _DateStats:
+class EstatisticasData:
     dtLiquidacao: str
     total: int = 0
     valido: int = 0
@@ -100,7 +100,7 @@ class _DateStats:
 # SQL
 # ---------------------------------------------------------------------------
 
-_SQL_FETCH_TRADES = """
+SQL_BUSCAR_NEGOCIOS = """
 SELECT tp.idTrade, tp.cdTicker, tp.dtLiquidacao,
        tp.vrQuantidade, tp.vrVolume, tp.vrTaxaCalculada,
        ia.cdIndexador
@@ -111,14 +111,14 @@ WHERE tp.dtLiquidacao = ?
   AND tr.cdSituacao != 'Cancelado'
 """
 
-_SQL_FETCH_ANBIMA = """
+SQL_BUSCAR_ANBIMA = """
 SELECT cdTicker, vrTaxaAnbima
 FROM AnbimaIndicativos
 WHERE dtReferencia = ?
   AND vrTaxaAnbima IS NOT NULL
 """
 
-_SQL_UPDATE_STATUS = """
+SQL_ATUALIZAR_STATUS = """
 UPDATE NegociosProcessados
 SET cdStatus     = ?,
     idGrupoNegocio = ?
@@ -130,7 +130,7 @@ WHERE idTrade = ?
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _IsPctCdi(cdIndexador: str | None, vrTaxaCalculada: float | None) -> bool:
+def EhPctCdi(cdIndexador: str | None, vrTaxaCalculada: float | None) -> bool:
     """True se o ativo é indexado a %CDI.
     Usa cdIndexador de InfoAtivos quando disponível; fallback: taxa > 70
     (CDI+ e IPCA+ ficam abaixo de 20, %CDI fica na faixa de 80-120).
@@ -140,31 +140,31 @@ def _IsPctCdi(cdIndexador: str | None, vrTaxaCalculada: float | None) -> bool:
     return vrTaxaCalculada is not None and vrTaxaCalculada > 70
 
 
-def _VolumeWeightedMedian(trades: list) -> float | None:
+def MedianaPonderadaVolume(trades: list) -> float | None:
     """Mediana ponderada por vrVolume da lista de trades com taxa não-NULL.
     Retorna None se a lista for vazia.
     """
     candidates = [t for t in trades if t.vrTaxaCalculada is not None]
     if not candidates:
         return None
-    total_vol = sum(t.vrVolume for t in candidates)
-    if total_vol <= 0:
+    volumeTotal = sum(t.vrVolume for t in candidates)
+    if volumeTotal <= 0:
         return candidates[len(candidates) // 2].vrTaxaCalculada
-    sorted_t = sorted(candidates, key=lambda t: t.vrTaxaCalculada)
+    tOrdenados = sorted(candidates, key=lambda t: t.vrTaxaCalculada)
     cumulative = 0.0
-    for t in sorted_t:
+    for t in tOrdenados:
         cumulative += t.vrVolume
-        if cumulative >= total_vol / 2:
+        if cumulative >= volumeTotal / 2:
             return t.vrTaxaCalculada
-    return sorted_t[-1].vrTaxaCalculada
+    return tOrdenados[-1].vrTaxaCalculada
 
 
 # ---------------------------------------------------------------------------
 # Filtro 1 — Passagem de Fundo
 # ---------------------------------------------------------------------------
 
-def _AplicarFiltroFundo(
-    trades: list[_Trade],
+def AplicarFiltroFundo(
+    trades: list[Negocio],
     fundoMaxReaisPorMilhao: float,
 ) -> int:
     """
@@ -181,14 +181,14 @@ def _AplicarFiltroFundo(
     n = len(trades)
     parent = list(range(n))
 
-    def _find(x: int) -> int:
+    def Achar(x: int) -> int:
         while parent[x] != x:
             parent[x] = parent[parent[x]]
             x = parent[x]
         return x
 
-    def _union(a: int, b: int) -> None:
-        ra, rb = _find(a), _find(b)
+    def Unir(a: int, b: int) -> None:
+        ra, rb = Achar(a), Achar(b)
         if ra != rb:
             parent[rb] = ra
 
@@ -207,23 +207,23 @@ def _AplicarFiltroFundo(
         for same in exatos.values():
             if len(same) >= 2:
                 for idx in same[1:]:
-                    _union(same[0], idx)
+                    Unir(same[0], idx)
 
         # (b) Threshold de PU (critério original)
         for ii in range(len(indices)):
             for jj in range(ii + 1, len(indices)):
                 i, j = indices[ii], indices[jj]
                 ti, tj = trades[i], trades[j]
-                pu_avg = (ti.vrPU + tj.vrPU) / 2
-                if pu_avg <= 0:
+                puMedio = (ti.vrPU + tj.vrPU) / 2
+                if puMedio <= 0:
                     continue
-                threshold = fundoMaxReaisPorMilhao * pu_avg / 1_000_000
+                threshold = fundoMaxReaisPorMilhao * puMedio / 1_000_000
                 if abs(ti.vrPU - tj.vrPU) <= threshold:
-                    _union(i, j)
+                    Unir(i, j)
 
     componentes: dict[int, list[int]] = {}
     for i in range(n):
-        componentes.setdefault(_find(i), []).append(i)
+        componentes.setdefault(Achar(i), []).append(i)
 
     marcados = 0
     for membros in componentes.values():
@@ -233,14 +233,14 @@ def _AplicarFiltroFundo(
         for idx in membros:
             trades[idx].cdStatus = 'FUNDO'
             trades[idx].idGrupoNegocio = idGroup
-            trades[idx]._paired = True
+            trades[idx].pareados = True
             marcados += 1
 
     return marcados
 
 
-def _AplicarFiltroFundoSplits(
-    trades: list[_Trade],
+def AplicarFiltroFundoSplits(
+    trades: list[Negocio],
     fundoMaxReaisPorMilhao: float,
 ) -> int:
     """
@@ -252,39 +252,39 @@ def _AplicarFiltroFundoSplits(
     Todos os trades elegíveis (PU = vrVolume/vrQuantidade existe sempre).
     Retorna número de trades marcados FUNDO.
     """
-    eligible = [(i, t) for i, t in enumerate(trades) if not t._paired]
+    eligible = [(i, t) for i, t in enumerate(trades) if not t.pareados]
     if not eligible:
         return 0
 
-    grupos: dict[str, list[tuple[int, _Trade]]] = {}
+    grupos: dict[str, list[tuple[int, Negocio]]] = {}
     for i, t in eligible:
         grupos.setdefault(t.cdTicker, []).append((i, t))
 
-    n_fundo = 0
+    nFundo = 0
 
     for membros in grupos.values():
         if len(membros) < 3:
             continue
 
-        membros_sorted = sorted(membros, key=lambda x: x[1].vrQuantidade, reverse=True)
+        membrosOrdenados = sorted(membros, key=lambda x: x[1].vrQuantidade, reverse=True)
         usados: set[int] = set()
 
-        for bloco_i, bloco_t in membros_sorted:
-            if bloco_i in usados:
+        for blocoI, blocoT in membrosOrdenados:
+            if blocoI in usados:
                 continue
 
-            bloco_qty = bloco_t.vrQuantidade
-            bloco_pu  = bloco_t.vrPU
+            blocoQty = blocoT.vrQuantidade
+            blocoPu  = blocoT.vrPU
 
             candidatos: list[tuple[int, int]] = sorted(
                 [
                     (t.vrQuantidade, i)
-                    for i, t in membros_sorted
-                    if i != bloco_i
+                    for i, t in membrosOrdenados
+                    if i != blocoI
                     and i not in usados
-                    and t.vrQuantidade < bloco_qty
-                    and abs(t.vrPU - bloco_pu)
-                        <= fundoMaxReaisPorMilhao * (t.vrPU + bloco_pu) / 2 / 1_000_000
+                    and t.vrQuantidade < blocoQty
+                    and abs(t.vrPU - blocoPu)
+                        <= fundoMaxReaisPorMilhao * (t.vrPU + blocoPu) / 2 / 1_000_000
                 ],
                 reverse=True,
             )
@@ -292,27 +292,27 @@ def _AplicarFiltroFundoSplits(
             if len(candidatos) < 2:
                 continue
 
-            splits_idx = _SubsetSumDFS(candidatos, bloco_qty)
-            if splits_idx is None:
+            idxSplits = SubsetSumDFS(candidatos, blocoQty)
+            if idxSplits is None:
                 continue
 
             idGroup = str(uuid4())
-            for idx in [bloco_i] + splits_idx:
+            for idx in [blocoI] + idxSplits:
                 trades[idx].cdStatus = 'FUNDO'
                 trades[idx].idGrupoNegocio = idGroup
-                trades[idx]._paired = True
+                trades[idx].pareados = True
                 usados.add(idx)
-                n_fundo += 1
+                nFundo += 1
 
-    return n_fundo
+    return nFundo
 
 
 # ---------------------------------------------------------------------------
 # Filtro 2 — Corretor
 # ---------------------------------------------------------------------------
 
-def _AplicarFiltroCorretor(
-    trades: list[_Trade],
+def AplicarFiltroCorretor(
+    trades: list[Negocio],
     corretorMaxBps: float,
     corretorMaxPctCdi: float,
 ) -> int:
@@ -327,26 +327,26 @@ def _AplicarFiltroCorretor(
 
     Retorna o número de trades marcados BROKER.
     """
-    eligible_idx = [i for i, t in enumerate(trades)
-                    if not t._paired and t.vrTaxaCalculada is not None]
-    if not eligible_idx:
+    idxElegiveis = [i for i, t in enumerate(trades)
+                    if not t.pareados and t.vrTaxaCalculada is not None]
+    if not idxElegiveis:
         return 0
 
-    parent = {i: i for i in eligible_idx}
+    parent = {i: i for i in idxElegiveis}
 
-    def _find(x: int) -> int:
+    def Achar(x: int) -> int:
         while parent[x] != x:
             parent[x] = parent[parent[x]]
             x = parent[x]
         return x
 
-    def _union(a: int, b: int) -> None:
-        ra, rb = _find(a), _find(b)
+    def Unir(a: int, b: int) -> None:
+        ra, rb = Achar(a), Achar(b)
         if ra != rb:
             parent[rb] = ra
 
     grupos: dict[tuple, list[int]] = {}
-    for i in eligible_idx:
+    for i in idxElegiveis:
         t = trades[i]
         grupos.setdefault((t.cdTicker, t.vrQuantidade), []).append(i)
 
@@ -357,32 +357,32 @@ def _AplicarFiltroCorretor(
             for jj in range(ii + 1, len(indices)):
                 i, j = indices[ii], indices[jj]
                 ti, tj = trades[i], trades[j]
-                if _IsPctCdi(ti.cdIndexador, ti.vrTaxaCalculada):
+                if EhPctCdi(ti.cdIndexador, ti.vrTaxaCalculada):
                     tol = corretorMaxPctCdi
                 else:
                     tol = corretorMaxBps / 100.0
                 if abs(ti.vrTaxaCalculada - tj.vrTaxaCalculada) <= tol:
-                    _union(i, j)
+                    Unir(i, j)
 
     componentes: dict[int, list[int]] = {}
-    for i in eligible_idx:
-        componentes.setdefault(_find(i), []).append(i)
+    for i in idxElegiveis:
+        componentes.setdefault(Achar(i), []).append(i)
 
-    n_broker = 0
+    nBroker = 0
     for membros in componentes.values():
         if len(membros) < 2:
             continue
         idGroup = str(uuid4())
         for idx in membros:
             trades[idx].idGrupoNegocio = idGroup
-            trades[idx]._paired = True
+            trades[idx].pareados = True
             trades[idx].cdStatus = 'BROKER'
-            n_broker += 1
+            nBroker += 1
 
-    return n_broker
+    return nBroker
 
 
-def _SubsetSumDFS(candidatos: list[tuple[int, int]], alvo: int) -> list[int] | None:
+def SubsetSumDFS(candidatos: list[tuple[int, int]], alvo: int) -> list[int] | None:
     """
     Busca subconjunto de candidatos (list de (qty, trade_idx), sorted desc por qty)
     cuja soma de qty seja exatamente alvo e tenha >= 2 elementos.
@@ -395,7 +395,7 @@ def _SubsetSumDFS(candidatos: list[tuple[int, int]], alvo: int) -> list[int] | N
 
     resultado: list[int] = []
 
-    def _dfs(pos: int, restante: int) -> bool:
+    def Dfs(pos: int, restante: int) -> bool:
         if restante == 0:
             return len(resultado) >= 2
         if pos >= n or sufixo[pos] < restante:
@@ -403,16 +403,16 @@ def _SubsetSumDFS(candidatos: list[tuple[int, int]], alvo: int) -> list[int] | N
         qty, idx = candidatos[pos]
         if qty <= restante:
             resultado.append(idx)
-            if _dfs(pos + 1, restante - qty):
+            if Dfs(pos + 1, restante - qty):
                 return True
             resultado.pop()
-        return _dfs(pos + 1, restante)
+        return Dfs(pos + 1, restante)
 
-    return list(resultado) if _dfs(0, alvo) else None
+    return list(resultado) if Dfs(0, alvo) else None
 
 
-def _AplicarFiltroCorretorSplits(
-    trades: list[_Trade],
+def AplicarFiltroCorretorSplits(
+    trades: list[Negocio],
     corretorMaxBps: float,
     corretorMaxPctCdi: float,
 ) -> int:
@@ -424,30 +424,30 @@ def _AplicarFiltroCorretorSplits(
     Retorna número de trades marcados BROKER.
     """
     eligible = [(i, t) for i, t in enumerate(trades)
-                if not t._paired and t.vrTaxaCalculada is not None]
+                if not t.pareados and t.vrTaxaCalculada is not None]
     if not eligible:
         return 0
 
-    grupos: dict[str, list[tuple[int, _Trade]]] = {}
+    grupos: dict[str, list[tuple[int, Negocio]]] = {}
     for i, t in eligible:
         grupos.setdefault(t.cdTicker, []).append((i, t))
 
-    n_broker = 0
+    nBroker = 0
 
     for membros in grupos.values():
         if len(membros) < 3:  # mínimo: 1 bloco + 2 splits
             continue
 
-        membros_sorted = sorted(membros, key=lambda x: x[1].vrQuantidade, reverse=True)
+        membrosOrdenados = sorted(membros, key=lambda x: x[1].vrQuantidade, reverse=True)
         usados: set[int] = set()
 
-        for bloco_i, bloco_t in membros_sorted:
-            if bloco_i in usados:
+        for blocoI, blocoT in membrosOrdenados:
+            if blocoI in usados:
                 continue
 
-            bloco_qty = bloco_t.vrQuantidade
-            bloco_taxa = bloco_t.vrTaxaCalculada  # not None (eligible filter)
-            if _IsPctCdi(bloco_t.cdIndexador, bloco_taxa):
+            blocoQty = blocoT.vrQuantidade
+            blocoTaxa = blocoT.vrTaxaCalculada  # not None (eligible filter)
+            if EhPctCdi(blocoT.cdIndexador, blocoTaxa):
                 tol = corretorMaxPctCdi
             else:
                 tol = corretorMaxBps / 100.0
@@ -455,11 +455,11 @@ def _AplicarFiltroCorretorSplits(
             candidatos: list[tuple[int, int]] = sorted(
                 [
                     (t.vrQuantidade, i)
-                    for i, t in membros_sorted
-                    if i != bloco_i
+                    for i, t in membrosOrdenados
+                    if i != blocoI
                     and i not in usados
-                    and t.vrQuantidade < bloco_qty
-                    and abs(t.vrTaxaCalculada - bloco_taxa) <= tol  # type: ignore[operator]
+                    and t.vrQuantidade < blocoQty
+                    and abs(t.vrTaxaCalculada - blocoTaxa) <= tol  # type: ignore[operator]
                 ],
                 reverse=True,
             )
@@ -467,27 +467,27 @@ def _AplicarFiltroCorretorSplits(
             if len(candidatos) < 2:
                 continue
 
-            splits_idx = _SubsetSumDFS(candidatos, bloco_qty)
-            if splits_idx is None:
+            idxSplits = SubsetSumDFS(candidatos, blocoQty)
+            if idxSplits is None:
                 continue
 
             idGroup = str(uuid4())
-            for idx in [bloco_i] + splits_idx:
+            for idx in [blocoI] + idxSplits:
                 trades[idx].cdStatus = 'BROKER'
                 trades[idx].idGrupoNegocio = idGroup
-                trades[idx]._paired = True
+                trades[idx].pareados = True
                 usados.add(idx)
-                n_broker += 1
+                nBroker += 1
 
-    return n_broker
+    return nBroker
 
 
 # ---------------------------------------------------------------------------
 # Filtro 3 — Pessoa Física
 # ---------------------------------------------------------------------------
 
-def _AplicarFiltroPF(
-    trades: list[_Trade],
+def AplicarFiltroPF(
+    trades: list[Negocio],
     pfMinBps: float,
     pfMinPctCdi: float,
     taxaAnbima: dict[str, float],
@@ -511,66 +511,66 @@ def _AplicarFiltroPF(
     """
     # Pool para mediana: não-FUNDO, não-BROKER, com taxa — inclui VALIDO-de-CORRETOR
     # e trades ainda não-classificados. Reflete o "válido até aqui".
-    pool_por_ticker: dict[str, list] = {}
+    poolPorTicker: dict[str, list] = {}
     for t in trades:
         if t.cdStatus not in ('FUNDO', 'BROKER') and t.vrTaxaCalculada is not None:
-            pool_por_ticker.setdefault(t.cdTicker, []).append(t)
+            poolPorTicker.setdefault(t.cdTicker, []).append(t)
 
-    taxa_ref: dict[str, float] = {}
-    for cdTicker, pool in pool_por_ticker.items():
+    taxaRef: dict[str, float] = {}
+    for cdTicker, pool in poolPorTicker.items():
         if cdTicker in taxaAnbima:
-            taxa_ref[cdTicker] = taxaAnbima[cdTicker]
+            taxaRef[cdTicker] = taxaAnbima[cdTicker]
         else:
-            mediana = _VolumeWeightedMedian(pool)
+            mediana = MedianaPonderadaVolume(pool)
             if mediana is not None:
-                taxa_ref[cdTicker] = mediana
+                taxaRef[cdTicker] = mediana
 
     # Elegíveis: não-pareados com taxa
     eligible: dict[tuple, list[int]] = {}
     for i, t in enumerate(trades):
-        if not t._paired and t.vrTaxaCalculada is not None:
+        if not t.pareados and t.vrTaxaCalculada is not None:
             eligible.setdefault((t.cdTicker, t.vrQuantidade), []).append(i)
 
-    n_pf = 0
+    nPf = 0
     for (cdTicker, _), indices in eligible.items():
         if len(indices) < 2:
             continue
 
-        ref = taxa_ref.get(cdTicker)
+        ref = taxaRef.get(cdTicker)
         if ref is None:
             continue  # sem referência disponível — não classifica PF, mantém VALIDO
 
         t0 = trades[indices[0]]
-        tol = pfMinPctCdi if _IsPctCdi(t0.cdIndexador, t0.vrTaxaCalculada) else pfMinBps / 100.0
+        tol = pfMinPctCdi if EhPctCdi(t0.cdIndexador, t0.vrTaxaCalculada) else pfMinBps / 100.0
 
         # Elege o mais próximo da referência; tiebreak por menor volume
         indices.sort(key=lambda i: (abs(trades[i].vrTaxaCalculada - ref), trades[i].vrVolume))
-        winner_idx = indices[0]
-        winner = trades[winner_idx]
+        idxVencedor = indices[0]
+        winner = trades[idxVencedor]
 
         idGroup = str(uuid4())
-        group_pf = 0
+        grupoPf = 0
         for idx in indices[1:]:
             t = trades[idx]
             if abs(t.vrTaxaCalculada - winner.vrTaxaCalculada) > tol:
                 t.cdStatus = 'PF'
                 t.idGrupoNegocio = idGroup
-                t._paired = True
-                group_pf += 1
-                n_pf += 1
+                t.pareados = True
+                grupoPf += 1
+                nPf += 1
 
-        if group_pf > 0:
+        if grupoPf > 0:
             winner.idGrupoNegocio = idGroup
-            winner._paired = True
+            winner.pareados = True
 
-    return n_pf
+    return nPf
 
 
 # ---------------------------------------------------------------------------
 # Processamento por data
 # ---------------------------------------------------------------------------
 
-def _ProcessDate(
+def ProcessarData(
     conn,
     dtLiquidacao: str,
     fundoMaxReaisPorMilhao: float,
@@ -579,15 +579,15 @@ def _ProcessDate(
     pfMinBps: float,
     pfMinPctCdi: float,
     log,
-) -> _DateStats:
+) -> EstatisticasData:
     """
     Lê todos os trades válidos de uma dtLiquidacao, aplica os três filtros
     sequencialmente e faz UPDATE em NegociosProcessados com cdStatus e idGrupoNegocio.
     Retorna _DateStats com os contadores.
     """
-    stats = _DateStats(dtLiquidacao=dtLiquidacao)
+    stats = EstatisticasData(dtLiquidacao=dtLiquidacao)
 
-    rows = conn.execute(_SQL_FETCH_TRADES, (dtLiquidacao,)).fetchall()
+    rows = conn.execute(SQL_BUSCAR_NEGOCIOS, (dtLiquidacao,)).fetchall()
     stats.total = len(rows)
 
     if stats.total == 0:
@@ -595,7 +595,7 @@ def _ProcessDate(
         return stats
 
     trades = [
-        _Trade(
+        Negocio(
             idTrade=row["idTrade"],
             cdTicker=row["cdTicker"],
             dtLiquidacao=row["dtLiquidacao"],
@@ -609,8 +609,8 @@ def _ProcessDate(
     ]
 
     # Taxas indicativas Anbima para a data (referência do filtro PF)
-    anbima_rows = conn.execute(_SQL_FETCH_ANBIMA, (dtLiquidacao,)).fetchall()
-    taxaAnbima = {r["cdTicker"]: r["vrTaxaAnbima"] for r in anbima_rows}
+    linhasAnbima = conn.execute(SQL_BUSCAR_ANBIMA, (dtLiquidacao,)).fetchall()
+    taxaAnbima = {r["cdTicker"]: r["vrTaxaAnbima"] for r in linhasAnbima}
 
     log.info(
         "filtrar_trades: dtLiquidacao=%s — %d trade(s), %d taxa(s) Anbima disponíveis",
@@ -618,21 +618,21 @@ def _ProcessDate(
     )
 
     # --- Filtro 1: Passagem de Fundo (passes a+b pairwise; pass c bloco+splits) ---
-    n_fundo = _AplicarFiltroFundo(trades, fundoMaxReaisPorMilhao)
-    n_fundo += _AplicarFiltroFundoSplits(trades, fundoMaxReaisPorMilhao)
+    nFundo = AplicarFiltroFundo(trades, fundoMaxReaisPorMilhao)
+    nFundo += AplicarFiltroFundoSplits(trades, fundoMaxReaisPorMilhao)
     log.info("filtrar_trades: %s — FUNDO: %d trade(s) (threshold=%.1f R$/MM)",
-             dtLiquidacao, n_fundo, fundoMaxReaisPorMilhao)
+             dtLiquidacao, nFundo, fundoMaxReaisPorMilhao)
 
     # --- Filtro 2: Corretor (pass 1: pares mesma qty; pass 2: bloco + splits) ---
-    n_broker = _AplicarFiltroCorretor(trades, corretorMaxBps, corretorMaxPctCdi)
-    n_broker += _AplicarFiltroCorretorSplits(trades, corretorMaxBps, corretorMaxPctCdi)
+    nBroker = AplicarFiltroCorretor(trades, corretorMaxBps, corretorMaxPctCdi)
+    nBroker += AplicarFiltroCorretorSplits(trades, corretorMaxBps, corretorMaxPctCdi)
     log.info("filtrar_trades: %s — CORRETOR: %d trade(s) BROKER (maxBps=%.2f, maxPctCdi=%.3f)",
-             dtLiquidacao, n_broker, corretorMaxBps, corretorMaxPctCdi)
+             dtLiquidacao, nBroker, corretorMaxBps, corretorMaxPctCdi)
 
     # --- Filtro 3: Pessoa Física ---
-    n_pf = _AplicarFiltroPF(trades, pfMinBps, pfMinPctCdi, taxaAnbima)
+    nPf = AplicarFiltroPF(trades, pfMinBps, pfMinPctCdi, taxaAnbima)
     log.info("filtrar_trades: %s — PF: %d trade(s) (minBps=%.1f, minPctCdi=%.2f)",
-             dtLiquidacao, n_pf, pfMinBps, pfMinPctCdi)
+             dtLiquidacao, nPf, pfMinBps, pfMinPctCdi)
 
     # Contagem de stats
     for t in trades:
@@ -649,7 +649,7 @@ def _ProcessDate(
 
     # UPDATE atômico: um executemany para todos os trades da data
     updates = [(t.cdStatus, t.idGrupoNegocio, t.idTrade) for t in trades]
-    conn.executemany(_SQL_UPDATE_STATUS, updates)
+    conn.executemany(SQL_ATUALIZAR_STATUS, updates)
     conn.commit()
 
     log.info(
@@ -663,7 +663,7 @@ def _ProcessDate(
 # CLI
 # ---------------------------------------------------------------------------
 
-def _ParseArgs() -> argparse.Namespace:
+def LerArgumentos() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Aplica filtros de qualidade (FUNDO/CORRETOR/PF) em NegociosProcessados por dtLiquidacao."
     )
@@ -734,7 +734,7 @@ def _ParseArgs() -> argparse.Namespace:
     return args
 
 
-def _BuildDateRange(args: argparse.Namespace) -> list[str]:
+def MontarIntervaloDatas(args: argparse.Namespace) -> list[str]:
     """Retorna lista de datas YYYY-MM-DD (dtLiquidacao) a processar."""
     if args.date:
         return [args.date]
@@ -753,7 +753,7 @@ def _BuildDateRange(args: argparse.Namespace) -> list[str]:
     return datas
 
 
-def _BuildSummary(statsList: list[_DateStats]) -> str:
+def MontarResumo(statsList: list[EstatisticasData]) -> str:
     """Formata tabela de resumo por dtLiquidacao para o email e log."""
     lines = ["Resultado por dtLiquidacao:", ""]
     header = (
@@ -763,7 +763,7 @@ def _BuildSummary(statsList: list[_DateStats]) -> str:
     sep = "-" * len(header)
     lines.extend([header, sep])
 
-    totais = _DateStats(dtLiquidacao="TOTAL")
+    totais = EstatisticasData(dtLiquidacao="TOTAL")
     for s in statsList:
         lines.append(
             f"{s.dtLiquidacao:<12}  {s.total:>6}  {s.valido:>7}  "
@@ -795,10 +795,10 @@ def _BuildSummary(statsList: list[_DateStats]) -> str:
 # Entrypoint
 # ---------------------------------------------------------------------------
 
-def Main() -> None:
-    log     = get_logger("filtrar_trades")
-    args    = _ParseArgs()
-    conn    = get_db()
+def Principal() -> None:
+    log     = ObterLogger("filtrar_trades")
+    args    = LerArgumentos()
+    conn    = ObterBanco()
     summary = ""
     success = True
 
@@ -825,7 +825,7 @@ def Main() -> None:
             else float(cfg["filtro"]["pfMinPctCdi"])
         )
 
-        datas = _BuildDateRange(args)
+        datas = MontarIntervaloDatas(args)
         log.info(
             "filtrar_trades: %d data(s): %s ... %s | "
             "fundoMax=%.1f corretorBps=%.2f corretorPctCdi=%.3f pfMinBps=%.1f pfMinPctCdi=%.2f",
@@ -833,9 +833,9 @@ def Main() -> None:
             fundoMaxReaisPorMilhao, corretorMaxBps, corretorMaxPctCdi, pfMinBps, pfMinPctCdi,
         )
 
-        statsList: list[_DateStats] = []
+        statsList: list[EstatisticasData] = []
         for dtLiquidacao in datas:
-            s = _ProcessDate(
+            s = ProcessarData(
                 conn, dtLiquidacao,
                 fundoMaxReaisPorMilhao,
                 corretorMaxBps, corretorMaxPctCdi,
@@ -844,7 +844,7 @@ def Main() -> None:
             )
             statsList.append(s)
 
-        summary = _BuildSummary(statsList)
+        summary = MontarResumo(statsList)
         log.info("filtrar_trades: concluido.\n%s", summary)
 
     except Exception:
@@ -854,7 +854,7 @@ def Main() -> None:
 
     finally:
         conn.close()
-        send_completion_email(
+        EnviarEmailConclusao(
             "filtrar_trades",
             success,
             summary,
@@ -863,4 +863,4 @@ def Main() -> None:
 
 
 if __name__ == "__main__":
-    Main()
+    Principal()

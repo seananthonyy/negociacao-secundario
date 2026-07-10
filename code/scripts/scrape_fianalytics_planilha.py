@@ -30,25 +30,25 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from playwright.async_api import async_playwright
 
-from lib.config import cfg, get_secret, get_playwright_proxy
-from lib.db import get_db
-from lib.logger import get_logger
-from lib.email_outlook import send_completion_email
+from lib.config import cfg, ObterSegredo, ObterProxyPlaywright
+from lib.db import ObterBanco
+from lib.logger import ObterLogger
+from lib.email_outlook import EnviarEmailConclusao
 
 # ---------------------------------------------------------------------------
 # Constantes
 # ---------------------------------------------------------------------------
 
-_SCRIPT_NAME = "scrape_fianalytics_planilha"
+NOME_SCRIPT = "scrape_fianalytics_planilha"
 
 # Planilhas a baixar: (tipo, URL, cdInstrumento padrão ou None para inferir)
 # cdInstrumento None indica que deve ser inferido do ticker (CRI/CRA)
-_PLANILHAS = [
+PLANILHAS = [
     ("deb",     "https://fi-analytics.com.br/analytics-hub/hub?type=deb",     "DEB"),
     ("cri_cra", "https://fi-analytics.com.br/analytics-hub/hub?type=cri_cra", None),
 ]
 
-_SQL_UPSERT_INFO = """
+SQL_UPSERT_INFO = """
 INSERT INTO InfoAtivos (
     cdTicker, cdInstrumento, cdEmissor, dtVencimento,
     vrDuration, dtAtualizacaoDuration, cdIndexador, cdReferencia, cdFonteReferencia, vrTaxaEmissao, dtAtualizacao
@@ -72,7 +72,7 @@ ON CONFLICT(cdTicker) DO UPDATE SET
 # Helpers de parsing
 # ---------------------------------------------------------------------------
 
-def _NormalizeIndexador(raw) -> str | None:
+def NormalizarIndexador(raw) -> str | None:
     """Normaliza string de indexador para o código canônico do projeto."""
     s = str(raw).strip().upper() if raw is not None else ''
     if not s or s in ('--', 'N/D', 'N/A', 'NONE'):
@@ -88,7 +88,7 @@ def _NormalizeIndexador(raw) -> str | None:
     return None
 
 
-def _ParseVencimento(raw) -> str | None:
+def AnalisarVencimento(raw) -> str | None:
     """Converte valor de célula de vencimento para ISO YYYY-MM-DD."""
     if raw is None:
         return None
@@ -111,7 +111,7 @@ def _ParseVencimento(raw) -> str | None:
     return None
 
 
-def _ParseDuration(raw) -> float | None:
+def AnalisarDuration(raw) -> float | None:
     """Converte valor de duração para float (já em anos)."""
     if raw is None:
         return None
@@ -122,7 +122,7 @@ def _ParseDuration(raw) -> float | None:
         return None
 
 
-def _ParseFloat(raw) -> float | None:
+def AnalisarFloat(raw) -> float | None:
     if raw is None:
         return None
     try:
@@ -131,7 +131,7 @@ def _ParseFloat(raw) -> float | None:
         return None
 
 
-def _InferInstrumento(cdTicker: str, defaultInstrumento: str | None) -> str | None:
+def InferirInstrumento(cdTicker: str, defaultInstrumento: str | None) -> str | None:
     """Infere cdInstrumento a partir do ticker quando defaultInstrumento é None."""
     if defaultInstrumento is not None:
         return defaultInstrumento
@@ -142,7 +142,7 @@ def _InferInstrumento(cdTicker: str, defaultInstrumento: str | None) -> str | No
 # Playwright: login
 # ---------------------------------------------------------------------------
 
-async def _DismissSessionDialog(page, log) -> None:
+async def FecharDialogoSessao(page, log) -> None:
     """Clica em 'Continuar' se o popup de sessão ativa aparecer após o login."""
     try:
         continuarBtn = page.locator('div[role="alertdialog"] button:has-text("Continuar")')
@@ -154,11 +154,11 @@ async def _DismissSessionDialog(page, log) -> None:
         pass  # popup não apareceu, segue normalmente
 
 
-async def _Login(page, log) -> None:
+async def Autenticar(page, log) -> None:
     """Realiza login no FI Analytics, tratando popup de sessão ativa se necessário."""
     signinUrl = cfg["scrape"]["fianalytics"]["signinUrl"]
-    fiUser    = get_secret("fianalyticsUser")
-    fiPass    = get_secret("fianalyticsPass")
+    fiUser    = ObterSegredo("fianalyticsUser")
+    fiPass    = ObterSegredo("fianalyticsPass")
 
     if not fiUser or not fiPass:
         raise ValueError(
@@ -175,7 +175,7 @@ async def _Login(page, log) -> None:
     await page.click('button[type="submit"]')
 
     # Popup de sessão ativa pode aparecer antes da navegação completar
-    await _DismissSessionDialog(page, log)
+    await FecharDialogoSessao(page, log)
 
     # Aguarda navegação pós-login (URL muda saindo de /signin)
     await page.wait_for_url(lambda url: '/signin' not in url, timeout=30_000)
@@ -187,7 +187,7 @@ async def _Login(page, log) -> None:
 # Playwright: download da planilha
 # ---------------------------------------------------------------------------
 
-async def _DownloadPlanilha(page, tipo: str, url: str, log) -> bytes | None:
+async def BaixarPlanilha(page, tipo: str, url: str, log) -> bytes | None:
     """Navega para URL e baixa a planilha Excel via botão de download."""
     log.info("fia_planilha: navegando para %s (%s)", url, tipo)
     await page.goto(url, wait_until="networkidle", timeout=45_000)
@@ -231,7 +231,7 @@ async def _DownloadPlanilha(page, tipo: str, url: str, log) -> bytes | None:
 # Parsing do XLSX
 # ---------------------------------------------------------------------------
 
-def _ParseXlsx(
+def AnalisarXlsx(
     content: bytes,
     tipo: str,
     defaultInstrumento: str | None,
@@ -287,18 +287,18 @@ def _ParseXlsx(
     log.debug("fia_planilha: %s — headers: %s", tipo, headers)
 
     # Índices das colunas necessárias
-    def _ColIdx(name: str) -> int | None:
+    def ColIdx(name: str) -> int | None:
         try:
             return headers.index(name)
         except ValueError:
             return None
 
-    idxTicker      = _ColIdx('Ticker')
-    idxIndexador   = _ColIdx('Indexador')
-    idxIssuer      = _ColIdx('issuer')
-    idxVenc        = _ColIdx('Vencimento')
-    idxDuration    = _ColIdx('Duration')
-    idxTaxaEmissao = _ColIdx('Taxa Emissão (%)')
+    idxTicker      = ColIdx('Ticker')
+    idxIndexador   = ColIdx('Indexador')
+    idxIssuer      = ColIdx('issuer')
+    idxVenc        = ColIdx('Vencimento')
+    idxDuration    = ColIdx('Duration')
+    idxTaxaEmissao = ColIdx('Taxa Emissão (%)')
 
     if idxTicker is None:
         log.error("fia_planilha: coluna 'Ticker' ausente em %s", tipo)
@@ -321,12 +321,12 @@ def _ParseXlsx(
         rawTaxaEm    = row[idxTaxaEmissao]             if idxTaxaEmissao is not None else None
 
         cdEmissor     = cdEmissor or None
-        dtVencimento  = _ParseVencimento(rawVenc)
-        vrDuration    = _ParseDuration(rawDuration)
+        dtVencimento  = AnalisarVencimento(rawVenc)
+        vrDuration    = AnalisarDuration(rawDuration)
         dtUpsertDur   = dtToday if vrDuration is not None else None
-        cdIndexador   = _NormalizeIndexador(rawIndexador)
-        cdInstrumento = _InferInstrumento(cdTicker, defaultInstrumento)
-        vrTaxaEmissao = _ParseFloat(rawTaxaEm) if rawTaxaEm is not None else None
+        cdIndexador   = NormalizarIndexador(rawIndexador)
+        cdInstrumento = InferirInstrumento(cdTicker, defaultInstrumento)
+        vrTaxaEmissao = AnalisarFloat(rawTaxaEm) if rawTaxaEm is not None else None
 
         # cdReferencia = None — FI Analytics não fornece esta informação
         infoRows.append((
@@ -342,12 +342,12 @@ def _ParseXlsx(
 # Persistência
 # ---------------------------------------------------------------------------
 
-def _SaveToDb(conn, infoRows: list[tuple], tipo: str, log) -> int:
+def GravarNoBanco(conn, infoRows: list[tuple], tipo: str, log) -> int:
     """Executa UPSERT em InfoAtivos e retorna número de linhas processadas."""
     if not infoRows:
         log.warning("fia_planilha: %s — nenhum ticker para salvar", tipo)
         return 0
-    conn.executemany(_SQL_UPSERT_INFO, infoRows)
+    conn.executemany(SQL_UPSERT_INFO, infoRows)
     conn.commit()
     log.info("fia_planilha: %s — %d registros em InfoAtivos", tipo, len(infoRows))
     return len(infoRows)
@@ -357,7 +357,7 @@ def _SaveToDb(conn, infoRows: list[tuple], tipo: str, log) -> int:
 # Summary
 # ---------------------------------------------------------------------------
 
-def _BuildSummary(results: list[tuple[str, int]]) -> str:
+def MontarResumo(results: list[tuple[str, int]]) -> str:
     """Monta tabela de resumo por planilha."""
     col1 = max(len(r[0]) for r in results) if results else 7
     col1 = max(col1, len("Planilha"))
@@ -379,14 +379,14 @@ def _BuildSummary(results: list[tuple[str, int]]) -> str:
 # Main assíncrono
 # ---------------------------------------------------------------------------
 
-async def _MainAsync(args: argparse.Namespace, log) -> list[tuple[str, int]]:
+async def PrincipalAsync(args: argparse.Namespace, log) -> list[tuple[str, int]]:
     """Orquestra login, downloads e UPSERTs. Retorna lista (planilha, nTickers)."""
-    conn    = get_db()
+    conn    = ObterBanco()
     results: list[tuple[str, int]] = []
 
     try:
         async with async_playwright() as pw:
-            browser = await pw.chromium.launch(headless=args.headless, proxy=get_playwright_proxy())
+            browser = await pw.chromium.launch(headless=args.headless, proxy=ObterProxyPlaywright())
             context = await browser.new_context(
                 accept_downloads=True,
                 viewport={"width": 1400, "height": 900},
@@ -394,16 +394,16 @@ async def _MainAsync(args: argparse.Namespace, log) -> list[tuple[str, int]]:
             page = await context.new_page()
 
             # Login único — sessão reutilizada para ambas as planilhas
-            await _Login(page, log)
+            await Autenticar(page, log)
 
-            for tipo, url, defaultInstrumento in _PLANILHAS:
-                content = await _DownloadPlanilha(page, tipo, url, log)
+            for tipo, url, defaultInstrumento in PLANILHAS:
+                content = await BaixarPlanilha(page, tipo, url, log)
                 if content is None:
                     results.append((tipo, 0))
                     continue
 
-                infoRows = _ParseXlsx(content, tipo, defaultInstrumento, log)
-                nSaved   = _SaveToDb(conn, infoRows, tipo, log)
+                infoRows = AnalisarXlsx(content, tipo, defaultInstrumento, log)
+                nSaved   = GravarNoBanco(conn, infoRows, tipo, log)
                 results.append((tipo, nSaved))
 
             await browser.close()
@@ -418,7 +418,7 @@ async def _MainAsync(args: argparse.Namespace, log) -> list[tuple[str, int]]:
 # CLI
 # ---------------------------------------------------------------------------
 
-def _ParseArgs() -> argparse.Namespace:
+def LerArgumentos() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Login FI Analytics via Playwright, baixa planilhas Excel de "
@@ -438,15 +438,15 @@ def _ParseArgs() -> argparse.Namespace:
 # Entrypoint
 # ---------------------------------------------------------------------------
 
-def Main() -> None:
-    log     = get_logger(_SCRIPT_NAME)
-    args    = _ParseArgs()
+def Principal() -> None:
+    log     = ObterLogger(NOME_SCRIPT)
+    args    = LerArgumentos()
     summary = ""
     success = True
 
     try:
-        results = asyncio.run(_MainAsync(args, log))
-        summary = _BuildSummary(results)
+        results = asyncio.run(PrincipalAsync(args, log))
+        summary = MontarResumo(results)
         log.info("fia_planilha: concluído.\n%s", summary)
 
     except Exception:
@@ -455,8 +455,8 @@ def Main() -> None:
         log.exception("fia_planilha: erro inesperado")
 
     finally:
-        send_completion_email(_SCRIPT_NAME, success, summary, logger=log)
+        EnviarEmailConclusao(NOME_SCRIPT, success, summary, logger=log)
 
 
 if __name__ == "__main__":
-    Main()
+    Principal()

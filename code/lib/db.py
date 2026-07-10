@@ -127,7 +127,7 @@ CREATE INDEX IF NOT EXISTS idxOutstandingDtOutstanding ON Outstanding(dtOutstand
 # - temp_store=MEMORY: indices/sorts temporarios em RAM.
 # - synchronous=NORMAL: seguro com WAL e mais rapido nas escritas do pipeline.
 # - busy_timeout: espera ao inves de falhar se o pipeline estiver escrevendo.
-_PRAGMAS_PERF = (
+PRAGMAS_PERF = (
     "PRAGMA mmap_size=268435456",   # 256 MiB
     "PRAGMA cache_size=-65536",     # 64 MiB
     "PRAGMA temp_store=MEMORY",
@@ -135,30 +135,30 @@ _PRAGMAS_PERF = (
 )
 
 
-def get_connection(db_path: str | None = None) -> sqlite3.Connection:
+def ObterConexao(caminhoBanco: str | None = None) -> sqlite3.Connection:
     """
     Abre conexao SQLite com WAL, foreign_keys e PRAGMAs de performance.
     db_path padrao: cfg["paths"]["dbFile"].
     Cria o diretorio pai se nao existir.
     """
-    if db_path is None:
-        db_path = cfg["paths"]["dbFile"]
-    os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    if caminhoBanco is None:
+        caminhoBanco = cfg["paths"]["dbFile"]
+    os.makedirs(os.path.dirname(caminhoBanco) or ".", exist_ok=True)
+    conn = sqlite3.connect(caminhoBanco)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
-    for p in _PRAGMAS_PERF:
+    for p in PRAGMAS_PERF:
         conn.execute(p)
     return conn
 
 
-def get_readonly_connection(db_path: str | None = None) -> sqlite3.Connection:
+def ObterConexaoLeitura(caminhoBanco: str | None = None) -> sqlite3.Connection:
     """
     Conexao otimizada para LEITURA pura — pensada para o add-in da calculadora.
 
-    Diferencas vs get_connection:
+    Diferencas vs ObterConexao:
       - abre o arquivo em modo read-only (mode=ro): nunca bloqueia o pipeline,
         nunca cria/escreve WAL, e o SO pode otimizar o acesso;
       - query_only=ON como trava de seguranca;
@@ -177,17 +177,17 @@ def get_readonly_connection(db_path: str | None = None) -> sqlite3.Connection:
     por lookup domina o tempo). As PRAGMAs abaixo sao genericas do SQLite —
     valem em qualquer linguagem (C#/.NET, VBA/ODBC etc.), nao so Python.
     """
-    if db_path is None:
-        db_path = cfg["paths"]["dbFile"]
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    if caminhoBanco is None:
+        caminhoBanco = cfg["paths"]["dbFile"]
+    conn = sqlite3.connect(f"file:{caminhoBanco}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA query_only=ON")
-    for p in _PRAGMAS_PERF:
+    for p in PRAGMAS_PERF:
         conn.execute(p)
     return conn
 
 
-def bootstrap(conn: sqlite3.Connection) -> None:
+def Bootstrap(conn: sqlite3.Connection) -> None:
     """Executa DDL completo. Idempotente (IF NOT EXISTS em tudo)."""
     conn.executescript(DDL)
     # Migração segura: adiciona colunas novas em tabelas existentes
@@ -217,8 +217,8 @@ def bootstrap(conn: sqlite3.Connection) -> None:
         conn.commit()
 
 
-def get_db(db_path: str | None = None) -> sqlite3.Connection:
+def ObterBanco(caminhoBanco: str | None = None) -> sqlite3.Connection:
     """Helper principal: abre conexao e garante o schema. Scripts usam so essa."""
-    conn = get_connection(db_path)
-    bootstrap(conn)
+    conn = ObterConexao(caminhoBanco)
+    Bootstrap(conn)
     return conn

@@ -28,18 +28,18 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from lib.db import get_db
-from lib.logger import get_logger
-from lib.email_outlook import send_completion_email
+from lib.db import ObterBanco
+from lib.logger import ObterLogger
+from lib.email_outlook import EnviarEmailConclusao
 
 
 # ---------------------------------------------------------------------------
 # SQL
 # ---------------------------------------------------------------------------
 
-_SCRIPT_NAME = "calc_spread_over"
+NOME_SCRIPT = "calc_spread_over"
 
-_SQL_FETCH_TRADES = """
+SQL_BUSCAR_NEGOCIOS = """
     SELECT tp.idTrade,
            tp.cdTicker,
            tp.dtNegocio,
@@ -53,14 +53,14 @@ _SQL_FETCH_TRADES = """
       AND  tp.cdStatus != 'BROKER'
 """
 
-_SQL_FETCH_RATE = """
+SQL_BUSCAR_TAXA = """
     SELECT vrTaxa
     FROM   MtmAnbima
     WHERE  cdTicker    = ?
       AND  dtReferencia = ?
 """
 
-_SQL_UPDATE_SPREAD = """
+SQL_ATUALIZAR_SPREAD = """
     UPDATE NegociosProcessados
     SET    vrSpreadOver = ?
     WHERE  idTrade = ?
@@ -72,7 +72,7 @@ _SQL_UPDATE_SPREAD = """
 # ---------------------------------------------------------------------------
 
 @dataclass
-class _DateStats:
+class EstatisticasData:
     dtLiquidacao: str
     total: int = 0
     calculado: int = 0
@@ -85,14 +85,14 @@ class _DateStats:
 # Logica de spread por trade
 # ---------------------------------------------------------------------------
 
-def _CalcSpread(
+def CalcularSpread(
     cdTicker: str,
     dtNegocio: str,
     vrTaxaCalculada: float,
     cdReferencia: Optional[str],
     conn,
     log,
-    stats: _DateStats,
+    stats: EstatisticasData,
 ) -> Optional[float]:
     if cdReferencia is None:
         log.debug("spread_over: %s/%s — cdReferencia NULL, spread=NULL", cdTicker, dtNegocio)
@@ -105,7 +105,7 @@ def _CalcSpread(
         stats.funding += 1
         return vrTaxaCalculada
 
-    row = conn.execute(_SQL_FETCH_RATE, (cdReferencia, dtNegocio)).fetchone()
+    row = conn.execute(SQL_BUSCAR_TAXA, (cdReferencia, dtNegocio)).fetchone()
     if row is None:
         log.debug(
             "spread_over: %s/%s — cdReferencia=%s sem taxa em MtmAnbima, spread=NULL",
@@ -129,10 +129,10 @@ def _CalcSpread(
 # Processamento por data
 # ---------------------------------------------------------------------------
 
-def _ProcessDate(conn, dtLiquidacao: str, log) -> _DateStats:
-    stats = _DateStats(dtLiquidacao=dtLiquidacao)
+def ProcessarData(conn, dtLiquidacao: str, log) -> EstatisticasData:
+    stats = EstatisticasData(dtLiquidacao=dtLiquidacao)
 
-    trades = conn.execute(_SQL_FETCH_TRADES, (dtLiquidacao,)).fetchall()
+    trades = conn.execute(SQL_BUSCAR_NEGOCIOS, (dtLiquidacao,)).fetchall()
     stats.total = len(trades)
 
     if stats.total == 0:
@@ -143,7 +143,7 @@ def _ProcessDate(conn, dtLiquidacao: str, log) -> _DateStats:
 
     updates: list[tuple] = []
     for trade in trades:
-        vrSpread = _CalcSpread(
+        vrSpread = CalcularSpread(
             cdTicker        = trade["cdTicker"],
             dtNegocio       = trade["dtNegocio"],
             vrTaxaCalculada = trade["vrTaxaCalculada"],
@@ -154,7 +154,7 @@ def _ProcessDate(conn, dtLiquidacao: str, log) -> _DateStats:
         )
         updates.append((vrSpread, trade["idTrade"]))
 
-    conn.executemany(_SQL_UPDATE_SPREAD, updates)
+    conn.executemany(SQL_ATUALIZAR_SPREAD, updates)
     conn.commit()
 
     log.info(
@@ -168,7 +168,7 @@ def _ProcessDate(conn, dtLiquidacao: str, log) -> _DateStats:
 # CLI
 # ---------------------------------------------------------------------------
 
-def _ParseArgs() -> argparse.Namespace:
+def LerArgumentos() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Calcula vrSpreadOver em NegociosProcessados usando MtmAnbima como referencia."
     )
@@ -184,7 +184,7 @@ def _ParseArgs() -> argparse.Namespace:
     return args
 
 
-def _BuildDateRange(args: argparse.Namespace) -> list[str]:
+def MontarIntervaloDatas(args: argparse.Namespace) -> list[str]:
     if args.date:
         return [args.date]
     startDate = date.fromisoformat(args.start)
@@ -198,7 +198,7 @@ def _BuildDateRange(args: argparse.Namespace) -> list[str]:
     return datas
 
 
-def _BuildSummary(statsList: list[_DateStats]) -> str:
+def MontarResumo(statsList: list[EstatisticasData]) -> str:
     header = f"{'Data':<12}  {'Total':>6}  {'Calculado':>9}  {'Funding':>7}  {'SemRef':>6}  {'SemMtm':>6}"
     sep    = "-" * len(header)
     lines  = ["Resultado por dtLiquidacao (NegociosProcessados):", "", header, sep]
@@ -237,23 +237,23 @@ def _BuildSummary(statsList: list[_DateStats]) -> str:
 # Entrypoint
 # ---------------------------------------------------------------------------
 
-def Main() -> None:
-    log     = get_logger(_SCRIPT_NAME)
-    args    = _ParseArgs()
-    conn    = get_db()
+def Principal() -> None:
+    log     = ObterLogger(NOME_SCRIPT)
+    args    = LerArgumentos()
+    conn    = ObterBanco()
     summary = ""
     success = True
 
     try:
-        datas = _BuildDateRange(args)
+        datas = MontarIntervaloDatas(args)
         log.info("spread_over: processando %d data(s): %s ... %s", len(datas), datas[0], datas[-1])
 
-        statsList: list[_DateStats] = []
+        statsList: list[EstatisticasData] = []
         for dtLiquidacao in datas:
-            s = _ProcessDate(conn, dtLiquidacao, log)
+            s = ProcessarData(conn, dtLiquidacao, log)
             statsList.append(s)
 
-        summary = _BuildSummary(statsList)
+        summary = MontarResumo(statsList)
         log.info("spread_over: concluido.\n%s", summary)
 
     except Exception:
@@ -263,8 +263,8 @@ def Main() -> None:
 
     finally:
         conn.close()
-        send_completion_email(_SCRIPT_NAME, success, summary, logger=log)
+        EnviarEmailConclusao(NOME_SCRIPT, success, summary, logger=log)
 
 
 if __name__ == "__main__":
-    Main()
+    Principal()

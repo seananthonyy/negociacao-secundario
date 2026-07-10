@@ -38,9 +38,13 @@ Use `/agents` no Claude Code pra ver/invocar.
 - **Paths relativos ao cwd** (projeto vai ser migrado entre PC pessoal e PC trabalho)
 - **Tabelas SQLite**: PascalCase (`TradesRaw`, `InfoAtivos`, etc)
 - **Colunas SQLite**: camelCase com prefixos `vr` (valor), `cd` (código/categoria), `dt` (data/hora), `id` (identificador)
-- **Scripts**: snake_case, sem prefixo numérico (`scrape_b3_boletim.py`, não `01_scrape_...`)
-- **Python variáveis**: camelCase (`dtRef`, `cdTicker`, `anbimaRows`, `totalAnbima`)
-- **Python funções**: PascalCase (`_ParseArgs`, `_ProcessDate`, `_BuildUrl`, `Main`)
+- **Nomes de arquivo de script**: snake_case, sem prefixo numérico (`scrape_b3_boletim.py`, não `01_scrape_...`). Nome de arquivo é a **única** coisa em snake_case.
+- **Python funções e classes**: PascalCase, **em português** (`LerArgumentos`, `ProcessarData`, `MontarUrl`, `AnalisarCsv`, `Principal`)
+- **Python variáveis e parâmetros**: camelCase, em português (`dtRef`, `cdTicker`, `anbimaRows`, `limiteTrades`)
+- **Constantes de módulo**: UPPER_SNAKE (`SQL_UPSERT`, `MESES_PT`) — o `_` **interno** é permitido
+- **NUNCA `_` no início de nome nenhum** (nem função "privada", nem constante, nem variável). `_ParseArgs`, `_SQL_UPSERT`, `_smoke` são todos proibidos.
+- **Exceções que ficam em inglês**: jargão de mercado (`vrSpreadOver`, `vrDuration`, `vrPU`, `cdISIN`, `Mtm*`, `Outstanding`, `Broker`, `Yield`), API de terceiros (`parse_args`, `status_code`, `format_exc`), nomes de módulo/arquivo, e **chaves de contrato** (colunas do banco, variáveis do template Jinja como `data_json`).
+- **`dest=` explícito no argparse** sempre que a flag tiver hífen (`--email-dia` → `dest="emailDia"`), senão o argparse gera `email_dia` em snake_case e quebra a convenção — e o mismatch só aparece em runtime.
 - **Sem CHECK constraints** no schema
 - **Cada script é independente**, idempotente, com CLI próprio (`--date` ou `--start --end`)
 - **Email no fim de cada script** via Outlook (`pywin32`), sucesso ou erro

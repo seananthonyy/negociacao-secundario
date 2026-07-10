@@ -4,39 +4,39 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Raiz do projeto: code/lib/../  -> code/
-_ROOT = Path(__file__).parent.parent
+RAIZ = Path(__file__).parent.parent
 
-_env_loaded = False
-_cfg: dict | None = None
+envCarregado = False
+cfgCache: dict | None = None
 
 
-def _ensure_env() -> None:
-    global _env_loaded
-    if not _env_loaded:
+def GarantirEnv() -> None:
+    global envCarregado
+    if not envCarregado:
         # No PC pessoal os segredos vêm do .env; no banco vêm de variáveis de
         # ambiente da conta. load_dotenv não sobrescreve variáveis já setadas
         # no ambiente (override=False por padrão), então ambos convivem.
-        load_dotenv(_ROOT / ".env")
-        _env_loaded = True
+        load_dotenv(RAIZ / ".env")
+        envCarregado = True
 
 
-def _ensure_cfg() -> None:
-    global _cfg
-    if _cfg is None:
-        _ensure_env()
-        with open(_ROOT / "config.toml", "rb") as fh:
-            _cfg = tomllib.load(fh)
-        _apply_proxy_env()  # _cfg já setado — get_secret pode ser usado aqui
+def GarantirCfg() -> None:
+    global cfgCache
+    if cfgCache is None:
+        GarantirEnv()
+        with open(RAIZ / "config.toml", "rb") as fh:
+            cfgCache = tomllib.load(fh)
+        AplicarProxyEnv()  # _cfg já setado — ObterSegredo pode ser usado aqui
 
 
-def get_env(key: str, default: str | None = None) -> str | None:
-    _ensure_env()
+def ObterEnv(key: str, default: str | None = None) -> str | None:
+    GarantirEnv()
     return os.getenv(key, default)
 
 
-def _get_cfg() -> dict:
-    _ensure_cfg()
-    return _cfg  # type: ignore[return-value]
+def ObterCfg() -> dict:
+    GarantirCfg()
+    return cfgCache  # type: ignore[return-value]
 
 
 # ---------------------------------------------------------------------------
@@ -48,10 +48,10 @@ def _get_cfg() -> dict:
 # primeiro preenchido. Assim o mesmo código roda no PC pessoal (nomes canônicos
 # no .env) e no banco (nomes das variáveis da conta), sem edição.
 
-def get_secret(logical_key: str, default: str | None = None) -> str | None:
+def ObterSegredo(chaveLogica: str, default: str | None = None) -> str | None:
     """Resolve um segredo pelo nome lógico (chave de config [env])."""
-    _ensure_env()
-    candidates = _get_cfg().get("env", {}).get(logical_key, [])
+    GarantirEnv()
+    candidates = ObterCfg().get("env", {}).get(chaveLogica, [])
     if isinstance(candidates, str):
         candidates = [candidates]
     for name in candidates:
@@ -61,23 +61,23 @@ def get_secret(logical_key: str, default: str | None = None) -> str | None:
     return default
 
 
-def _apply_proxy_env() -> None:
+def AplicarProxyEnv() -> None:
     """Copia o proxy resolvido (nomes do banco, ex.: proxy_https) para as
     variáveis padrão HTTP_PROXY/HTTPS_PROXY que o httpx lê nativamente.
     Respeita valores já presentes no ambiente.
 
     ATENÇÃO: o Chromium do Playwright NÃO lê HTTP_PROXY/HTTPS_PROXY do ambiente
-    — para os scrapers Playwright use get_playwright_proxy() e passe o resultado
+    — para os scrapers Playwright use ObterProxyPlaywright() e passe o resultado
     em chromium.launch(proxy=...)."""
     for logical, target in (("httpProxy", "HTTP_PROXY"), ("httpsProxy", "HTTPS_PROXY")):
         if os.getenv(target):
             continue
-        val = get_secret(logical)
+        val = ObterSegredo(logical)
         if val:
             os.environ[target] = val
 
 
-def get_playwright_proxy() -> dict | None:
+def ObterProxyPlaywright() -> dict | None:
     """Proxy no formato do Playwright ({'server': 'http://host:port', ...}) ou
     None se não houver proxy configurado.
 
@@ -85,7 +85,7 @@ def get_playwright_proxy() -> dict | None:
     precisa ser passado explicitamente em chromium.launch(proxy=...). No PC
     pessoal (sem proxy) retorna None → launch sem proxy (comportamento atual).
     No banco resolve proxy_https/proxy_http das variáveis da conta."""
-    url = get_secret("httpsProxy") or get_secret("httpProxy")
+    url = ObterSegredo("httpsProxy") or ObterSegredo("httpProxy")
     if not url:
         return None
     from urllib.parse import urlparse
@@ -101,7 +101,7 @@ def get_playwright_proxy() -> dict | None:
     return proxy
 
 
-def get_email_list(which: str) -> list[str]:
+def ObterListaEmails(which: str) -> list[str]:
     """Lista de destinatários de email. Ordem de resolução:
       1. code/destinatarios.py (não versionado)
       2. variável de ambiente mapeada em [env]
@@ -109,31 +109,31 @@ def get_email_list(which: str) -> list[str]:
     `which`: 'destinatarios' (rascunho do relatório) ou 'outlook' (emails [OK]/[ERROR])."""
     attr = "EMAIL_DESTINATARIOS" if which == "destinatarios" else "OUTLOOK_TO"
     try:
-        import destinatarios as _dest  # code/ está no sys.path em runtime
-        vals = getattr(_dest, attr, None)
+        import destinatarios as destinos  # code/ está no sys.path em runtime
+        vals = getattr(destinos, attr, None)
         if vals:
             return [str(v).strip() for v in vals if str(v).strip()]
     except ImportError:
         pass
     key = "emailDestinatarios" if which == "destinatarios" else "outlookTo"
-    raw = get_secret(key)
+    raw = ObterSegredo(key)
     if raw:
         return [e.strip() for e in raw.replace(";", ",").split(",") if e.strip()]
     return []
 
 
 # Objeto global exposto para importação direta: from lib.config import cfg
-class _CfgProxy:
+class CfgProxy:
     """Proxy lazy: age como dict mas carrega config.toml apenas na primeira leitura."""
 
     def __getitem__(self, key):
-        return _get_cfg()[key]
+        return ObterCfg()[key]
 
     def __contains__(self, key):
-        return key in _get_cfg()
+        return key in ObterCfg()
 
     def get(self, key, default=None):
-        return _get_cfg().get(key, default)
+        return ObterCfg().get(key, default)
 
 
-cfg = _CfgProxy()
+cfg = CfgProxy()

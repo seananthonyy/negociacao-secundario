@@ -3,12 +3,12 @@ import threading
 
 import httpx
 
-from lib.config import cfg, get_secret
+from lib.config import cfg, ObterSegredo
 
 log = logging.getLogger(__name__)
 
-_bearerToken: str | None = None
-_tokenLock = threading.Lock()
+bearerToken: str | None = None
+tokenLock = threading.Lock()
 
 # Proxy: httpx lê HTTPS_PROXY / HTTP_PROXY do ambiente automaticamente (trust_env=True).
 
@@ -16,47 +16,47 @@ _tokenLock = threading.Lock()
 # Reusar a conexão evita re-handshake (TCP+TLS) a cada trade — ganho grande quando
 # o tráfego passa por proxy (banco), onde cada CONNECT novo é caro. httpx.Client é
 # thread-safe: suporta chamadas concorrentes dos workers do ThreadPoolExecutor.
-_client: httpx.Client | None = None
-_clientLock = threading.Lock()
+clienteHttp: httpx.Client | None = None
+clientLock = threading.Lock()
 
 
-def _GetClient() -> httpx.Client:
-    global _client
-    if _client is not None:
-        return _client
-    with _clientLock:
-        if _client is None:
+def ObterCliente() -> httpx.Client:
+    global clienteHttp
+    if clienteHttp is not None:
+        return clienteHttp
+    with clientLock:
+        if clienteHttp is None:
             limits = httpx.Limits(max_connections=64, max_keepalive_connections=64, keepalive_expiry=30.0)
-            _client = httpx.Client(limits=limits, trust_env=True)
-    return _client
+            clienteHttp = httpx.Client(limits=limits, trust_env=True)
+    return clienteHttp
 
 # Sentinel para distinguir "não está no cache" de "está no cache como None".
-_CACHE_MISS = object()
+CACHE_MISS = object()
 
 # Cache de resultados por (cdTicker, dtLiquidacao, vrPU) — match exato, sem tolerância no PU.
 # Guarda float (% a.a.) ou None. Ambos são cacheados para evitar chamadas repetidas.
-_rateCache: dict[tuple, object] = {}
+cacheTaxas: dict[tuple, object] = {}
 
 
-def ResetToken() -> None:
+def ResetarToken() -> None:
     """Descarta o token em memória, forçando novo login na próxima chamada."""
-    global _bearerToken
-    _bearerToken = None
+    global bearerToken
+    bearerToken = None
 
 
-def _Login() -> str:
+def Autenticar() -> str:
     """
     Obtém token de sessão via POST /login.
     Levanta RuntimeError se falhar — o chamador decide o que fazer.
     """
     baseUrl = cfg["api"]["b3"]["baseUrl"]
-    rawToken = get_secret("b3CalcToken")
+    rawToken = ObterSegredo("b3CalcToken")
     if not rawToken:
         raise RuntimeError("Token da B3 Calculator não configurado (ver [env].b3CalcToken no config.toml)")
 
     timeout = cfg["calc"]["timeoutSeconds"]
     log.debug("b3_calc_api: obtendo token via POST /login")
-    resp = _GetClient().post(f"{baseUrl}/login", json={"token": rawToken}, timeout=timeout)
+    resp = ObterCliente().post(f"{baseUrl}/login", json={"token": rawToken}, timeout=timeout)
     resp.raise_for_status()
 
     data = resp.json()
@@ -68,34 +68,34 @@ def _Login() -> str:
     raise RuntimeError(f"Resposta de /login não contém campo 'Authorization': {data}")
 
 
-def _EnsureToken() -> str:
-    global _bearerToken
-    if _bearerToken is not None:
-        return _bearerToken
-    with _tokenLock:
-        if _bearerToken is None:
-            _bearerToken = _Login()
-        return _bearerToken
+def GarantirToken() -> str:
+    global bearerToken
+    if bearerToken is not None:
+        return bearerToken
+    with tokenLock:
+        if bearerToken is None:
+            bearerToken = Autenticar()
+        return bearerToken
 
 
-def _DoRequest(url: str, timeout: int) -> httpx.Response | None:
+def Requisitar(url: str, timeout: int) -> httpx.Response | None:
     """
     Faz GET com o token atual. Em 401, renova o token e tenta uma segunda vez.
     Retorna None em erro de rede/timeout.
     """
-    token = _EnsureToken()
+    token = GarantirToken()
     try:
-        resp = _GetClient().get(url, headers={"Authorization": token}, timeout=timeout)
+        resp = ObterCliente().get(url, headers={"Authorization": token}, timeout=timeout)
     except (httpx.TimeoutException, httpx.RequestError) as exc:
         log.warning("b3_calc_api: erro na chamada para %s: %s", url, exc)
         return None
 
     if resp.status_code == 401:
         log.debug("b3_calc_api: 401 recebido, renovando token e tentando novamente")
-        ResetToken()
-        token = _EnsureToken()
+        ResetarToken()
+        token = GarantirToken()
         try:
-            resp = _GetClient().get(url, headers={"Authorization": token}, timeout=timeout)
+            resp = ObterCliente().get(url, headers={"Authorization": token}, timeout=timeout)
         except (httpx.TimeoutException, httpx.RequestError) as exc:
             log.warning("b3_calc_api: erro após renovação de token para %s: %s", url, exc)
             return None
@@ -103,7 +103,7 @@ def _DoRequest(url: str, timeout: int) -> httpx.Response | None:
     return resp
 
 
-def CalcPuGov(cetip: str, dtRef: str, taxa: float) -> tuple[float | None, float | None]:
+def CalcularPuGov(cetip: str, dtRef: str, taxa: float) -> tuple[float | None, float | None]:
     """
     Calcula PU e duration de titulo governamental via B3 Calculator.
 
@@ -120,7 +120,7 @@ def CalcPuGov(cetip: str, dtRef: str, taxa: float) -> tuple[float | None, float 
     url = f"{baseUrl}/calcPU/{cetip}/{dtRef}/{taxa}"
 
     log.debug("b3_calc_api: GET %s", url)
-    resp = _DoRequest(url, timeout)
+    resp = Requisitar(url, timeout)
 
     if resp is None:
         return None, None
@@ -145,7 +145,7 @@ def CalcPuGov(cetip: str, dtRef: str, taxa: float) -> tuple[float | None, float 
     return pu, duration
 
 
-def CalcYield(cdTicker: str, dtLiquidacao: str, vrPU: float) -> float | None:
+def CalcularYield(cdTicker: str, dtLiquidacao: str, vrPU: float) -> float | None:
     """
     Retorna yield em % a.a. via B3 Calculator API, ou None se falhar.
 
@@ -156,8 +156,8 @@ def CalcYield(cdTicker: str, dtLiquidacao: str, vrPU: float) -> float | None:
     vrPU: PU do negócio (float) — match exato, sem tolerância.
     """
     cacheKey = (cdTicker, dtLiquidacao, vrPU)
-    cached = _rateCache.get(cacheKey, _CACHE_MISS)
-    if cached is not _CACHE_MISS:
+    cached = cacheTaxas.get(cacheKey, CACHE_MISS)
+    if cached is not CACHE_MISS:
         log.debug("b3_calc_api: cache hit para %s/%s/%s → %s", cdTicker, dtLiquidacao, vrPU, cached)
         return cached  # type: ignore[return-value]
 
@@ -166,31 +166,31 @@ def CalcYield(cdTicker: str, dtLiquidacao: str, vrPU: float) -> float | None:
     url = f"{baseUrl}/calcYield/{cdTicker}/{dtLiquidacao}/{vrPU}"
 
     log.debug("b3_calc_api: GET %s", url)
-    resp = _DoRequest(url, timeout)
+    resp = Requisitar(url, timeout)
 
     if resp is None:
-        _rateCache[cacheKey] = None
+        cacheTaxas[cacheKey] = None
         return None
 
     if not resp.is_success:
         log.warning("b3_calc_api: HTTP %d em %s", resp.status_code, url)
-        _rateCache[cacheKey] = None
+        cacheTaxas[cacheKey] = None
         return None
 
     try:
         data = resp.json()
     except Exception as exc:
         log.warning("b3_calc_api: resposta não é JSON válido em %s: %s", url, exc)
-        _rateCache[cacheKey] = None
+        cacheTaxas[cacheKey] = None
         return None
 
     rawYield = data.get("yield")
     if rawYield is None or rawYield <= 0:
         log.warning("b3_calc_api: campo 'yield' inválido (%r) para %s/%s/%s", rawYield, cdTicker, dtLiquidacao, vrPU)
-        _rateCache[cacheKey] = None
+        cacheTaxas[cacheKey] = None
         return None
 
     result = float(rawYield)
     log.debug("b3_calc_api: yield=%.6f para %s/%s/%s", result, cdTicker, dtLiquidacao, vrPU)
-    _rateCache[cacheKey] = result
+    cacheTaxas[cacheKey] = result
     return result

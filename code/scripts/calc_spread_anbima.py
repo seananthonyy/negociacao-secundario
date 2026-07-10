@@ -38,16 +38,16 @@ from typing import Optional
 # Garante que code/ esteja no sys.path ao rodar como script
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from lib.db import get_db
-from lib.logger import get_logger
-from lib.email_outlook import send_completion_email
+from lib.db import ObterBanco
+from lib.logger import ObterLogger
+from lib.email_outlook import EnviarEmailConclusao
 
 
 # ---------------------------------------------------------------------------
 # SQL
 # ---------------------------------------------------------------------------
 
-_SQL_FETCH_TICKERS = """
+SQL_BUSCAR_TICKERS = """
 SELECT ai.cdTicker,
        ai.dtReferencia,
        ai.vrTaxaAnbima,
@@ -58,14 +58,14 @@ LEFT JOIN InfoAtivos ia ON ia.cdTicker = ai.cdTicker
 WHERE ai.dtReferencia = ?
 """
 
-_SQL_FETCH_RATE = """
+SQL_BUSCAR_TAXA = """
 SELECT vrTaxa
 FROM MtmAnbima
 WHERE cdTicker = ?
   AND dtReferencia = ?
 """
 
-_SQL_UPDATE_SPREAD = """
+SQL_ATUALIZAR_SPREAD = """
 UPDATE AnbimaIndicativos
 SET vrSpreadAnbima = ?
 WHERE cdTicker = ?
@@ -78,7 +78,7 @@ WHERE cdTicker = ?
 # ---------------------------------------------------------------------------
 
 @dataclass
-class _DateStats:
+class EstatisticasData:
     dtReferencia: str
     total: int = 0
     calculado: int = 0
@@ -93,7 +93,7 @@ class _DateStats:
 # Logica de spread para um ticker/data
 # ---------------------------------------------------------------------------
 
-def _CalcSpread(
+def CalcularSpread(
     cdTicker: str,
     dtReferencia: str,
     vrTaxaAnbima: Optional[float],
@@ -136,7 +136,7 @@ def _CalcSpread(
         return vrTaxaAnbima
 
     # 4. Busca taxa de referencia em MtmAnbima
-    row = conn.execute(_SQL_FETCH_RATE, (cdReferencia, dtReferencia)).fetchone()
+    row = conn.execute(SQL_BUSCAR_TAXA, (cdReferencia, dtReferencia)).fetchone()
 
     if row is None:
         log.debug(
@@ -163,14 +163,14 @@ def _CalcSpread(
 # Processamento por data
 # ---------------------------------------------------------------------------
 
-def _ProcessDate(conn, dtReferencia: str, log, force: bool) -> _DateStats:
+def ProcessarData(conn, dtReferencia: str, log, force: bool) -> EstatisticasData:
     """
     Processa todos os tickers de uma dtReferencia em AnbimaIndicativos
     e atualiza vrSpreadAnbima.
     """
-    stats = _DateStats(dtReferencia=dtReferencia)
+    stats = EstatisticasData(dtReferencia=dtReferencia)
 
-    rows = conn.execute(_SQL_FETCH_TICKERS, (dtReferencia,)).fetchall()
+    rows = conn.execute(SQL_BUSCAR_TICKERS, (dtReferencia,)).fetchall()
     stats.total = len(rows)
 
     if stats.total == 0:
@@ -199,7 +199,7 @@ def _ProcessDate(conn, dtReferencia: str, log, force: bool) -> _DateStats:
             stats.calculado += 1
             continue
 
-        vrSpread = _CalcSpread(
+        vrSpread = CalcularSpread(
             cdTicker=cdTicker,
             dtReferencia=dtReferencia,
             vrTaxaAnbima=vrTaxaAnbima,
@@ -213,7 +213,7 @@ def _ProcessDate(conn, dtReferencia: str, log, force: bool) -> _DateStats:
 
     # Executa UPDATEs em batch
     if updates:
-        conn.executemany(_SQL_UPDATE_SPREAD, updates)
+        conn.executemany(SQL_ATUALIZAR_SPREAD, updates)
         conn.commit()
 
     log.info(
@@ -234,7 +234,7 @@ def _ProcessDate(conn, dtReferencia: str, log, force: bool) -> _DateStats:
 # CLI
 # ---------------------------------------------------------------------------
 
-def _ParseArgs() -> argparse.Namespace:
+def LerArgumentos() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Calcula vrSpreadAnbima em AnbimaIndicativos usando taxas de referencia "
@@ -272,7 +272,7 @@ def _ParseArgs() -> argparse.Namespace:
     return args
 
 
-def _BuildDateRange(args: argparse.Namespace) -> list[str]:
+def MontarIntervaloDatas(args: argparse.Namespace) -> list[str]:
     """Retorna lista de datas YYYY-MM-DD a processar."""
     if args.date:
         return [args.date]
@@ -291,7 +291,7 @@ def _BuildDateRange(args: argparse.Namespace) -> list[str]:
     return datas
 
 
-def _BuildSummary(statsList: list[_DateStats]) -> str:
+def MontarResumo(statsList: list[EstatisticasData]) -> str:
     lines = ["Resultado por dtReferencia (AnbimaIndicativos):", ""]
     header = (
         f"{'Data':<12}  {'Total':>6}  {'Calculado':>9}  {'Funding':>7}  "
@@ -353,26 +353,26 @@ def _BuildSummary(statsList: list[_DateStats]) -> str:
 # Entrypoint
 # ---------------------------------------------------------------------------
 
-def Main() -> None:
-    log     = get_logger("calc_spread_anbima")
-    args    = _ParseArgs()
-    conn    = get_db()
+def Principal() -> None:
+    log     = ObterLogger("calc_spread_anbima")
+    args    = LerArgumentos()
+    conn    = ObterBanco()
     summary = ""
     success = True
 
     try:
-        datas = _BuildDateRange(args)
+        datas = MontarIntervaloDatas(args)
         log.info(
             "spread: processando %d data(s): %s ... %s (force=%s)",
             len(datas), datas[0], datas[-1], args.force,
         )
 
-        statsList: list[_DateStats] = []
+        statsList: list[EstatisticasData] = []
         for dtReferencia in datas:
-            s = _ProcessDate(conn, dtReferencia, log, args.force)
+            s = ProcessarData(conn, dtReferencia, log, args.force)
             statsList.append(s)
 
-        summary = _BuildSummary(statsList)
+        summary = MontarResumo(statsList)
         log.info("spread: concluido.\n%s", summary)
 
     except Exception:
@@ -382,7 +382,7 @@ def Main() -> None:
 
     finally:
         conn.close()
-        send_completion_email(
+        EnviarEmailConclusao(
             "calc_spread_anbima",
             success,
             summary,
@@ -391,4 +391,4 @@ def Main() -> None:
 
 
 if __name__ == "__main__":
-    Main()
+    Principal()

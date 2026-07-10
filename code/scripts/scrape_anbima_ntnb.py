@@ -33,35 +33,35 @@ import xlrd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from lib.config import cfg, get_secret
-from lib.db import get_db
-from lib.logger import get_logger
-from lib.email_outlook import send_completion_email
-from lib.b3_calc_api import CalcPuGov
+from lib.config import cfg, ObterSegredo
+from lib.db import ObterBanco
+from lib.logger import ObterLogger
+from lib.email_outlook import EnviarEmailConclusao
+from lib.b3_calc_api import CalcularPuGov
 
 # ---------------------------------------------------------------------------
 # Constantes
 # ---------------------------------------------------------------------------
 
-_SCRIPT_NAME = "scrape_anbima_ntnb"
+NOME_SCRIPT = "scrape_anbima_ntnb"
 
-_MONTHS_PT = {
+MESES_PT = {
     1: 'jan', 2: 'fev', 3: 'mar', 4: 'abr', 5: 'mai', 6: 'jun',
     7: 'jul', 8: 'ago', 9: 'set', 10: 'out', 11: 'nov', 12: 'dez',
 }
 
-_BASE_URL = "https://www.anbima.com.br/informacoes/merc-sec/arqs"
+BASE_URL = "https://www.anbima.com.br/informacoes/merc-sec/arqs"
 
-_COL_VENC = 2   # Data de Vencimento
-_COL_TAXA = 5   # Tx. Indicativas
+COL_VENC = 2   # Data de Vencimento
+COL_TAXA = 5   # Tx. Indicativas
 
-_DATA_START_ROW = 5  # linha 6 (0-based: 5) — headers nas linhas 4-5
+LINHA_INICIO_DADOS = 5  # linha 6 (0-based: 5) — headers nas linhas 4-5
 
-_FIA_BASE_URL   = "https://endpoint.fi-analytics.com.br"
-_FIA_ISIN_PATH  = "/financialutil/gov/getgovbondisin"
-_FIA_CALC_PATH  = "/gov/govbondcalculator"
+FIA_BASE_URL   = "https://endpoint.fi-analytics.com.br"
+FIA_ISIN_PATH  = "/financialutil/gov/getgovbondisin"
+FIA_CALC_PATH  = "/gov/govbondcalculator"
 
-_SQL_UPSERT = """
+SQL_UPSERT = """
 INSERT INTO MtmAnbima (cdTicker, dtReferencia, vrTaxa, vrDuration)
 VALUES (?, ?, ?, ?)
 ON CONFLICT(cdTicker, dtReferencia) DO UPDATE SET
@@ -74,14 +74,14 @@ ON CONFLICT(cdTicker, dtReferencia) DO UPDATE SET
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _BuildUrl(d: date) -> str:
+def MontarUrl(d: date) -> str:
     yy = d.strftime('%y')
-    mm = _MONTHS_PT[d.month]
+    mm = MESES_PT[d.month]
     dd = d.strftime('%d')
-    return f"{_BASE_URL}/m{yy}{mm}{dd}.xls"
+    return f"{BASE_URL}/m{yy}{mm}{dd}.xls"
 
 
-def _ParseFloat(raw) -> float | None:
+def AnalisarFloat(raw) -> float | None:
     s = str(raw).strip()
     if s in ('--', '', 'N/D', 'N/A', 'None'):
         return None
@@ -91,7 +91,7 @@ def _ParseFloat(raw) -> float | None:
         return None
 
 
-def _ParseVencimento(raw) -> date | None:
+def AnalisarVencimento(raw) -> date | None:
     """Converte 'DD/MM/YYYY' em objeto date. Retorna None se inválido."""
     s = str(raw).strip()
     if not s or s in ('--', 'N/D'):
@@ -105,14 +105,14 @@ def _ParseVencimento(raw) -> date | None:
     return None
 
 
-def _NormalizeTicker(dtVenc: date) -> str:
+def NormalizarTicker(dtVenc: date) -> str:
     """NTN-B vencendo em 2032 → 'NTN-B 32'."""
     yy = str(dtVenc.year)[-2:]
     return f"NTN-B {yy}"
 
 
-def _FiaHeaders() -> dict[str, str]:
-    apiKey = get_secret("fianalyticsApiKey")
+def HeadersFia() -> dict[str, str]:
+    apiKey = ObterSegredo("fianalyticsApiKey")
     if not apiKey:
         raise RuntimeError("API key do FI Analytics nao configurada (ver [env].fianalyticsApiKey no config.toml)")
     return {
@@ -121,7 +121,7 @@ def _FiaHeaders() -> dict[str, str]:
     }
 
 
-def _ParseFiaResponse(resp: httpx.Response, url: str, log) -> dict | None:
+def AnalisarRespostaFia(resp: httpx.Response, url: str, log) -> dict | None:
     """FI Analytics retorna JSON double-encoded em alguns endpoints."""
     try:
         raw = resp.json()
@@ -131,19 +131,19 @@ def _ParseFiaResponse(resp: httpx.Response, url: str, log) -> dict | None:
         return None
 
 
-def _GetDurationFia(dtVenc: date, dtRef: date, vrTaxa: float, log) -> float | None:
+def DurationViaFia(dtVenc: date, dtRef: date, vrTaxa: float, log) -> float | None:
     """
     Busca duration via FI Analytics em dois passos:
       1. POST /financialutil/gov/getgovbondisin → obtem ISIN
       2. POST /gov/govbondcalculator            → obtem maculayDuration
     """
     timeout = cfg["calc"]["timeoutSeconds"]
-    headers = _FiaHeaders()
+    headers = HeadersFia()
     dtVencStr = dtVenc.strftime("%d/%m/%Y")
     dtRefStr  = dtRef.isoformat()
 
     # Passo 1: obter ISIN
-    urlIsin = f"{_FIA_BASE_URL}{_FIA_ISIN_PATH}"
+    urlIsin = f"{FIA_BASE_URL}{FIA_ISIN_PATH}"
     try:
         log.debug("ntnb: FIA getgovbondisin venc=%s", dtVencStr)
         respIsin = httpx.post(
@@ -160,7 +160,7 @@ def _GetDurationFia(dtVenc: date, dtRef: date, vrTaxa: float, log) -> float | No
         log.warning("ntnb: FIA getgovbondisin HTTP %d para %s", respIsin.status_code, dtVencStr)
         return None
 
-    dataIsin = _ParseFiaResponse(respIsin, urlIsin, log)
+    dataIsin = AnalisarRespostaFia(respIsin, urlIsin, log)
     if dataIsin is None:
         return None
 
@@ -170,7 +170,7 @@ def _GetDurationFia(dtVenc: date, dtRef: date, vrTaxa: float, log) -> float | No
         return None
 
     # Passo 2: calcular duration
-    urlCalc = f"{_FIA_BASE_URL}{_FIA_CALC_PATH}"
+    urlCalc = f"{FIA_BASE_URL}{FIA_CALC_PATH}"
     try:
         log.debug("ntnb: FIA govbondcalculator isin=%s date=%s rate=%.4f", isin, dtRefStr, vrTaxa)
         respCalc = httpx.post(
@@ -187,7 +187,7 @@ def _GetDurationFia(dtVenc: date, dtRef: date, vrTaxa: float, log) -> float | No
         log.warning("ntnb: FIA govbondcalculator HTTP %d para isin=%s", respCalc.status_code, isin)
         return None
 
-    dataCalc = _ParseFiaResponse(respCalc, urlCalc, log)
+    dataCalc = AnalisarRespostaFia(respCalc, urlCalc, log)
     if dataCalc is None:
         return None
 
@@ -210,7 +210,7 @@ def _GetDurationFia(dtVenc: date, dtRef: date, vrTaxa: float, log) -> float | No
     return dur
 
 
-def _GetDurationB3(dtVenc: date, dtRef: date, vrTaxa: float, log) -> float | None:
+def DurationViaB3(dtVenc: date, dtRef: date, vrTaxa: float, log) -> float | None:
     """
     Busca duration via B3 Calculator usando codigo CETIP derivado do vencimento.
     CETIP = "760199" + YYYY + MM + DD
@@ -219,7 +219,7 @@ def _GetDurationB3(dtVenc: date, dtRef: date, vrTaxa: float, log) -> float | Non
     dtRefStr = dtRef.isoformat()
 
     log.debug("ntnb: B3 calcPU cetip=%s dtRef=%s taxa=%.4f", cetip, dtRefStr, vrTaxa)
-    _, duration = CalcPuGov(cetip, dtRefStr, vrTaxa)
+    _, duration = CalcularPuGov(cetip, dtRefStr, vrTaxa)
 
     if duration is None:
         log.warning("ntnb: B3 calcPU nao retornou duration para cetip=%s", cetip)
@@ -229,14 +229,14 @@ def _GetDurationB3(dtVenc: date, dtRef: date, vrTaxa: float, log) -> float | Non
     return duration
 
 
-def _GetDuration(dtVenc: date, dtRef: date, vrTaxa: float, log) -> float | None:
+def ObterDuration(dtVenc: date, dtRef: date, vrTaxa: float, log) -> float | None:
     """Cascata: FI Analytics → B3 Calculator → None."""
-    dur = _GetDurationFia(dtVenc, dtRef, vrTaxa, log)
+    dur = DurationViaFia(dtVenc, dtRef, vrTaxa, log)
     if dur is not None:
         return dur
 
     log.info("ntnb: FIA falhou para %s, tentando B3 Calculator", dtVenc.strftime("%d/%m/%Y"))
-    dur = _GetDurationB3(dtVenc, dtRef, vrTaxa, log)
+    dur = DurationViaB3(dtVenc, dtRef, vrTaxa, log)
     if dur is not None:
         return dur
 
@@ -248,8 +248,8 @@ def _GetDuration(dtVenc: date, dtRef: date, vrTaxa: float, log) -> float | None:
 # Download e processamento do XLS
 # ---------------------------------------------------------------------------
 
-def _DownloadXls(d: date, log) -> bytes | None:
-    url = _BuildUrl(d)
+def BaixarXls(d: date, log) -> bytes | None:
+    url = MontarUrl(d)
     log.debug("ntnb: GET %s", url)
     try:
         resp = httpx.get(url, follow_redirects=True, timeout=30)
@@ -267,13 +267,13 @@ def _DownloadXls(d: date, log) -> bytes | None:
     return resp.content
 
 
-def _ParseSheet(sh, wb, dtRef: date, log) -> list[tuple]:
+def AnalisarPlanilha(sh, wb, dtRef: date, log) -> list[tuple]:
     rows: list[tuple] = []
     dtRefStr = dtRef.isoformat()
 
-    for rowIdx in range(_DATA_START_ROW, sh.nrows):
-        cellVenc = sh.cell(rowIdx, _COL_VENC)
-        rawTaxa  = sh.cell_value(rowIdx, _COL_TAXA)
+    for rowIdx in range(LINHA_INICIO_DADOS, sh.nrows):
+        cellVenc = sh.cell(rowIdx, COL_VENC)
+        rawTaxa  = sh.cell_value(rowIdx, COL_TAXA)
 
         # Vencimento vem como serial Excel (ctype=3=XL_CELL_DATE)
         if cellVenc.ctype == xlrd.XL_CELL_DATE:
@@ -282,23 +282,23 @@ def _ParseSheet(sh, wb, dtRef: date, log) -> list[tuple]:
             except Exception:
                 continue
         else:
-            dtVenc = _ParseVencimento(cellVenc.value)
+            dtVenc = AnalisarVencimento(cellVenc.value)
 
         if dtVenc is None:
             continue
 
-        vrTaxa = _ParseFloat(rawTaxa)
+        vrTaxa = AnalisarFloat(rawTaxa)
         if vrTaxa is None or vrTaxa <= 0:
             continue
 
-        cdTicker = _NormalizeTicker(dtVenc)
+        cdTicker = NormalizarTicker(dtVenc)
         rows.append((cdTicker, dtVenc, dtRefStr, vrTaxa))
 
     return rows
 
 
-def _ProcessDate(conn, d: date, log, workers: int, force: bool = False) -> tuple[int, int]:
-    content = _DownloadXls(d, log)
+def ProcessarData(conn, d: date, log, workers: int, force: bool = False) -> tuple[int, int]:
+    content = BaixarXls(d, log)
     if content is None:
         return 0, 0
 
@@ -315,7 +315,7 @@ def _ProcessDate(conn, d: date, log, workers: int, force: bool = False) -> tuple
         return 0, 0
 
     sh = wb.sheet_by_name(sheetName)
-    rows = _ParseSheet(sh, wb, d, log)
+    rows = AnalisarPlanilha(sh, wb, d, log)
 
     if not rows:
         log.warning("ntnb: %s — nenhuma NTN-B extraida da aba", d)
@@ -336,20 +336,20 @@ def _ProcessDate(conn, d: date, log, workers: int, force: bool = False) -> tuple
     # Duration via API é I/O-bound: paraleliza com concorrência limitada por
     # `workers` (não sobrecarregar/bloquear a API). O UPSERT (COALESCE) preserva
     # a duration existente quando o valor vem None. UPSERT sequencial após o pool.
-    def _ComputeRow(item: tuple) -> tuple:
+    def CalcularLinha(item: tuple) -> tuple:
         cdTicker, dtVenc, dtRefStr, vrTaxa = item
         if cdTicker in jaFeitos:
             return (cdTicker, dtRefStr, vrTaxa, None, True)      # pulado
-        return (cdTicker, dtRefStr, vrTaxa, _GetDuration(dtVenc, d, vrTaxa, log), False)
+        return (cdTicker, dtRefStr, vrTaxa, ObterDuration(dtVenc, d, vrTaxa, log), False)
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        results = list(executor.map(_ComputeRow, rows))
+        results = list(executor.map(CalcularLinha, rows))
 
     upsertRows   = [(r[0], r[1], r[2], r[3]) for r in results]
     nSkip        = sum(1 for r in results if r[4])
     nSemDuration = sum(1 for r in results if not r[4] and r[3] is None)
 
-    conn.executemany(_SQL_UPSERT, upsertRows)
+    conn.executemany(SQL_UPSERT, upsertRows)
     conn.commit()
 
     log.info("ntnb: %s — %d upserts (%d pulados, %d sem duration)",
@@ -361,7 +361,7 @@ def _ProcessDate(conn, d: date, log, workers: int, force: bool = False) -> tuple
 # CLI
 # ---------------------------------------------------------------------------
 
-def _ParseArgs() -> argparse.Namespace:
+def LerArgumentos() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Baixa taxas indicativas de NTN-B da Anbima e popula MtmAnbima."
     )
@@ -382,7 +382,7 @@ def _ParseArgs() -> argparse.Namespace:
     return args
 
 
-def _BuildDateRange(args: argparse.Namespace) -> list[date]:
+def MontarIntervaloDatas(args: argparse.Namespace) -> list[date]:
     if args.date:
         return [date.fromisoformat(args.date)]
     startDate = date.fromisoformat(args.start)
@@ -396,7 +396,7 @@ def _BuildDateRange(args: argparse.Namespace) -> list[date]:
     return datas
 
 
-def _BuildSummary(results: list[tuple[str, int, int]]) -> str:
+def MontarResumo(results: list[tuple[str, int, int]]) -> str:
     lines = ["Resultado por data:", ""]
     lines.append(f"{'Data':<12}  {'Upserts':>8}  {'Sem duration':>13}")
     lines.append("-" * 38)
@@ -414,24 +414,24 @@ def _BuildSummary(results: list[tuple[str, int, int]]) -> str:
 # Entrypoint
 # ---------------------------------------------------------------------------
 
-def Main() -> None:
-    log     = get_logger(_SCRIPT_NAME)
-    args    = _ParseArgs()
-    conn    = get_db()
+def Principal() -> None:
+    log     = ObterLogger(NOME_SCRIPT)
+    args    = LerArgumentos()
+    conn    = ObterBanco()
     summary = ""
     success = True
 
     try:
-        datas   = _BuildDateRange(args)
+        datas   = MontarIntervaloDatas(args)
         results: list[tuple[str, int, int]] = []
 
         log.info("ntnb: processando %d data(s): %s ... %s", len(datas), datas[0], datas[-1])
 
         for d in datas:
-            nUp, nSem = _ProcessDate(conn, d, log, args.workers, args.force)
+            nUp, nSem = ProcessarData(conn, d, log, args.workers, args.force)
             results.append((d.isoformat(), nUp, nSem))
 
-        summary = _BuildSummary(results)
+        summary = MontarResumo(results)
         log.info("ntnb: concluido.\n%s", summary)
 
     except Exception:
@@ -441,8 +441,8 @@ def Main() -> None:
 
     finally:
         conn.close()
-        send_completion_email(_SCRIPT_NAME, success, summary, logger=log)
+        EnviarEmailConclusao(NOME_SCRIPT, success, summary, logger=log)
 
 
 if __name__ == "__main__":
-    Main()
+    Principal()

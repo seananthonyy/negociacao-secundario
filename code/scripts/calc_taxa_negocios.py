@@ -11,6 +11,7 @@ Trades com cdSituacao = 'Cancelado' sao ignorados.
 CLI:
     python scripts/calc_taxa_negocios.py --date 2026-05-29
     python scripts/calc_taxa_negocios.py --start 2026-05-01 --end 2026-05-29
+    python scripts/calc_taxa_negocios.py --date 2026-05-29 --limit 40   # smoke test
 """
 
 import argparse
@@ -27,11 +28,11 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from lib.config import cfg
-from lib.db import get_db
-from lib.logger import get_logger
-from lib.email_outlook import send_completion_email
-from lib.fianalytics_api import CalcRate
-from lib.b3_calc_api import CalcYield
+from lib.db import ObterBanco
+from lib.logger import ObterLogger
+from lib.email_outlook import EnviarEmailConclusao
+from lib.fianalytics_api import CalcularTaxa
+from lib.b3_calc_api import CalcularYield
 
 
 # ---------------------------------------------------------------------------
@@ -39,7 +40,7 @@ from lib.b3_calc_api import CalcYield
 # ---------------------------------------------------------------------------
 
 @dataclass
-class _TradeRaw:
+class NegocioBruto:
     idTrade: int
     cdTicker: str
     cdEmissor: str
@@ -53,28 +54,28 @@ class _TradeRaw:
 
 
 @dataclass
-class _AlertaTrade:
+class AlertaNegocio:
     cdTicker:  str
     cdEmissor: str
     vrVolume:  float
 
 
 @dataclass
-class _DateStats:
+class EstatisticasData:
     dtLiquidacao: str
     total: int = 0
     direta: int = 0       # vrTaxaNegocio copiado direto (sem chamada de API)
     fianalytics: int = 0  # calculada via FI Analytics
     b3: int = 0           # calculada via B3 Calculator
     semTaxa: int = 0      # vrTaxaCalculada = NULL (todas as calculadoras falharam)
-    alertas: list[_AlertaTrade] = field(default_factory=list)  # sem taxa + volume >= threshold
+    alertas: list[AlertaNegocio] = field(default_factory=list)  # sem taxa + volume >= threshold
 
 
 # ---------------------------------------------------------------------------
 # SQL
 # ---------------------------------------------------------------------------
 
-_SQL_FETCH_TRADES = """
+SQL_BUSCAR_NEGOCIOS = """
 SELECT idTrade, cdTicker, cdEmissor, cdInstrumento,
        dtNegocio, dtLiquidacao, vrQuantidade, vrPU, vrVolume, vrTaxaNegocio
 FROM NegociosBrutos
@@ -82,14 +83,14 @@ WHERE dtLiquidacao = ?
   AND cdSituacao != 'Cancelado'
 """
 
-_SQL_FETCH_EXISTING = """
+SQL_BUSCAR_EXISTENTES = """
 SELECT idTrade, vrTaxaCalculada, cdFonteTaxa
 FROM NegociosProcessados
 WHERE dtLiquidacao = ?
   AND vrTaxaCalculada IS NOT NULL
 """
 
-_SQL_UPSERT = """
+SQL_UPSERT = """
 INSERT INTO NegociosProcessados (
     idTrade, cdTicker, cdEmissor, dtNegocio, dtLiquidacao,
     vrQuantidade, vrPU, vrVolume, vrTaxaCalculada, cdFonteTaxa,
@@ -110,7 +111,7 @@ ON CONFLICT(idTrade) DO UPDATE SET
 # Logica de cascata
 # ---------------------------------------------------------------------------
 
-def _ApplyCascata(trade: _TradeRaw, log) -> tuple[Optional[float], Optional[str]]:
+def AplicarCascata(trade: NegocioBruto, log) -> tuple[Optional[float], Optional[str]]:
     """
     Retorna (vrTaxaCalculada, cdFonteTaxa).
 
@@ -128,7 +129,7 @@ def _ApplyCascata(trade: _TradeRaw, log) -> tuple[Optional[float], Optional[str]
         trade.cdTicker, trade.dtLiquidacao, trade.vrPU,
     )
 
-    taxa = CalcRate(trade.cdTicker, trade.cdInstrumento, trade.dtLiquidacao, trade.vrPU)
+    taxa = CalcularTaxa(trade.cdTicker, trade.cdInstrumento, trade.dtLiquidacao, trade.vrPU)
     if taxa is not None:
         return taxa, "FiAnalytics"
 
@@ -137,7 +138,7 @@ def _ApplyCascata(trade: _TradeRaw, log) -> tuple[Optional[float], Optional[str]
         trade.cdTicker,
     )
 
-    taxa = CalcYield(trade.cdTicker, trade.dtLiquidacao, trade.vrPU)
+    taxa = CalcularYield(trade.cdTicker, trade.dtLiquidacao, trade.vrPU)
     if taxa is not None:
         return taxa, "B3"
 
@@ -152,11 +153,24 @@ def _ApplyCascata(trade: _TradeRaw, log) -> tuple[Optional[float], Optional[str]
 # Processamento por data
 # ---------------------------------------------------------------------------
 
-def _ProcessDate(conn, dtLiquidacao: str, log, workers: int, force: bool) -> _DateStats:
-    """Processa todos os trades de uma dtLiquidacao e faz UPSERT em NegociosProcessados."""
-    stats = _DateStats(dtLiquidacao=dtLiquidacao)
+def ProcessarData(conn, dtLiquidacao: str, log, workers: int, force: bool,
+                 limit: Optional[int] = None) -> EstatisticasData:
+    """Processa todos os trades de uma dtLiquidacao e faz UPSERT em NegociosProcessados.
 
-    rows = conn.execute(_SQL_FETCH_TRADES, (dtLiquidacao,)).fetchall()
+    `limit` (só para smoke test) processa apenas N trades, priorizando os que
+    precisam de chamada de API (vrTaxaNegocio IS NULL) — assim a cascata
+    FI Analytics -> B3 e o caminho 'direta' são ambos exercitados.
+    """
+    stats = EstatisticasData(dtLiquidacao=dtLiquidacao)
+
+    rows = conn.execute(SQL_BUSCAR_NEGOCIOS, (dtLiquidacao,)).fetchall()
+
+    if limit is not None and len(rows) > limit:
+        # trades sem taxa (precisam de API) primeiro — o resto completa o lote
+        rows = sorted(rows, key=lambda r: r["vrTaxaNegocio"] is not None)[:limit]
+        log.warning("calc_taxa: --limit %d ativo — processando apenas %d trade(s) de %s (SMOKE TEST)",
+                    limit, len(rows), dtLiquidacao)
+
     stats.total = len(rows)
 
     if stats.total == 0:
@@ -164,7 +178,7 @@ def _ProcessDate(conn, dtLiquidacao: str, log, workers: int, force: bool) -> _Da
         return stats
 
     trades = [
-        _TradeRaw(
+        NegocioBruto(
             idTrade=row["idTrade"],
             cdTicker=row["cdTicker"],
             cdEmissor=row["cdEmissor"],
@@ -182,21 +196,21 @@ def _ProcessDate(conn, dtLiquidacao: str, log, workers: int, force: bool) -> _Da
     # Carrega taxa já calculada (exceto se --force)
     existing: dict[int, tuple[Optional[float], Optional[str]]] = {}
     if not force:
-        for row in conn.execute(_SQL_FETCH_EXISTING, (dtLiquidacao,)).fetchall():
+        for row in conn.execute(SQL_BUSCAR_EXISTENTES, (dtLiquidacao,)).fetchall():
             existing[row["idTrade"]] = (row["vrTaxaCalculada"], row["cdFonteTaxa"])
 
     # Separa trades que já têm taxa (cached) dos que precisam de API
-    cached:     list[tuple[_TradeRaw, Optional[float], Optional[str]]] = []
-    to_process: list[_TradeRaw] = []
+    cached:     list[tuple[NegocioBruto, Optional[float], Optional[str]]] = []
+    aProcessar: list[NegocioBruto] = []
 
     for trade in trades:
         if trade.idTrade in existing:
             cached.append((trade, *existing[trade.idTrade]))
         else:
-            to_process.append(trade)
+            aProcessar.append(trade)
 
-    n_cached = len(cached)
-    n_api    = len(to_process)
+    nCache = len(cached)
+    nApi    = len(aProcessar)
 
     if force:
         log.info(
@@ -206,20 +220,20 @@ def _ProcessDate(conn, dtLiquidacao: str, log, workers: int, force: bool) -> _Da
     else:
         log.info(
             "calc_taxa: dtLiquidacao=%s — %d trade(s): %d via API, %d já calculados (mantidos)",
-            dtLiquidacao, stats.total, n_api, n_cached,
+            dtLiquidacao, stats.total, nApi, nCache,
         )
 
     # Fase paralela: API calls apenas para to_process
-    api_results: list[tuple[_TradeRaw, Optional[float], Optional[str]]] = []
+    resultadosApi: list[tuple[NegocioBruto, Optional[float], Optional[str]]] = []
 
-    if to_process:
-        done_api   = 0
-        start_time = time.monotonic()
+    if aProcessar:
+        feitosApi   = 0
+        tempoInicio = time.monotonic()
 
         with ThreadPoolExecutor(max_workers=workers) as executor:
-            future_to_trade = {executor.submit(_ApplyCascata, t, log): t for t in to_process}
-            for future in as_completed(future_to_trade):
-                trade = future_to_trade[future]
+            futureParaNegocio = {executor.submit(AplicarCascata, t, log): t for t in aProcessar}
+            for future in as_completed(futureParaNegocio):
+                trade = futureParaNegocio[future]
                 try:
                     taxa, source = future.result()
                 except Exception:
@@ -229,27 +243,27 @@ def _ProcessDate(conn, dtLiquidacao: str, log, workers: int, force: bool) -> _Da
                     )
                     taxa, source = None, None
 
-                done_api += 1
-                api_results.append((trade, taxa, source))
+                feitosApi += 1
+                resultadosApi.append((trade, taxa, source))
 
-                elapsed  = time.monotonic() - start_time
-                taxa_str = f"{taxa:.4f}%" if taxa is not None else "sem taxa"
+                elapsed  = time.monotonic() - tempoInicio
+                taxaStr = f"{taxa:.4f}%" if taxa is not None else "sem taxa"
                 origem   = source if source else ("direta" if trade.vrTaxaNegocio is not None else "sem taxa")
-                if done_api >= 2:
-                    eta     = elapsed / done_api * (n_api - done_api)
-                    eta_str = f" | ~{eta:.0f}s restante"
+                if feitosApi >= 2:
+                    eta     = elapsed / feitosApi * (nApi - feitosApi)
+                    etaStr = f" | ~{eta:.0f}s restante"
                 else:
-                    eta_str = ""
+                    etaStr = ""
                 log.info(
                     "[%d/%d] %s → %s %s | %.0fs elapsed%s",
-                    done_api, n_api, trade.cdTicker, origem, taxa_str, elapsed, eta_str,
+                    feitosApi, nApi, trade.cdTicker, origem, taxaStr, elapsed, etaStr,
                 )
 
     # Fase sequencial: contagem de stats + UPSERTs (só para to_process)
     # Trades cached: apenas contagem, sem UPSERT (já estão corretos no banco)
     volumeMin: float = cfg["alerta"]["volumeMinSemTaxa"]
 
-    def _CountStats(trade: _TradeRaw, vrTaxaCalculada: Optional[float], cdFonteTaxa: Optional[str]) -> None:
+    def ContarEstatisticas(trade: NegocioBruto, vrTaxaCalculada: Optional[float], cdFonteTaxa: Optional[str]) -> None:
         if trade.vrTaxaNegocio is not None:
             stats.direta += 1
         elif cdFonteTaxa == "FiAnalytics":
@@ -259,14 +273,14 @@ def _ProcessDate(conn, dtLiquidacao: str, log, workers: int, force: bool) -> _Da
         else:
             stats.semTaxa += 1
             if trade.vrVolume >= volumeMin:
-                stats.alertas.append(_AlertaTrade(trade.cdTicker, trade.cdEmissor, trade.vrVolume))
+                stats.alertas.append(AlertaNegocio(trade.cdTicker, trade.cdEmissor, trade.vrVolume))
 
     for trade, vrTaxaCalculada, cdFonteTaxa in cached:
-        _CountStats(trade, vrTaxaCalculada, cdFonteTaxa)
+        ContarEstatisticas(trade, vrTaxaCalculada, cdFonteTaxa)
 
-    for trade, vrTaxaCalculada, cdFonteTaxa in api_results:
-        _CountStats(trade, vrTaxaCalculada, cdFonteTaxa)
-        conn.execute(_SQL_UPSERT, {
+    for trade, vrTaxaCalculada, cdFonteTaxa in resultadosApi:
+        ContarEstatisticas(trade, vrTaxaCalculada, cdFonteTaxa)
+        conn.execute(SQL_UPSERT, {
             "idTrade":         trade.idTrade,
             "cdTicker":        trade.cdTicker,
             "cdEmissor":       trade.cdEmissor,
@@ -292,7 +306,7 @@ def _ProcessDate(conn, dtLiquidacao: str, log, workers: int, force: bool) -> _Da
 # CLI
 # ---------------------------------------------------------------------------
 
-def _ParseArgs() -> argparse.Namespace:
+def LerArgumentos() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Calcula vrTaxaCalculada para trades de crédito privado (cascata FI Analytics -> B3)."
     )
@@ -324,6 +338,13 @@ def _ParseArgs() -> argparse.Namespace:
         action="store_true",
         help="Recalcula taxa mesmo para trades que já têm vrTaxaCalculada no banco.",
     )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        metavar="N",
+        help="SMOKE TEST: processa só N trades por data (prioriza os que precisam de API).",
+    )
     args = parser.parse_args()
 
     if args.start and not args.end:
@@ -334,7 +355,7 @@ def _ParseArgs() -> argparse.Namespace:
     return args
 
 
-def _BuildDateRange(args: argparse.Namespace) -> list[str]:
+def MontarIntervaloDatas(args: argparse.Namespace) -> list[str]:
     """Retorna lista de datas YYYY-MM-DD a processar."""
     if args.date:
         return [args.date]
@@ -353,7 +374,7 @@ def _BuildDateRange(args: argparse.Namespace) -> list[str]:
     return datas
 
 
-def _BuildSummary(statsList: list[_DateStats]) -> str:
+def MontarResumo(statsList: list[EstatisticasData]) -> str:
     lines = ["Resultado por dtLiquidacao:", ""]
     lines.append(
         f"{'Data':<12}  {'Total':>6}  {'Direta':>7}  {'FIAnaly':>7}  {'B3':>5}  {'SemTaxa':>8}"
@@ -409,23 +430,23 @@ def _BuildSummary(statsList: list[_DateStats]) -> str:
 # Entrypoint
 # ---------------------------------------------------------------------------
 
-def Main() -> None:
-    log     = get_logger("calc_taxa_negocios")
-    args    = _ParseArgs()
-    conn    = get_db()
+def Principal() -> None:
+    log     = ObterLogger("calc_taxa_negocios")
+    args    = LerArgumentos()
+    conn    = ObterBanco()
     summary = ""
     success = True
 
     try:
-        datas = _BuildDateRange(args)
+        datas = MontarIntervaloDatas(args)
         log.info("calc_taxa: processando %d data(s): %s ... %s", len(datas), datas[0], datas[-1])
 
-        statsList: list[_DateStats] = []
+        statsList: list[EstatisticasData] = []
         for dtLiquidacao in datas:
-            s = _ProcessDate(conn, dtLiquidacao, log, args.workers, args.force)
+            s = ProcessarData(conn, dtLiquidacao, log, args.workers, args.force, args.limit)
             statsList.append(s)
 
-        summary = _BuildSummary(statsList)
+        summary = MontarResumo(statsList)
         log.info("calc_taxa: concluido.\n%s", summary)
 
     except Exception:
@@ -435,7 +456,7 @@ def Main() -> None:
 
     finally:
         conn.close()
-        send_completion_email(
+        EnviarEmailConclusao(
             "calc_taxa_negocios",
             success,
             summary,
@@ -444,4 +465,4 @@ def Main() -> None:
 
 
 if __name__ == "__main__":
-    Main()
+    Principal()

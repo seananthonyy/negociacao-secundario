@@ -4,7 +4,7 @@ import threading
 
 import httpx
 
-from lib.config import cfg, get_secret
+from lib.config import cfg, ObterSegredo
 
 log = logging.getLogger(__name__)
 
@@ -14,36 +14,36 @@ log = logging.getLogger(__name__)
 # Reusar a conexão evita re-handshake (TCP+TLS) a cada trade — ganho grande quando
 # o tráfego passa por proxy (banco), onde cada CONNECT novo é caro. httpx.Client é
 # thread-safe: suporta chamadas concorrentes dos workers do ThreadPoolExecutor.
-_client: httpx.Client | None = None
-_clientLock = threading.Lock()
+clienteHttp: httpx.Client | None = None
+clientLock = threading.Lock()
 
 
-def _GetClient() -> httpx.Client:
-    global _client
-    if _client is not None:
-        return _client
-    with _clientLock:
-        if _client is None:
+def ObterCliente() -> httpx.Client:
+    global clienteHttp
+    if clienteHttp is not None:
+        return clienteHttp
+    with clientLock:
+        if clienteHttp is None:
             limits = httpx.Limits(max_connections=64, max_keepalive_connections=64, keepalive_expiry=30.0)
-            _client = httpx.Client(limits=limits, trust_env=True)
-    return _client
+            clienteHttp = httpx.Client(limits=limits, trust_env=True)
+    return clienteHttp
 
 
 # Sentinel para distinguir "não está no cache" de "está no cache como None".
-_CACHE_MISS = object()
+CACHE_MISS = object()
 
 # Cache de resultados por (cdTicker, dtLiquidacao, vrPU) — match exato, sem tolerância no PU.
 # Guarda float (% a.a.) ou None. Ambos são cacheados para evitar chamadas repetidas.
-_rateCache: dict[tuple, object] = {}
+cacheTaxas: dict[tuple, object] = {}
 
 # Lista de bonds do usuário — carregada uma única vez por processo via _GetUserBonds().
 # None significa "ainda não buscado"; lista vazia/None pós-fetch significa "falhou ou sem bonds".
-_userBondsFetched: bool = False
-_userBonds: list[dict] | None = None
-_bondsFetchLock = threading.Lock()
+userBondsCarregados: bool = False
+userBonds: list[dict] | None = None
+bondsFetchLock = threading.Lock()
 
 
-def _ParseResponse(resp: httpx.Response, url: str) -> dict | None:
+def AnalisarResposta(resp: httpx.Response, url: str) -> dict | None:
     """
     A API retorna o JSON como string dentro de outra string (double-encoded).
     resp.json() entrega a string; json.loads() faz o parse real.
@@ -56,8 +56,8 @@ def _ParseResponse(resp: httpx.Response, url: str) -> dict | None:
         return None
 
 
-def _GetHeaders() -> dict[str, str]:
-    apiKey = get_secret("fianalyticsApiKey")
+def ObterHeaders() -> dict[str, str]:
+    apiKey = ObterSegredo("fianalyticsApiKey")
     if not apiKey:
         raise RuntimeError("API key do FI Analytics não configurada (ver [env].fianalyticsApiKey no config.toml)")
     # Content-Type com charset=utf-8 é exigido pelo servidor (502 sem ele).
@@ -67,7 +67,7 @@ def _GetHeaders() -> dict[str, str]:
     }
 
 
-def _IsValidRate(value) -> bool:
+def TaxaValida(value) -> bool:
     """m2mRate é válido apenas se for numérico, não-nulo, positivo e não-zero."""
     if value is None:
         return False
@@ -78,7 +78,7 @@ def _IsValidRate(value) -> bool:
     return f > 0
 
 
-def _CallPrimary(cdTicker: str, cdInstrumento: str, dtLiquidacao: str, vrPU: float) -> float | None:
+def ChamarPrimaria(cdTicker: str, cdInstrumento: str, dtLiquidacao: str, vrPU: float) -> float | None:
     """Tenta calcular m2mRate no endpoint principal (deb ou cricra). Tentativa única, sem retry."""
     baseUrl: str = cfg["api"]["fianalytics"]["baseUrl"]
     timeout: int = cfg["calc"]["timeoutSeconds"]
@@ -87,7 +87,7 @@ def _CallPrimary(cdTicker: str, cdInstrumento: str, dtLiquidacao: str, vrPU: flo
 
     try:
         log.debug("fianalytics_api: POST %s ticker=%s date=%s", url, cdTicker, dtLiquidacao)
-        resp = _GetClient().post(url, json={"ticker": cdTicker, "date": dtLiquidacao, "pu": vrPU}, headers=_GetHeaders(), timeout=timeout)
+        resp = ObterCliente().post(url, json={"ticker": cdTicker, "date": dtLiquidacao, "pu": vrPU}, headers=ObterHeaders(), timeout=timeout)
     except (httpx.TimeoutException, httpx.RequestError) as exc:
         log.warning("fianalytics_api: erro na chamada primária para %s: %s", cdTicker, exc)
         return None
@@ -96,12 +96,12 @@ def _CallPrimary(cdTicker: str, cdInstrumento: str, dtLiquidacao: str, vrPU: flo
         log.warning("fianalytics_api: HTTP %d em %s ticker=%s", resp.status_code, url, cdTicker)
         return None
 
-    data = _ParseResponse(resp, url)
+    data = AnalisarResposta(resp, url)
     if data is None:
         return None
 
     rawRate = data.get("m2mRate")
-    if not _IsValidRate(rawRate):
+    if not TaxaValida(rawRate):
         log.warning("fianalytics_api: m2mRate inválido (%r) para %s/%s/%s", rawRate, cdTicker, dtLiquidacao, vrPU)
         return None
 
@@ -111,53 +111,53 @@ def _CallPrimary(cdTicker: str, cdInstrumento: str, dtLiquidacao: str, vrPU: flo
     return rate
 
 
-def _GetUserBonds() -> list[dict] | None:
+def ObterBondsUsuario() -> list[dict] | None:
     """
     Retorna a lista de bonds do usuário, buscando da API na primeira chamada
     e devolvendo do cache nas chamadas seguintes (uma única requisição por processo).
     Thread-safe: double-check lock garante que só uma thread faz o fetch.
     """
-    global _userBondsFetched, _userBonds
-    if _userBondsFetched:
-        return _userBonds
+    global userBondsCarregados, userBonds
+    if userBondsCarregados:
+        return userBonds
 
-    with _bondsFetchLock:
-        if _userBondsFetched:
-            return _userBonds
+    with bondsFetchLock:
+        if userBondsCarregados:
+            return userBonds
 
         baseUrl: str = cfg["api"]["fianalytics"]["baseUrl"]
         path: str = cfg["api"]["fianalytics"]["getUserBondsPath"]
         timeout: int = cfg["calc"]["timeoutSeconds"]
         url = f"{baseUrl}{path}"
-        body = {"user_email": get_secret("fianalyticsUser", ""), "get_company_bonds": "1"}
+        body = {"user_email": ObterSegredo("fianalyticsUser", ""), "get_company_bonds": "1"}
 
         try:
             log.debug("fianalytics_api: POST %s (getUserBonds — único fetch da sessão)", url)
-            resp = _GetClient().post(url, json=body, headers=_GetHeaders(), timeout=timeout)
+            resp = ObterCliente().post(url, json=body, headers=ObterHeaders(), timeout=timeout)
         except (httpx.TimeoutException, httpx.RequestError) as exc:
             log.warning("fianalytics_api: erro ao buscar user bonds: %s", exc)
-            _userBondsFetched = True
+            userBondsCarregados = True
             return None
 
         if not resp.is_success:
             log.warning("fianalytics_api: HTTP %d em POST %s", resp.status_code, url)
-            _userBondsFetched = True
+            userBondsCarregados = True
             return None
 
-        data = _ParseResponse(resp, url)
-        _userBondsFetched = True
+        data = AnalisarResposta(resp, url)
+        userBondsCarregados = True
 
         if isinstance(data, list):
             log.info("fianalytics_api: %d bonds carregados do usuário (cache populado)", len(data))
-            _userBonds = data
+            userBonds = data
         else:
             log.warning("fianalytics_api: estrutura inesperada de getUserBonds: %s", type(data))
-            _userBonds = None
+            userBonds = None
 
-        return _userBonds
+        return userBonds
 
 
-def _FindBond(bonds: list[dict], cdTicker: str) -> dict | None:
+def AcharBond(bonds: list[dict], cdTicker: str) -> dict | None:
     """Localiza o bond pelo campo bond_name (case-insensitive)."""
     tickerLower = cdTicker.lower()
     for bond in bonds:
@@ -166,7 +166,7 @@ def _FindBond(bonds: list[dict], cdTicker: str) -> dict | None:
     return None
 
 
-def _CallBondbuilder(docId: str, cdTicker: str, dtLiquidacao: str, vrPU: float) -> float | None:
+def ChamarBondbuilder(docId: str, cdTicker: str, dtLiquidacao: str, vrPU: float) -> float | None:
     """POST /bb/bondbuildercalculator. Tentativa única, sem retry."""
     baseUrl: str = cfg["api"]["fianalytics"]["baseUrl"]
     path: str = cfg["api"]["fianalytics"]["bondbuilderPath"]
@@ -175,7 +175,7 @@ def _CallBondbuilder(docId: str, cdTicker: str, dtLiquidacao: str, vrPU: float) 
 
     try:
         log.debug("fianalytics_api: POST %s (bondbuilder) ticker=%s date=%s", url, cdTicker, dtLiquidacao)
-        resp = _GetClient().post(url, json={"doc_id": docId, "date": dtLiquidacao, "pu": vrPU}, headers=_GetHeaders(), timeout=timeout)
+        resp = ObterCliente().post(url, json={"doc_id": docId, "date": dtLiquidacao, "pu": vrPU}, headers=ObterHeaders(), timeout=timeout)
     except (httpx.TimeoutException, httpx.RequestError) as exc:
         log.warning("fianalytics_api: erro no bondbuilder para %s: %s", cdTicker, exc)
         return None
@@ -184,12 +184,12 @@ def _CallBondbuilder(docId: str, cdTicker: str, dtLiquidacao: str, vrPU: float) 
         log.warning("fianalytics_api: HTTP %d no bondbuilder para %s", resp.status_code, cdTicker)
         return None
 
-    data = _ParseResponse(resp, url)
+    data = AnalisarResposta(resp, url)
     if data is None:
         return None
 
     rawRate = data.get("m2mRate")
-    if not _IsValidRate(rawRate):
+    if not TaxaValida(rawRate):
         log.warning("fianalytics_api: m2mRate inválido (%r) no bondbuilder para %s/%s/%s", rawRate, cdTicker, dtLiquidacao, vrPU)
         return None
 
@@ -198,14 +198,14 @@ def _CallBondbuilder(docId: str, cdTicker: str, dtLiquidacao: str, vrPU: float) 
     return rate
 
 
-def _CallBondbuilderFallback(cdTicker: str, dtLiquidacao: str, vrPU: float) -> float | None:
+def ChamarBondbuilderFallback(cdTicker: str, dtLiquidacao: str, vrPU: float) -> float | None:
     """Fluxo bondbuilder: getUserBonds (cached) → FindBond → CallBondbuilder."""
-    bonds = _GetUserBonds()
+    bonds = ObterBondsUsuario()
     if not bonds:
         log.warning("fianalytics_api: getUserBonds não retornou bonds para fallback de %s", cdTicker)
         return None
 
-    bond = _FindBond(bonds, cdTicker)
+    bond = AcharBond(bonds, cdTicker)
     if bond is None:
         log.warning("fianalytics_api: ticker %s não encontrado nos %d bonds do usuário", cdTicker, len(bonds))
         return None
@@ -216,10 +216,10 @@ def _CallBondbuilderFallback(cdTicker: str, dtLiquidacao: str, vrPU: float) -> f
         return None
 
     log.debug("fianalytics_api: bond encontrado para %s (doc_id=%s), chamando bondbuilder", cdTicker, docId)
-    return _CallBondbuilder(docId, cdTicker, dtLiquidacao, vrPU)
+    return ChamarBondbuilder(docId, cdTicker, dtLiquidacao, vrPU)
 
 
-def CalcRate(
+def CalcularTaxa(
     cdTicker: str,
     cdInstrumento: str,
     dtLiquidacao: str,
@@ -239,18 +239,18 @@ def CalcRate(
     vrPU: PU do negócio (float) — match exato, sem tolerância.
     """
     cacheKey = (cdTicker, dtLiquidacao, vrPU)
-    cached = _rateCache.get(cacheKey, _CACHE_MISS)
-    if cached is not _CACHE_MISS:
+    cached = cacheTaxas.get(cacheKey, CACHE_MISS)
+    if cached is not CACHE_MISS:
         log.debug("fianalytics_api: cache hit para %s/%s/%s → %s", cdTicker, dtLiquidacao, vrPU, cached)
         return cached  # type: ignore[return-value]
 
-    rate = _CallPrimary(cdTicker, cdInstrumento, dtLiquidacao, vrPU)
+    rate = ChamarPrimaria(cdTicker, cdInstrumento, dtLiquidacao, vrPU)
     if rate is None:
         log.info("fianalytics_api: endpoint primário falhou para %s, tentando bondbuilder", cdTicker)
-        rate = _CallBondbuilderFallback(cdTicker, dtLiquidacao, vrPU)
+        rate = ChamarBondbuilderFallback(cdTicker, dtLiquidacao, vrPU)
 
     if rate is None:
         log.warning("fianalytics_api: todos os níveis FI Analytics falharam para %s/%s/%s", cdTicker, dtLiquidacao, vrPU)
 
-    _rateCache[cacheKey] = rate
+    cacheTaxas[cacheKey] = rate
     return rate

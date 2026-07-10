@@ -37,41 +37,41 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from lib.db import get_db
-from lib.logger import get_logger
-from lib.email_outlook import send_completion_email
+from lib.db import ObterBanco
+from lib.logger import ObterLogger
+from lib.email_outlook import EnviarEmailConclusao
 
 # ---------------------------------------------------------------------------
 # Constantes
 # ---------------------------------------------------------------------------
 
-_SCRIPT_NAME = "scrape_outstanding_bloomberg"
+NOME_SCRIPT = "scrape_outstanding_bloomberg"
 
 # Prefixos de tickers que nao sao ativos de credito privado (vem de MtmAnbima).
-_PREFIXOS_EXCLUIDOS = ("NTN-B", "DI1")
+PREFIXOS_EXCLUIDOS = ("NTN-B", "DI1")
 
-_SQL_TICKERS_NEGOCIADOS = """
+SQL_TICKERS_NEGOCIADOS = """
 SELECT DISTINCT cdTicker
 FROM NegociosBrutos
 WHERE dtNegocio = ?
   AND cdSituacao != 'Cancelado'
 """
 
-_SQL_TICKERS_ANBIMA = """
+SQL_TICKERS_ANBIMA = """
 SELECT DISTINCT cdTicker
 FROM AnbimaIndicativos
 WHERE dtReferencia = ?
 """
 
 # Pares (cdTicker, data) ja resolvidos — pulados sem --force.
-_SQL_JA_GRAVADOS = """
+SQL_JA_GRAVADOS = """
 SELECT cdTicker
 FROM Outstanding
 WHERE dtOutstanding = ?
   AND vrOutstanding IS NOT NULL
 """
 
-_SQL_UPSERT = """
+SQL_UPSERT = """
 INSERT INTO Outstanding (cdTicker, dtOutstanding, vrOutstanding)
 VALUES (?, ?, ?)
 ON CONFLICT(cdTicker, dtOutstanding) DO UPDATE SET
@@ -83,19 +83,19 @@ ON CONFLICT(cdTicker, dtOutstanding) DO UPDATE SET
 # Selecao de tickers
 # ---------------------------------------------------------------------------
 
-def _ExcluiTicker(cdTicker: str) -> bool:
+def ExcluiTicker(cdTicker: str) -> bool:
     """True se o ticker deve ser ignorado (NTN-B / DI1)."""
-    return cdTicker.upper().startswith(_PREFIXOS_EXCLUIDOS)
+    return cdTicker.upper().startswith(PREFIXOS_EXCLUIDOS)
 
 
-def _GetTickersData(conn, d: date, log) -> set[str]:
+def TickersDaData(conn, d: date, log) -> set[str]:
     """Tickers negociados + divulgados pela Anbima na data d (NTN-B/DI1 fora)."""
     dStr = d.isoformat()
 
-    negociados = {r[0] for r in conn.execute(_SQL_TICKERS_NEGOCIADOS, (dStr,))}
-    anbima     = {r[0] for r in conn.execute(_SQL_TICKERS_ANBIMA, (dStr,))}
+    negociados = {r[0] for r in conn.execute(SQL_TICKERS_NEGOCIADOS, (dStr,))}
+    anbima     = {r[0] for r in conn.execute(SQL_TICKERS_ANBIMA, (dStr,))}
 
-    tickers = {t for t in (negociados | anbima) if t and not _ExcluiTicker(t)}
+    tickers = {t for t in (negociados | anbima) if t and not ExcluiTicker(t)}
 
     log.info(
         "outstanding: %s — %d negociados, %d Anbima, %d unicos (apos filtro)",
@@ -104,9 +104,9 @@ def _GetTickersData(conn, d: date, log) -> set[str]:
     return tickers
 
 
-def _FiltraJaGravados(conn, d: date, tickers: set[str], log) -> set[str]:
+def FiltrarJaGravados(conn, d: date, tickers: set[str], log) -> set[str]:
     """Remove tickers que ja tem outstanding gravado nessa data."""
-    gravados = {r[0] for r in conn.execute(_SQL_JA_GRAVADOS, (d.isoformat(),))}
+    gravados = {r[0] for r in conn.execute(SQL_JA_GRAVADOS, (d.isoformat(),))}
     pendentes = tickers - gravados
     if gravados:
         log.info(
@@ -120,7 +120,7 @@ def _FiltraJaGravados(conn, d: date, tickers: set[str], log) -> set[str]:
 # Bloomberg
 # ---------------------------------------------------------------------------
 
-def _FetchOutstanding(tickers: list[str], d: date, log) -> dict[str, float | None]:
+def BuscarOutstanding(tickers: list[str], d: date, log) -> dict[str, float | None]:
     """
     Busca AMT_OUTSTANDING de varios tickers numa unica chamada bdp, com o
     override de data AMOUNT_OUTSTANDING_AS_OF_DT. Retorna {ticker: valor|None}.
@@ -170,29 +170,29 @@ def _FetchOutstanding(tickers: list[str], d: date, log) -> dict[str, float | Non
 # Processamento por data
 # ---------------------------------------------------------------------------
 
-def _ProcessDate(conn, d: date, force: bool, log) -> tuple[int, int, int]:
+def ProcessarData(conn, d: date, force: bool, log) -> tuple[int, int, int]:
     """
     Processa uma data: monta tickers, busca outstanding, grava.
     Retorna (tickers_alvo, gravados_com_valor, sem_valor).
     """
-    tickers = _GetTickersData(conn, d, log)
+    tickers = TickersDaData(conn, d, log)
     nAlvo = len(tickers)
     if not tickers:
         return 0, 0, 0
 
     if not force:
-        tickers = _FiltraJaGravados(conn, d, tickers, log)
+        tickers = FiltrarJaGravados(conn, d, tickers, log)
     if not tickers:
         return nAlvo, 0, 0
 
-    valores = _FetchOutstanding(sorted(tickers), d, log)
+    valores = BuscarOutstanding(sorted(tickers), d, log)
 
     dStr = d.isoformat()
     upsertRows = [(t, dStr, v) for t, v in valores.items()]
     nComValor = sum(1 for v in valores.values() if v is not None)
     nSemValor = len(valores) - nComValor
 
-    conn.executemany(_SQL_UPSERT, upsertRows)
+    conn.executemany(SQL_UPSERT, upsertRows)
     conn.commit()
 
     log.info("outstanding: %s — %d gravados (%d com valor, %d sem)",
@@ -204,7 +204,7 @@ def _ProcessDate(conn, d: date, force: bool, log) -> tuple[int, int, int]:
 # CLI
 # ---------------------------------------------------------------------------
 
-def _ParseArgs() -> argparse.Namespace:
+def LerArgumentos() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Puxa outstanding (AMT_OUTSTANDING) da Bloomberg e popula Outstanding."
     )
@@ -222,7 +222,7 @@ def _ParseArgs() -> argparse.Namespace:
     return args
 
 
-def _BuildDateRange(args: argparse.Namespace) -> list[date]:
+def MontarIntervaloDatas(args: argparse.Namespace) -> list[date]:
     if args.date:
         return [date.fromisoformat(args.date)]
     startDate = date.fromisoformat(args.start)
@@ -236,7 +236,7 @@ def _BuildDateRange(args: argparse.Namespace) -> list[date]:
     return datas
 
 
-def _BuildSummary(results: list[tuple[str, int, int, int]]) -> str:
+def MontarResumo(results: list[tuple[str, int, int, int]]) -> str:
     lines = ["Resultado por data:", ""]
     lines.append(f"{'Data':<12}  {'Alvo':>6}  {'Com valor':>10}  {'Sem valor':>10}")
     lines.append("-" * 44)
@@ -255,25 +255,25 @@ def _BuildSummary(results: list[tuple[str, int, int, int]]) -> str:
 # Entrypoint
 # ---------------------------------------------------------------------------
 
-def Main() -> None:
-    log     = get_logger(_SCRIPT_NAME)
-    args    = _ParseArgs()
-    conn    = get_db()
+def Principal() -> None:
+    log     = ObterLogger(NOME_SCRIPT)
+    args    = LerArgumentos()
+    conn    = ObterBanco()
     summary = ""
     success = True
 
     try:
-        datas = _BuildDateRange(args)
+        datas = MontarIntervaloDatas(args)
         results: list[tuple[str, int, int, int]] = []
 
         log.info("outstanding: processando %d data(s): %s ... %s",
                  len(datas), datas[0], datas[-1])
 
         for d in datas:
-            nAlvo, nCom, nSem = _ProcessDate(conn, d, args.force, log)
+            nAlvo, nCom, nSem = ProcessarData(conn, d, args.force, log)
             results.append((d.isoformat(), nAlvo, nCom, nSem))
 
-        summary = _BuildSummary(results)
+        summary = MontarResumo(results)
         log.info("outstanding: concluido.\n%s", summary)
 
     except Exception:
@@ -283,8 +283,8 @@ def Main() -> None:
 
     finally:
         conn.close()
-        send_completion_email(_SCRIPT_NAME, success, summary, logger=log)
+        EnviarEmailConclusao(NOME_SCRIPT, success, summary, logger=log)
 
 
 if __name__ == "__main__":
-    Main()
+    Principal()

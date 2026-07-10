@@ -22,13 +22,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from lib.db import get_db
-from lib.logger import get_logger
-from lib.email_outlook import send_completion_email
+from lib.db import ObterBanco
+from lib.logger import ObterLogger
+from lib.email_outlook import EnviarEmailConclusao
 
-_SCRIPT_NAME = "match_referencias"
+NOME_SCRIPT = "match_referencias"
 
-_SQL_FETCH_ATIVOS = """
+SQL_BUSCAR_ATIVOS = """
     SELECT cdTicker, cdIndexador, vrDuration, dtAtualizacaoDuration
     FROM   InfoAtivos
     WHERE  (cdReferencia IS NULL OR cdFonteReferencia = 'MatchRef')
@@ -37,7 +37,7 @@ _SQL_FETCH_ATIVOS = """
       AND  dtAtualizacaoDuration IS NOT NULL
 """
 
-_SQL_FETCH_REFS = """
+SQL_BUSCAR_REFS = """
     SELECT cdTicker, vrDuration
     FROM   MtmAnbima
     WHERE  cdTicker LIKE ?
@@ -45,40 +45,40 @@ _SQL_FETCH_REFS = """
       AND  vrDuration IS NOT NULL
 """
 
-_SQL_UPDATE_REF = """
+SQL_ATUALIZAR_REF = """
     UPDATE InfoAtivos
     SET    cdReferencia = ?, cdFonteReferencia = 'MatchRef', dtAtualizacao = CURRENT_TIMESTAMP
     WHERE  cdTicker = ?
 """
 
 
-def _ParseArgs() -> argparse.Namespace:
+def LerArgumentos() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Atribui cdReferencia em InfoAtivos via duration-match em MtmAnbima."
     )
     return parser.parse_args()
 
 
-def _PrefixOf(cdIndexador: str) -> str:
+def PrefixoDe(cdIndexador: str) -> str:
     return "NTN-B%" if cdIndexador == "IPCA" else "DI1%"
 
 
-def _BestMatch(durAtivo: float, candidatos: list) -> str | None:
+def MelhorMatch(durAtivo: float, candidatos: list) -> str | None:
     if not candidatos:
         return None
     return min(candidatos, key=lambda c: abs(c["vrDuration"] - durAtivo))["cdTicker"]
 
 
-def Main() -> None:
-    log     = get_logger(_SCRIPT_NAME)
-    args    = _ParseArgs()
+def Principal() -> None:
+    log     = ObterLogger(NOME_SCRIPT)
+    args    = LerArgumentos()
     summary = ""
     success = True
 
     try:
-        conn = get_db()
+        conn = ObterBanco()
         try:
-            ativos = conn.execute(_SQL_FETCH_ATIVOS).fetchall()
+            ativos = conn.execute(SQL_BUSCAR_ATIVOS).fetchall()
             log.info("match_ref: %d ativos IPCA/PREFIXADO sem cdReferencia com duration disponivel", len(ativos))
 
             nMatch  = 0
@@ -91,8 +91,8 @@ def Main() -> None:
                 vrDuration  = ativo["vrDuration"]
                 dtUpsertDur = ativo["dtAtualizacaoDuration"]
 
-                prefix     = _PrefixOf(cdIndexador)
-                candidatos = conn.execute(_SQL_FETCH_REFS, (prefix, dtUpsertDur)).fetchall()
+                prefix     = PrefixoDe(cdIndexador)
+                candidatos = conn.execute(SQL_BUSCAR_REFS, (prefix, dtUpsertDur)).fetchall()
 
                 if not candidatos:
                     log.warning(
@@ -105,8 +105,8 @@ def Main() -> None:
                     )
                     continue
 
-                cdReferencia = _BestMatch(vrDuration, candidatos)
-                conn.execute(_SQL_UPDATE_REF, (cdReferencia, cdTicker))
+                cdReferencia = MelhorMatch(vrDuration, candidatos)
+                conn.execute(SQL_ATUALIZAR_REF, (cdReferencia, cdTicker))
                 nMatch += 1
 
                 log.info(
@@ -139,8 +139,8 @@ def Main() -> None:
         log.exception("match_ref: erro inesperado")
 
     finally:
-        send_completion_email(_SCRIPT_NAME, success, summary, logger=log)
+        EnviarEmailConclusao(NOME_SCRIPT, success, summary, logger=log)
 
 
 if __name__ == "__main__":
-    Main()
+    Principal()

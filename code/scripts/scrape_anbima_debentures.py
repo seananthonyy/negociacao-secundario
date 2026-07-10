@@ -27,39 +27,39 @@ import xlrd
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from lib.config import cfg
-from lib.db import get_db
-from lib.logger import get_logger
-from lib.email_outlook import send_completion_email
+from lib.db import ObterBanco
+from lib.logger import ObterLogger
+from lib.email_outlook import EnviarEmailConclusao
 
 # ---------------------------------------------------------------------------
 # Constantes
 # ---------------------------------------------------------------------------
 
-_MONTHS_PT = {
+MESES_PT = {
     1: 'jan', 2: 'fev', 3: 'mar', 4: 'abr', 5: 'mai', 6: 'jun',
     7: 'jul', 8: 'ago', 9: 'set', 10: 'out', 11: 'nov', 12: 'dez',
 }
 
-_SHEETS = ['DI_PERCENTUAL', 'DI_SPREAD', 'IPCA_SPREAD', 'PREFIXADO']
+ABAS = ['DI_PERCENTUAL', 'DI_SPREAD', 'IPCA_SPREAD', 'PREFIXADO']
 
-_COL_TICKER          = 0
-_COL_EMISSOR         = 1
-_COL_VENC            = 2
-_COL_INDEXADOR       = 3
-_COL_TAXA_INDICATIVA = 6   # col 5 = Taxa de Venda, col 6 = Taxa Indicativa (correta)
-_COL_DURATION        = 12
-_COL_REF_NTNB        = 14
+COL_TICKER          = 0
+COL_EMISSOR         = 1
+COL_VENC            = 2
+COL_INDEXADOR       = 3
+COL_TAXA_INDICATIVA = 6   # col 5 = Taxa de Venda, col 6 = Taxa Indicativa (correta)
+COL_DURATION        = 12
+COL_REF_NTNB        = 14
 
-_DATA_START_ROW = 9
+LINHA_INICIO_DADOS = 9
 
-_SQL_UPSERT_ANBIMA = """
+SQL_UPSERT_ANBIMA = """
 INSERT INTO AnbimaIndicativos (cdTicker, dtReferencia, vrTaxaAnbima, vrSpreadAnbima)
 VALUES (?, ?, ?, NULL)
 ON CONFLICT(cdTicker, dtReferencia) DO UPDATE SET
     vrTaxaAnbima = excluded.vrTaxaAnbima
 """
 
-_SQL_UPSERT_INFO = """
+SQL_UPSERT_INFO = """
 INSERT INTO InfoAtivos (
     cdTicker, cdInstrumento, cdEmissor, dtVencimento,
     vrDuration, dtAtualizacaoDuration, cdIndexador, cdReferencia, cdFonteReferencia, dtAtualizacao
@@ -82,17 +82,17 @@ ON CONFLICT(cdTicker) DO UPDATE SET
 # Helpers de parsing
 # ---------------------------------------------------------------------------
 
-def _BuildUrl(d: date) -> str:
+def MontarUrl(d: date) -> str:
     baseUrl = cfg["scrape"]["anbima"]["debXlsBaseUrl"]
-    return f"{baseUrl}/d{d.strftime('%y')}{_MONTHS_PT[d.month]}{d.strftime('%d')}.xls"
+    return f"{baseUrl}/d{d.strftime('%y')}{MESES_PT[d.month]}{d.strftime('%d')}.xls"
 
 
-def _CleanEmissor(raw) -> str | None:
+def LimparEmissor(raw) -> str | None:
     s = re.sub(r'\s*\(\*+\)', '', str(raw)).strip()
     return s or None
 
 
-def _ParseFloat(raw) -> float | None:
+def AnalisarFloat(raw) -> float | None:
     s = str(raw).strip()
     if s in ('--', '', 'N/D', 'N/A'):
         return None
@@ -102,7 +102,7 @@ def _ParseFloat(raw) -> float | None:
         return None
 
 
-def _ParseDate(raw) -> str | None:
+def AnalisarData(raw) -> str | None:
     s = str(raw).strip()
     if not s or s in ('--', 'N/D'):
         return None
@@ -115,7 +115,7 @@ def _ParseDate(raw) -> str | None:
     return None
 
 
-def _NormalizeIndexador(raw) -> str | None:
+def NormalizarIndexador(raw) -> str | None:
     s = str(raw).strip().upper()
     if not s or s in ('--', 'N/D'):
         return None
@@ -130,7 +130,7 @@ def _NormalizeIndexador(raw) -> str | None:
     return None
 
 
-def _ParseRefNtnb(raw) -> str | None:
+def AnalisarRefNtnb(raw) -> str | None:
     s = str(raw).strip()
     if not s or s in ('--', 'N/D'):
         return None
@@ -141,11 +141,11 @@ def _ParseRefNtnb(raw) -> str | None:
     return None
 
 
-def _DeriveRef(cdIndexador: str | None, rawRefNtnb) -> str | None:
+def DerivarRef(cdIndexador: str | None, rawRefNtnb) -> str | None:
     if cdIndexador in ('CDI+', '%CDI'):
         return 'FUNDING'
     if cdIndexador == 'IPCA':
-        return _ParseRefNtnb(rawRefNtnb)
+        return AnalisarRefNtnb(rawRefNtnb)
     return None
 
 
@@ -153,23 +153,23 @@ def _DeriveRef(cdIndexador: str | None, rawRefNtnb) -> str | None:
 # Parsing do XLS
 # ---------------------------------------------------------------------------
 
-def _ParseSheet(sh, dtRef: str) -> tuple[list, list]:
+def AnalisarPlanilha(sh, dtRef: str) -> tuple[list, list]:
     anbimaRows: list[tuple] = []
     infoRows:   list[tuple] = []
 
-    for rowIdx in range(_DATA_START_ROW, sh.nrows):
-        cdTicker = str(sh.cell_value(rowIdx, _COL_TICKER)).strip()
+    for rowIdx in range(LINHA_INICIO_DADOS, sh.nrows):
+        cdTicker = str(sh.cell_value(rowIdx, COL_TICKER)).strip()
         if not cdTicker or ' ' in cdTicker or cdTicker.startswith('Obs') or cdTicker == '1.0':
             continue
 
-        cdEmissor    = _CleanEmissor(sh.cell_value(rowIdx, _COL_EMISSOR))
-        dtVencimento = _ParseDate(sh.cell_value(rowIdx, _COL_VENC))
-        cdIndexador  = _NormalizeIndexador(sh.cell_value(rowIdx, _COL_INDEXADOR))
-        vrTaxaAnbima = _ParseFloat(sh.cell_value(rowIdx, _COL_TAXA_INDICATIVA))
-        rawDuration  = _ParseFloat(sh.cell_value(rowIdx, _COL_DURATION))
+        cdEmissor    = LimparEmissor(sh.cell_value(rowIdx, COL_EMISSOR))
+        dtVencimento = AnalisarData(sh.cell_value(rowIdx, COL_VENC))
+        cdIndexador  = NormalizarIndexador(sh.cell_value(rowIdx, COL_INDEXADOR))
+        vrTaxaAnbima = AnalisarFloat(sh.cell_value(rowIdx, COL_TAXA_INDICATIVA))
+        rawDuration  = AnalisarFloat(sh.cell_value(rowIdx, COL_DURATION))
         vrDuration   = round(rawDuration / 252, 6) if rawDuration is not None else None
         dtUpsertDur  = dtRef if vrDuration is not None else None
-        cdReferencia        = _DeriveRef(cdIndexador, sh.cell_value(rowIdx, _COL_REF_NTNB))
+        cdReferencia        = DerivarRef(cdIndexador, sh.cell_value(rowIdx, COL_REF_NTNB))
         cdFonteReferencia  = 'Anbima' if cdReferencia is not None else None
 
         anbimaRows.append((cdTicker, dtRef, vrTaxaAnbima))
@@ -183,8 +183,8 @@ def _ParseSheet(sh, dtRef: str) -> tuple[list, list]:
 # Download + processamento por data
 # ---------------------------------------------------------------------------
 
-def _DownloadXls(d: date, log) -> bytes | None:
-    url = _BuildUrl(d)
+def BaixarXls(d: date, log) -> bytes | None:
+    url = MontarUrl(d)
     log.debug("anbima_deb: GET %s", url)
     try:
         resp = httpx.get(url, follow_redirects=True, timeout=30)
@@ -200,9 +200,9 @@ def _DownloadXls(d: date, log) -> bytes | None:
     return resp.content
 
 
-def _ProcessDate(conn, d: date, log) -> tuple[int, int]:
+def ProcessarData(conn, d: date, log) -> tuple[int, int]:
     dtRef   = d.isoformat()
-    content = _DownloadXls(d, log)
+    content = BaixarXls(d, log)
     if content is None:
         return 0, 0
 
@@ -215,12 +215,12 @@ def _ProcessDate(conn, d: date, log) -> tuple[int, int]:
     allAnbima: list[tuple] = []
     allInfo:   list[tuple] = []
 
-    for sheetName in _SHEETS:
+    for sheetName in ABAS:
         if sheetName not in wb.sheet_names():
             log.debug("anbima_deb: aba '%s' ausente em %s", sheetName, dtRef)
             continue
         sh = wb.sheet_by_name(sheetName)
-        anbimaRows, infoRows = _ParseSheet(sh, dtRef)
+        anbimaRows, infoRows = AnalisarPlanilha(sh, dtRef)
         allAnbima.extend(anbimaRows)
         allInfo.extend(infoRows)
         log.debug("anbima_deb: %s — %s: %d tickers", dtRef, sheetName, len(anbimaRows))
@@ -229,8 +229,8 @@ def _ProcessDate(conn, d: date, log) -> tuple[int, int]:
         log.warning("anbima_deb: %s — nenhum ticker extraído", dtRef)
         return 0, 0
 
-    conn.executemany(_SQL_UPSERT_ANBIMA, allAnbima)
-    conn.executemany(_SQL_UPSERT_INFO,   allInfo)
+    conn.executemany(SQL_UPSERT_ANBIMA, allAnbima)
+    conn.executemany(SQL_UPSERT_INFO,   allInfo)
     conn.commit()
 
     log.info("anbima_deb: %s — %d AnbimaIndicativos, %d InfoAtivos", dtRef, len(allAnbima), len(allInfo))
@@ -241,7 +241,7 @@ def _ProcessDate(conn, d: date, log) -> tuple[int, int]:
 # CLI
 # ---------------------------------------------------------------------------
 
-def _ParseArgs() -> argparse.Namespace:
+def LerArgumentos() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Baixa taxas indicativas de debêntures da Anbima (XLS direto)."
     )
@@ -257,7 +257,7 @@ def _ParseArgs() -> argparse.Namespace:
     return args
 
 
-def _BuildDateRange(args: argparse.Namespace) -> list[date]:
+def MontarIntervaloDatas(args: argparse.Namespace) -> list[date]:
     if args.date:
         return [date.fromisoformat(args.date)]
     startDate = date.fromisoformat(args.start)
@@ -271,7 +271,7 @@ def _BuildDateRange(args: argparse.Namespace) -> list[date]:
     return datas
 
 
-def _BuildSummary(results: list[tuple[str, int, int]]) -> str:
+def MontarResumo(results: list[tuple[str, int, int]]) -> str:
     lines = ["Resultado por data:", ""]
     lines.append(f"{'Data':<12}  {'Anbima':>7}  {'InfoAtivos':>10}")
     lines.append("-" * 34)
@@ -289,25 +289,25 @@ def _BuildSummary(results: list[tuple[str, int, int]]) -> str:
 # Entrypoint
 # ---------------------------------------------------------------------------
 
-def Main() -> None:
-    log     = get_logger("scrape_anbima_debentures")
-    args    = _ParseArgs()
-    conn    = get_db()
+def Principal() -> None:
+    log     = ObterLogger("scrape_anbima_debentures")
+    args    = LerArgumentos()
+    conn    = ObterBanco()
     summary = ""
     success = True
 
     try:
-        datas   = _BuildDateRange(args)
+        datas   = MontarIntervaloDatas(args)
         results: list[tuple[str, int, int]] = []
 
         log.info("anbima_deb: processando %d data(s): %s … %s",
                  len(datas), datas[0], datas[-1])
 
         for d in datas:
-            nAnbima, nInfo = _ProcessDate(conn, d, log)
+            nAnbima, nInfo = ProcessarData(conn, d, log)
             results.append((d.isoformat(), nAnbima, nInfo))
 
-        summary = _BuildSummary(results)
+        summary = MontarResumo(results)
         log.info("anbima_deb: concluído.\n%s", summary)
 
     except Exception:
@@ -317,8 +317,8 @@ def Main() -> None:
 
     finally:
         conn.close()
-        send_completion_email("scrape_anbima_debentures", success, summary, logger=log)
+        EnviarEmailConclusao("scrape_anbima_debentures", success, summary, logger=log)
 
 
 if __name__ == "__main__":
-    Main()
+    Principal()
