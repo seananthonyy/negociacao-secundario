@@ -7,10 +7,10 @@
 |  | `calculadora-renda-fixa` | **este projeto** (`negociacao-secundario`) |
 |---|---|---|
 | **Cálculo** (VNA, PU Par, PU de operação, duration, taxa) | ✅ é a **biblioteca** — `calculadora_rf.py`, `di.py` | consome via `lib/calc.py` |
-| **Coleta de dados** (IPCA, projeção, DI) | — | ✅ **roda as rotinas** (passos 8–10 do pipeline) |
-| **Validação de fluxo** | — | ✅ **roda** (passo 11) |
+| **Coleta de dados** (IPCA, projeção, DI) | — | ✅ **roda as rotinas** (passos 9–11 do pipeline) |
+| **Validação de fluxo** | — | ✅ **roda** (passo 12) |
 
-A calc continua morando em `D:\ItauBBA\calculadora-renda-fixa` e **não se mexe nela** (regra do projeto dela). Aqui ficam os dados e as rotinas.
+A calc continua morando em `D:\ItauBBA\calculadora-renda-fixa`. **Não se mexe nela sem autorização explícita** (regra do projeto dela) — já são 4 mudanças autorizadas, listadas abaixo. Aqui ficam os dados e as rotinas.
 
 ## Onde vivem os dados
 
@@ -66,18 +66,21 @@ O script **já baixava** o CSV completo do produto `PRE` da B3 e **jogava fora t
 Isso importa porque **a B3 não guarda histórico**: a API só expõe ~20 pregões. Rodando todo dia, acumulamos os snapshots que ela descarta — é o que permite reprecificar uma data passada. **Data fora da janela é WARNING com exit 0** (é "a fonte não tem", não "o scraper quebrou"); qualquer outra falha é exit 1.
 
 ### 5. `validar_fluxos` — quais ativos a calc pode precificar
-Ver §"Validação de fluxo" em [[04 - Banco de Dados]] para o contrato das 5 colunas. Aqui, o essencial:
 
-- **Régua:** divergente **ou não-confirmável** ⇒ **não valida** (rigor > cobertura). Validado = zero divergência.
-- **Cascata:** B3 (`getBondDetails`, via `lib/b3_calc_api.ObterDetalhesAtivo`) → FI Analytics (`lib/fianalytics_api.ChamarCompleto`) → não-validável.
-- **FI é proibida** para ativo com incorporação na nossa base: ela omite esses eventos, então nunca poderia confirmá-los. Fica não-validável — o que **não** é divergência.
-- **Fila com throttle de 10 dias:** `stFluxoValidado <> 1 AND (dtUltimaTentativa IS NULL OR < hoje-10d)`. Como a invalidação do ingestor **zera** `dtUltimaTentativa`, ativo cujo fluxo mudou volta pro topo da fila na hora. Rodar todo dia é barato.
-- **Saídas:** `data/divergencias_fluxo.csv` (ticker, fonte, campo, situação, nosso, fonte) e `data/carencia_conferir_pu.csv` (os carência-100%, validados sem conferir a %incorporação — conferir por PU depois).
-- Estado em 11/07/2026 (rodado ainda do lado da calc, sobre a mesma base): **2.040 validados** de 4.197 com fluxo. O grosso dos não-validados é `sem_fonte` (nem B3 nem FI cobrem) e agenda **truncada** na nossa base.
+> ⚠️ **Mudou em 13/07/2026.** A cascata B3 → FI **acabou**: a B3 virou a fonte **primária do cadastro** e o fluxo dela **nasce validado**. O `validar_fluxos` agora (a) valida só o fluxo que veio da **Anbima**, pela FI, e (b) roda o **tripwire de saldo** em tudo que está validado. Ver **[[15 - Cadastro dos Ativos]]** — é lá que está a descrição corrente.
+
+O que continua valendo:
+
+- **Régua:** divergente **ou não-confirmável** ⇒ **não valida** (rigor > cobertura).
+- **FI é proibida** para ativo com incorporação: ela omite esses eventos, então nunca poderia confirmá-los. Fica não-validável — o que **não** é divergência.
+- **Fila com throttle de 10 dias.** A invalidação do ingestor **zera** `dtUltimaTentativa`, então ativo cujo fluxo mudou volta pro topo da fila na hora.
+- **Saída:** `data/divergencias_fluxo.csv`.
+
+Estado em 13/07/2026: **3.027 validados** de 4.840 ativos (2.967 de fonte B3).
 
 ## Ordem no pipeline
 
-Passos **8–11** de [[11 - Pipeline de Execucao]]. Não dependem da liquidação X → rodam uma vez por ciclo, no bloco global do `pipeline_core`. O `validar_fluxos` vem **depois** do `scrape_anbima_data_ativos` (5): é ele quem mexe em `FluxoAtivos`/`InfoAtivos` e zera a validação quando o fluxo muda de verdade.
+Passos **9–12** de [[11 - Pipeline de Execucao]]. Não dependem da liquidação X → rodam uma vez por ciclo, no bloco global do `pipeline_core`. O `validar_fluxos` vem **depois** do `scrape_anbima_data_ativos` (6): é ele quem mexe em `FluxoAtivos`/`InfoAtivos` e zera a validação quando o fluxo muda de verdade.
 
 ## Rede — hosts novos (conferir no banco)
 
