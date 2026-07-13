@@ -41,6 +41,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from lib.db import ObterBanco
 from lib.logger import ObterLogger
 from lib.email_outlook import EnviarEmailConclusao
+from lib.relatorio_execucao import RelatorioExecucao
 
 
 # ---------------------------------------------------------------------------
@@ -357,6 +358,8 @@ def Principal() -> None:
     log     = ObterLogger("calc_spread_anbima")
     args    = LerArgumentos()
     conn    = ObterBanco()
+    rel     = RelatorioExecucao("calc_spread_anbima")
+    erro    = None
     summary = ""
     success = True
 
@@ -377,17 +380,15 @@ def Principal() -> None:
 
     except Exception:
         success = False
-        summary = traceback.format_exc()
+        erro = traceback.format_exc()
+        rel.Erro("A rodada abortou — ver traceback.")
         log.exception("spread: erro inesperado")
 
     finally:
         conn.close()
-        EnviarEmailConclusao(
-            "calc_spread_anbima",
-            success,
-            summary,
-            logger=log,
-        )
+        if summary:
+            rel.Secao("Resumo", ["saida"], [[l] for l in summary.splitlines() if l.strip()])
+        EnviarEmailConclusao("calc_spread_anbima", success, rel, tracebackErro=erro, logger=log)
 
 
 if __name__ == "__main__":

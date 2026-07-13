@@ -34,6 +34,7 @@ from lib.config import cfg, ObterSegredo, ObterProxyPlaywright
 from lib.db import ObterBanco
 from lib.logger import ObterLogger
 from lib.email_outlook import EnviarEmailConclusao
+from lib.relatorio_execucao import RelatorioExecucao
 
 # ---------------------------------------------------------------------------
 # Constantes
@@ -441,6 +442,8 @@ def LerArgumentos() -> argparse.Namespace:
 def Principal() -> None:
     log     = ObterLogger(NOME_SCRIPT)
     args    = LerArgumentos()
+    rel     = RelatorioExecucao(NOME_SCRIPT)
+    erro    = None
     summary = ""
     success = True
 
@@ -451,11 +454,14 @@ def Principal() -> None:
 
     except Exception:
         success = False
-        summary = traceback.format_exc()
+        erro = traceback.format_exc()
+        rel.Erro("A rodada abortou — ver traceback.")
         log.exception("fia_planilha: erro inesperado")
 
     finally:
-        EnviarEmailConclusao(NOME_SCRIPT, success, summary, logger=log)
+        if summary:
+            rel.Secao("Resumo", ["saida"], [[l] for l in summary.splitlines() if l.strip()])
+        EnviarEmailConclusao(NOME_SCRIPT, success, rel, tracebackErro=erro, logger=log)
 
 
 if __name__ == "__main__":

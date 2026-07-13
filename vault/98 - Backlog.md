@@ -103,6 +103,8 @@ Fecha metade do item "Auditar falha silenciosa nos demais scrapers" abaixo.
 - **0 linha numa data específica → WARNING** + a lista do que a fonte realmente tem (é "não tem dado", não "quebrou").
 - Seletor Playwright: **nunca por classe CSS** em portais com CSS-modules (Anbima Data e o portal de CRI/CRA já têm classes com hash que mudam a cada build). Usar `data-testid`/`data-cy`.
 
+**Achado novo (13/07):** `calc_spread_over.py --date NAO-E-DATA` sai com **exit 0 e silêncio total** — nem erro, nem aviso, nem linha no log. Data inválida deveria abortar. Vale conferir o mesmo em `calc_spread_anbima` e `calc_taxa_negocios` (compartilham o `MontarIntervaloDatas`).
+
 **Candidatos a auditar:** `scrape_anbima_debentures` (baixa XLS por URL previsível — 404 fora da janela é legítimo, mas e se o layout mudar?), `scrape_fianalytics_planilha`, `scrape_b3_boletim` (já tem fallback em cascata; conferir se o fallback pode retornar CSV vazio "com sucesso"), `scrape_anbima_ntnb`, `scrape_b3_curva_di`.
 
 **Reforço barato já implementado:** os 3 notebooks (`setup_teste`, `setup_inicial`, `run_secundario`) conferem no `.db`, por fluxo, se o que era pra ser gravado foi gravado — foi exatamente isso que pegou este bug.

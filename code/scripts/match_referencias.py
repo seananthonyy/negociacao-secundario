@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from lib.db import ObterBanco
 from lib.logger import ObterLogger
 from lib.email_outlook import EnviarEmailConclusao
+from lib.relatorio_execucao import RelatorioExecucao
 
 NOME_SCRIPT = "match_referencias"
 
@@ -72,6 +73,8 @@ def MelhorMatch(durAtivo: float, candidatos: list) -> str | None:
 def Principal() -> None:
     log     = ObterLogger(NOME_SCRIPT)
     args    = LerArgumentos()
+    rel     = RelatorioExecucao(NOME_SCRIPT)
+    erro    = None
     summary = ""
     success = True
 
@@ -135,11 +138,14 @@ def Principal() -> None:
 
     except Exception:
         success = False
-        summary = traceback.format_exc()
+        erro = traceback.format_exc()
+        rel.Erro("A rodada abortou — ver traceback.")
         log.exception("match_ref: erro inesperado")
 
     finally:
-        EnviarEmailConclusao(NOME_SCRIPT, success, summary, logger=log)
+        if summary:
+            rel.Secao("Resumo", ["saida"], [[l] for l in summary.splitlines() if l.strip()])
+        EnviarEmailConclusao(NOME_SCRIPT, success, rel, tracebackErro=erro, logger=log)
 
 
 if __name__ == "__main__":

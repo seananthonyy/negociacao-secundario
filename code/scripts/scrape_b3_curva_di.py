@@ -42,6 +42,7 @@ from lib.calc import ObterBancoDi
 from lib.db import ObterBanco
 from lib.logger import ObterLogger
 from lib.email_outlook import EnviarEmailConclusao
+from lib.relatorio_execucao import RelatorioExecucao
 
 # ---------------------------------------------------------------------------
 # Constantes
@@ -243,6 +244,8 @@ def MontarResumo(dtStr: str, upserted: int, semMatch: list[str], taxas: dict[str
 def Principal() -> None:
     log     = ObterLogger(NOME_SCRIPT)
     args    = LerArgumentos()
+    rel     = RelatorioExecucao(NOME_SCRIPT, args=vars(args))
+    erro    = None
     summary = ""
     success = True
 
@@ -269,7 +272,8 @@ def Principal() -> None:
                 log.warning("curva_di: %s fora da janela da API B3 — nada gravado. Disponiveis: %s", dtStr, datas)
                 summary = (f"Data {dtStr} nao esta na janela publicada pela B3 (~20 pregoes) — nada gravado.\n\n"
                            f"Datas disponiveis: {datas}")
-                EnviarEmailConclusao(NOME_SCRIPT, True, summary, logger=log)
+                rel.Aviso(summary.splitlines()[0])
+                EnviarEmailConclusao(NOME_SCRIPT, True, rel, logger=log)
                 return
 
             vertices = CsvVertices(client, dtStr, log)
@@ -298,11 +302,14 @@ def Principal() -> None:
 
     except Exception:
         success = False
-        summary = traceback.format_exc()
+        erro = traceback.format_exc()
+        rel.Erro("A rodada abortou — ver traceback.")
         log.exception("curva_di: erro inesperado")
 
     finally:
-        EnviarEmailConclusao(NOME_SCRIPT, success, summary, logger=log)
+        if summary:
+            rel.Secao("Resumo", ["saida"], [[l] for l in summary.splitlines() if l.strip()])
+        EnviarEmailConclusao(NOME_SCRIPT, success, rel, tracebackErro=erro, logger=log)
 
     if not success:
         sys.exit(1)

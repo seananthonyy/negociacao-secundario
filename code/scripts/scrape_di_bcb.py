@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from lib.calc import ObterBancoDi
 from lib.email_outlook import EnviarEmailConclusao
+from lib.relatorio_execucao import RelatorioExecucao
 from lib.logger import ObterLogger
 
 # ---------------------------------------------------------------------------
@@ -151,6 +152,8 @@ def MontarResumo(registros: list[tuple], inicio: date, fim: date, novos: int) ->
 def Principal() -> None:
     log = ObterLogger(NOME_SCRIPT)
     args = LerArgumentos()
+    rel     = RelatorioExecucao(NOME_SCRIPT, args=vars(args))
+    erro    = None
     summary = ""
     success = True
 
@@ -182,11 +185,14 @@ def Principal() -> None:
 
     except Exception:
         success = False
-        summary = traceback.format_exc()
+        erro = traceback.format_exc()
+        rel.Erro("A rodada abortou — ver traceback.")
         log.exception("di_bcb: erro inesperado")
 
     finally:
-        EnviarEmailConclusao(NOME_SCRIPT, success, summary, logger=log)
+        if summary:
+            rel.Secao("Resumo", ["saida"], [[l] for l in summary.splitlines() if l.strip()])
+        EnviarEmailConclusao(NOME_SCRIPT, success, rel, tracebackErro=erro, logger=log)
 
     if not success:
         sys.exit(1)

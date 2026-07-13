@@ -12,6 +12,7 @@ from playwright.async_api import async_playwright
 from lib.config import cfg, ObterProxyPlaywright
 from lib.db import ObterBanco, SincronizarFluxoAtivos
 from lib.email_outlook import EnviarEmailConclusao
+from lib.relatorio_execucao import RelatorioExecucao
 from lib.logger import ObterLogger
 
 # ── constantes ────────────────────────────────────────────────────────────────

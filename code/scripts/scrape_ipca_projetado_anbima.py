@@ -46,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from lib.calc import CaminhoBancoIpca, ImportarCalc, ObterBancoIpca
 from lib.config import ObterProxyPlaywright
 from lib.email_outlook import EnviarEmailConclusao
+from lib.relatorio_execucao import RelatorioExecucao
 from lib.logger import ObterLogger
 
 # ---------------------------------------------------------------------------
@@ -223,6 +224,8 @@ def MontarResumo(projecoes: dict[date, float], registros: list[tuple[str, float]
 
 def Principal() -> None:
     log = ObterLogger(NOME_SCRIPT)
+    rel     = RelatorioExecucao(NOME_SCRIPT)
+    erro    = None
     summary = ""
     success = True
 
@@ -256,11 +259,14 @@ def Principal() -> None:
 
     except Exception:
         success = False
-        summary = traceback.format_exc()
+        erro = traceback.format_exc()
+        rel.Erro("A rodada abortou — ver traceback.")
         log.exception("projecao: erro inesperado")
 
     finally:
-        EnviarEmailConclusao(NOME_SCRIPT, success, summary, logger=log)
+        if summary:
+            rel.Secao("Resumo", ["saida"], [[l] for l in summary.splitlines() if l.strip()])
+        EnviarEmailConclusao(NOME_SCRIPT, success, rel, tracebackErro=erro, logger=log)
 
     if not success:
         sys.exit(1)

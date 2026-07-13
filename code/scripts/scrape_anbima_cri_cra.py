@@ -38,6 +38,7 @@ from lib.config import cfg, ObterProxyPlaywright
 from lib.db import ObterBanco
 from lib.logger import ObterLogger
 from lib.email_outlook import EnviarEmailConclusao
+from lib.relatorio_execucao import RelatorioExecucao
 
 # ---------------------------------------------------------------------------
 # Constantes
@@ -386,6 +387,8 @@ def MontarResumo(results: list[tuple[str, int, int]], disponiveis: list[str]) ->
 def Principal() -> None:
     log     = ObterLogger("scrape_anbima_cri_cra")
     args    = LerArgumentos()
+    rel     = RelatorioExecucao("scrape_anbima_cri_cra")
+    erro    = None
     summary = ""
     success = True
 
@@ -404,11 +407,14 @@ def Principal() -> None:
 
     except Exception:
         success = False
-        summary = traceback.format_exc()
+        erro = traceback.format_exc()
+        rel.Erro("A rodada abortou — ver traceback.")
         log.exception("anbima_cricra: erro inesperado")
 
     finally:
-        EnviarEmailConclusao("scrape_anbima_cri_cra", success, summary, logger=log)
+        if summary:
+            rel.Secao("Resumo", ["saida"], [[l] for l in summary.splitlines() if l.strip()])
+        EnviarEmailConclusao("scrape_anbima_cri_cra", success, rel, tracebackErro=erro, logger=log)
 
     if not success:
         sys.exit(1)

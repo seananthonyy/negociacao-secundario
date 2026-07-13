@@ -31,6 +31,7 @@ from jinja2 import Environment, FileSystemLoader
 from lib.config import cfg, ObterListaEmails
 from lib.db import ObterBanco
 from lib.email_outlook import EnviarEmailConclusao, EnviarEmailHtml
+from lib.relatorio_execucao import RelatorioExecucao
 from lib.logger import ObterLogger
 
 NOME_SCRIPT = "gerar_relatorio_credito"
@@ -925,6 +926,8 @@ def LerArgumentos() -> argparse.Namespace:
 def Principal() -> None:
     log     = ObterLogger(NOME_SCRIPT)
     args    = LerArgumentos()
+    rel     = RelatorioExecucao(NOME_SCRIPT)
+    erro    = None
     summary = ""
     success = True
 
@@ -970,11 +973,14 @@ def Principal() -> None:
 
     except Exception:
         success = False
-        summary = traceback.format_exc()
+        erro = traceback.format_exc()
+        rel.Erro("A rodada abortou — ver traceback.")
         log.exception("%s: erro inesperado", NOME_SCRIPT)
 
     finally:
-        EnviarEmailConclusao(NOME_SCRIPT, success, summary, logger=log)
+        if summary:
+            rel.Secao("Resumo", ["saida"], [[l] for l in summary.splitlines() if l.strip()])
+        EnviarEmailConclusao(NOME_SCRIPT, success, rel, tracebackErro=erro, logger=log)
 
 
 if __name__ == "__main__":
