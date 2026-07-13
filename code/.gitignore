@@ -30,3 +30,4 @@ venv/
 data/*.bak-*
 data/*.csv.bak
 data/cobertura_fontes.csv
+data/emails/
