@@ -37,6 +37,7 @@ from lib.config import cfg, ObterSegredo
 from lib.db import ObterBanco
 from lib.logger import ObterLogger
 from lib.email_outlook import EnviarEmailConclusao
+from lib.relatorio_execucao import RelatorioExecucao
 from lib.b3_calc_api import CalcularPuGov
 
 # ---------------------------------------------------------------------------
@@ -396,20 +397,6 @@ def MontarIntervaloDatas(args: argparse.Namespace) -> list[date]:
     return datas
 
 
-def MontarResumo(results: list[tuple[str, int, int]]) -> str:
-    lines = ["Resultado por data:", ""]
-    lines.append(f"{'Data':<12}  {'Upserts':>8}  {'Sem duration':>13}")
-    lines.append("-" * 38)
-    totalUpserts = totalSemDur = 0
-    for dtStr, nUp, nSem in results:
-        lines.append(f"{dtStr:<12}  {nUp:>8}  {nSem:>13}")
-        totalUpserts += nUp
-        totalSemDur  += nSem
-    lines.append("-" * 38)
-    lines.append(f"{'TOTAL':<12}  {totalUpserts:>8}  {totalSemDur:>13}")
-    return "\n".join(lines)
-
-
 # ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
@@ -418,7 +405,8 @@ def Principal() -> None:
     log     = ObterLogger(NOME_SCRIPT)
     args    = LerArgumentos()
     conn    = ObterBanco()
-    summary = ""
+    rel     = RelatorioExecucao("scrape_anbima_ntnb", args=vars(args))
+    erro    = None
     success = True
 
     try:
@@ -431,17 +419,18 @@ def Principal() -> None:
             nUp, nSem = ProcessarData(conn, d, log, args.workers, args.force)
             results.append((d.isoformat(), nUp, nSem))
 
-        summary = MontarResumo(results)
-        log.info("ntnb: concluido.\n%s", summary)
+        rel.PorData("Resultado por data", ['data', 'MtmAnbima', 'duration'], results)
+        log.info("ntnb: concluido.\n%s", rel.Texto())
 
     except Exception:
         success = False
-        summary = traceback.format_exc()
+        erro = traceback.format_exc()
+        rel.Erro("A rodada abortou — ver traceback.")
         log.exception("ntnb: erro inesperado")
 
     finally:
         conn.close()
-        EnviarEmailConclusao(NOME_SCRIPT, success, summary, logger=log)
+        EnviarEmailConclusao(NOME_SCRIPT, success, rel, tracebackErro=erro, logger=log)
 
 
 if __name__ == "__main__":

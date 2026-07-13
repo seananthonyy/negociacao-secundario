@@ -30,6 +30,7 @@ from lib.config import cfg
 from lib.db import ObterBanco
 from lib.logger import ObterLogger
 from lib.email_outlook import EnviarEmailConclusao
+from lib.relatorio_execucao import RelatorioExecucao
 
 # ---------------------------------------------------------------------------
 # Constantes
@@ -271,20 +272,6 @@ def MontarIntervaloDatas(args: argparse.Namespace) -> list[date]:
     return datas
 
 
-def MontarResumo(results: list[tuple[str, int, int]]) -> str:
-    lines = ["Resultado por data:", ""]
-    lines.append(f"{'Data':<12}  {'Anbima':>7}  {'InfoAtivos':>10}")
-    lines.append("-" * 34)
-    totalAnbima = totalInfo = 0
-    for dtStr, nAnbima, nInfo in results:
-        lines.append(f"{dtStr:<12}  {nAnbima:>7}  {nInfo:>10}")
-        totalAnbima += nAnbima
-        totalInfo   += nInfo
-    lines.append("-" * 34)
-    lines.append(f"{'TOTAL':<12}  {totalAnbima:>7}  {totalInfo:>10}")
-    return "\n".join(lines)
-
-
 # ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
@@ -293,7 +280,8 @@ def Principal() -> None:
     log     = ObterLogger("scrape_anbima_debentures")
     args    = LerArgumentos()
     conn    = ObterBanco()
-    summary = ""
+    rel     = RelatorioExecucao("scrape_anbima_debentures", args=vars(args))
+    erro    = None
     success = True
 
     try:
@@ -307,17 +295,18 @@ def Principal() -> None:
             nAnbima, nInfo = ProcessarData(conn, d, log)
             results.append((d.isoformat(), nAnbima, nInfo))
 
-        summary = MontarResumo(results)
-        log.info("anbima_deb: concluído.\n%s", summary)
+        rel.PorData("Resultado por data", ['data', 'Anbima', 'InfoAtivos'], results)
+        log.info("anbima_deb: concluído.\n%s", rel.Texto())
 
     except Exception:
         success = False
-        summary = traceback.format_exc()
+        erro = traceback.format_exc()
+        rel.Erro("A rodada abortou — ver traceback.")
         log.exception("anbima_deb: erro inesperado")
 
     finally:
         conn.close()
-        EnviarEmailConclusao("scrape_anbima_debentures", success, summary, logger=log)
+        EnviarEmailConclusao("scrape_anbima_debentures", success, rel, tracebackErro=erro, logger=log)
 
 
 if __name__ == "__main__":

@@ -101,6 +101,28 @@ class RelatorioExecucao:
     def Erro(self, texto: str) -> None:
         self.erros.append(texto)
 
+    def PorData(self, titulo: str, colunas: list[str], linhas: list[tuple]) -> None:
+        """Atalho para o formato que quase todo scraper produz: uma linha por data, com
+        um ou mais contadores. Soma o TOTAL, marca as datas processadas e avisa sobre
+        data que não trouxe nada — que em dia útil quase sempre é falha silenciosa, não
+        ausência de dado na fonte (foi assim que o bug do proxy no Playwright, em 03/07,
+        passou dias despercebido)."""
+        if not linhas:
+            self.Aviso("Nenhuma data processada.")
+            return
+
+        self.Datas([l[0] for l in linhas])
+        totais = [sum(l[i] or 0 for l in linhas) for i in range(1, len(colunas))]
+        corpo = [list(l) for l in linhas] + [["TOTAL", *totais]]
+        self.Secao(titulo, colunas, corpo)
+        for nome, total in zip(colunas[1:], totais):
+            self.Contar(nome, total)
+
+        vazias = [l[0] for l in linhas if not any(l[1:])]
+        if vazias:
+            self.Aviso(f"{len(vazias)} data(s) sem nenhum registro: {', '.join(map(str, vazias[:6]))}. "
+                       f"Em dia útil isso quase sempre é falha de coleta, não ausência de dado.")
+
     # -- render ---------------------------------------------------------------
 
     def Duracao(self) -> str:
