@@ -261,7 +261,9 @@ A calculadora de renda fixa (`D:\ItauBBA\calculadora-renda-fixa`) vai passar a *
 
 **O que NÃO fechou — e é o item quente do backlog.** A calc reproduz o **PU par** (86,4% dos 2.861 ativos a 1e-6) mas **não a taxa fora do par**: triangulando, FI e B3 concordam entre si (0–1,7 bps) e a calc discorda das duas (**+2,2 a +13,7 bps**). Duas fontes independentes batendo e a nossa divergindo significa que **o erro é nosso**. Por isso o `calc_taxa_negocios` tem a calc como 1º degrau da cascata mas **desligada** (`[calc].usarCalcTaxa = false`). A lição de método: **o gate de PU par não basta — ele valida o fluxo, não o desconto.**
 
-**Também:** emails reescritos (`lib/relatorio_execucao.py`, paleta Itaú, com contadores/exemplos/datas/traceback); `NEGSEC_SEM_EMAIL` grava o corpo em disco em vez de tocar no Outlook; `conferir_pu` (novo) é o portão de aceitação da precificação local; bug do `CalcularPuGov` (lia `data["pu"]`, a B3 devolve `"PU"` — nunca retornou PU, nem para NTN-B).
+**Também:** **os 24 scripts** passaram a mandar email HTML (`lib/relatorio_execucao.py`, paleta Itaú) com datas processadas, contadores, exemplos, avisos e o traceback em campo próprio. `NEGSEC_SEM_EMAIL=1` grava o corpo em `data/emails/*.html` em vez de tocar no Outlook (o COM trava nesta máquina). `conferir_pu` (novo) é o portão de aceitação da precificação local. Bug do `CalcularPuGov`: lia `data["pu"]`, a B3 devolve `"PU"` — **nunca** retornou PU, nem para NTN-B; passou despercebido porque o único chamador só usa a `duration`.
+
+**Validação:** `run_diario --last 1` rodou ponta a ponta com o passo novo (21/22 OK; a única falha foi transitória da Anbima — 3 re-execuções deram exit 0). Bundle regerado e validado extraindo em pasta limpa (92 arquivos, nenhum `.db`/`.env`/`destinatarios.py`).
 
 
 
