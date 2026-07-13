@@ -27,7 +27,24 @@ Triangulando 4 negócios de 16/06/2026:
 
 **Estado:** a calc está implementada como 1º degrau da cascata do `calc_taxa_negocios`, porém **desligada** (`config.toml [calc] usarCalcTaxa = false`). Ligar é uma linha.
 
-**Como fechar:** falta o **round-trip da taxa** — dado o PU que a fonte devolve para uma taxa **fora do par**, a calc tem que reproduzir aquela taxa. O `conferir_pu` hoje só testa no par; estendê-lo é o próximo passo.
+**O gate foi consertado (13/07) e a medição mudou tudo.** O `conferir_pu` agora testa em **duas** taxas: no par (valida o fluxo e o VNA) e a **100 bps do par** (valida o desconto). Rodando nos 3.023 validados:
+
+| | ativos |
+|---|---|
+| batem **no par E fora dele** (≤1e-6) | **1.919 — 63,5%** |
+| batem **só no par** (fluxo ok, desconto errado) | **628** |
+| investigar (> 1e-3) | 135 |
+
+**O gate antigo aprovava 86,4%. O certo aprova 63,5%** — os 628 teriam entrado com o desconto errado, e é o desconto que produz a **taxa** que vai para o relatório.
+
+**E os 628 se separam limpo em dois fenômenos diferentes:**
+
+- **596 erram por um fio** (1e-6 a 1e-5): **579 CDI+, 16 %CDI, 1 PREFIXADO — zero IPCA.** Em taxa dá ~0,02 bps. É ruído numérico da projeção DI, não bug. Tolerável.
+- **30 erram de forma material** (> 1e-4): **28 IPCA**, 2 CDI+.
+
+**Ou seja: o bug de desconto é do IPCA, e é uma lista de 28 papéis** (TRGP13, SABP13, PLAC23, RALM11, BARU11, MNAU18...). Todos batem o PU par com precisão absurda (5e-09 no TRGP13!) e erram ~1,3% a 100 bps do par. Fluxo e VNA perfeitos, desconto quebrado.
+
+**Próximo passo:** pegar um desses 28 e comparar o desconto termo a termo com o `/calcPU` da B3 (que devolve o `cashFlowList` com `presentValue` de cada evento). A diferença tem que aparecer num termo específico.
 
 **Prêmio se fechar:** medido no pregão mais cheio (16/06, 8.065 negócios validados), só há **598 pares (ticker, PU) distintos** — o cache corta 93% do trabalho, e a ~0,7s por par dá **~7 min/dia num core**, contra os ~25 min/dia da cascata de API no banco. A calc é mais rápida **e** offline.
 

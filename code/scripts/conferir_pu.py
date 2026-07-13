@@ -5,10 +5,19 @@ E o PORTAO DE ACEITACAO da precificacao local: enquanto os PUs nao baterem, nao 
 troca a fonte de taxa do calc_taxa. Margem de erro aqui e baixa por construcao.
 
 Metodo: para cada ativo com fluxo validado, calcula o PU de operacao na data de
-referencia usando a TAXA DE EMISSAO como taxa de desconto (PU par, essencialmente) e
-compara com o PU que a fonte devolve para a mesma taxa e a mesma data:
+referencia e compara com o PU que a fonte devolve para a mesma taxa e a mesma data:
   - B3 : GET /calcPU/{ticker}/{data}/{taxa}  -> campo "PU"
   - FI : m2m da resposta completa
+
+DUAS TAXAS, e a segunda e a que importa:
+
+  1. NO PAR (taxa de negociacao = taxa de emissao). Valida o FLUXO e o VNA.
+  2. FORA DO PAR (taxa de emissao +/- DELTA_FORA_PAR). Valida o DESCONTO.
+
+Testar so no par nao basta, e isso custou caro: o TRGP13 bate no par a 5,7e-09 e erra
+4e-03 a 100 bps do par. Um ativo pode ter fluxo perfeito e desconto errado — e e a
+taxa (que sai do desconto) que vai para o relatorio, nao o PU par. So o ativo que passa
+NAS DUAS pode ser precificado pela calc.
 
 CRITERIO — relativo, nao absoluto. Um erro de 1e-3 num PU de 1.000 e um erro relativo
 de 1e-6; o mesmo 1e-3 num PU de 10.000 seria um sarrafo 10x mais apertado, e num PU de
@@ -42,6 +51,7 @@ from lib.relatorio_execucao import RelatorioExecucao
 NOME_SCRIPT = "conferir_pu"
 
 TOL_EXATO = 1e-6      # relativo — "bate exato"
+DELTA_FORA_PAR = 1.0  # pontos percentuais fora do par, para testar o DESCONTO
 TOL_TRIAGEM = 1e-3    # relativo — acima disso, investigar
 WORKERS = 8
 
@@ -120,47 +130,66 @@ def Principal() -> None:
             log.info("%s: %d ativo(s) em %s", NOME_SCRIPT, len(fila), dtIso)
 
             def BuscarPu(par):
+                """(PU no par, PU fora do par) — a 2a e a que valida o DESCONTO."""
                 cdTicker, fonte = par
-                return cdTicker, PuDaFonte(cdTicker, fonte, dtIso, ativos[cdTicker]["vrTaxaEmissao"])
+                taxa = ativos[cdTicker]["vrTaxaEmissao"]
+                return cdTicker, (PuDaFonte(cdTicker, fonte, dtIso, taxa),
+                                  PuDaFonte(cdTicker, fonte, dtIso, taxa + DELTA_FORA_PAR))
 
             with ThreadPoolExecutor(max_workers=WORKERS) as pool:
                 pus = dict(pool.map(BuscarPu, fila))
 
             linhas: list[list] = []
-            exato = semFonte = 0
+            exato = semFonte = soNoPar = 0
             for cdTicker, fonte in fila:
                 ativo = ativos[cdTicker]
-                puApi = pus.get(cdTicker)
-                if not puApi:
+                puPar, puFora = pus.get(cdTicker, (None, None))
+                if not puPar:
                     semFonte += 1
                     continue
+                taxa = ativo["vrTaxaEmissao"]
                 try:
-                    puCalc = CalcularPu(ativo, dtRef, ativo["vrTaxaEmissao"])
+                    calcPar = CalcularPu(ativo, dtRef, taxa)
+                    calcFora = CalcularPu(ativo, dtRef, taxa + DELTA_FORA_PAR) if puFora else None
                 except Exception as exc:
                     rel.Contar("falhas")
                     rel.Exemplo("falhas", {"cdTicker": cdTicker, "erro": str(exc)[:100]})
                     continue
 
-                relativo = abs(puCalc / puApi - 1)
-                if relativo <= TOL_EXATO:
+                relPar = abs(calcPar / puPar - 1)
+                relFora = abs(calcFora / puFora - 1) if (calcFora and puFora) else None
+
+                okPar = relPar <= TOL_EXATO
+                okFora = relFora is not None and relFora <= TOL_EXATO
+                if okPar and okFora:
                     exato += 1
                     continue
-                linhas.append([cdTicker, ativo["cdIndexador"], fonte, ativo["vrAniversario"],
-                               round(puCalc, 6), round(puApi, 6),
-                               round(puCalc - puApi, 6), f"{relativo:.3e}"])
+                if okPar and relFora is not None and not okFora:
+                    # Fluxo e VNA certos, DESCONTO errado. E o caso perigoso: passa num
+                    # gate que so olha o par — e e o desconto que produz a TAXA.
+                    soNoPar += 1
 
-            linhas.sort(key=lambda l: -float(l[7]))
+                pior = max(relPar, relFora or 0.0)
+                linhas.append([cdTicker, ativo["cdIndexador"], fonte, ativo["vrAniversario"],
+                               round(calcPar, 6), round(puPar, 6), f"{relPar:.3e}",
+                               (round(calcFora, 6) if calcFora else ""),
+                               (round(puFora, 6) if puFora else ""),
+                               (f"{relFora:.3e}" if relFora is not None else "sem PU"),
+                               f"{pior:.3e}"])
+
+            linhas.sort(key=lambda l: -float(l[10]))
             CSV_SAIDA.parent.mkdir(parents=True, exist_ok=True)
             with open(CSV_SAIDA, "w", newline="", encoding="utf-8") as fh:
                 w = csv.writer(fh)
                 w.writerow(["cdTicker", "cdIndexador", "fonte", "vrAniversario",
-                            "puCalc", "puApi", "dif", "difRelativa"])
+                            "puCalcPar", "puApiPar", "relPar",
+                            "puCalcForaPar", "puApiForaPar", "relForaPar", "pior"])
                 w.writerows(linhas)
 
-            graves = [l for l in linhas if float(l[7]) > TOL_TRIAGEM]
+            graves = [l for l in linhas if float(l[10]) > TOL_TRIAGEM]
 
             if args.desvalidar:
-                reprovados = [l[0] for l in linhas if float(l[7]) > args.tolDesvalida]
+                reprovados = [l[0] for l in linhas if float(l[10]) > args.tolDesvalida]
                 conn.executemany(
                     "UPDATE InfoAtivos SET stFluxoValidado = 0, dtValidacaoFluxo = NULL, "
                     "cdFonteValidacaoFluxo = NULL WHERE cdTicker = ?",
@@ -170,8 +199,8 @@ def Principal() -> None:
                 for t in reprovados[:10]:
                     linha = next(l for l in linhas if l[0] == t)
                     rel.Exemplo("desvalidados", {"cdTicker": t, "indexador": linha[1],
-                                                 "puCalc": linha[4], "puApi": linha[5],
-                                                 "erro": linha[7]})
+                                                 "erro no par": linha[6],
+                                                 "erro fora do par": linha[9]})
                 rel.Aviso(f"{len(reprovados)} ativo(s) perderam a validacao: o PU da calc nao "
                           f"reproduz o da fonte (erro > {args.tolDesvalida:.0e}). Eles voltam "
                           f"para a cascata de API no calc_taxa.")
@@ -179,16 +208,24 @@ def Principal() -> None:
 
             rel.Contar("batem", exato)
             rel.Contar("divergem", len(linhas))
-            rel.Metrica("Bate exato (<= 1e-6)", f"{exato} ({100*exato/max(1,len(fila)):.1f}%)")
+            rel.Metrica("Bate NO PAR e FORA DO PAR (<= 1e-6)",
+                        f"{exato} ({100*exato/max(1,len(fila)):.1f}%)")
+            rel.Metrica("So bate NO PAR (fluxo ok, DESCONTO errado)", soNoPar)
             rel.Metrica("Investigar (> 1e-3)", len(graves))
             rel.Metrica("Sem PU na fonte", semFonte)
             rel.Secao("Divergencias a investigar (> 0,1%)",
-                      ["ticker", "indexador", "fonte", "aniv", "PU calc", "PU API", "dif", "rel"],
+                      ["ticker", "indexador", "fonte", "aniv", "PU calc par", "PU API par",
+                       "rel par", "PU calc fora", "PU API fora", "rel fora", "pior"],
                       graves)
+            if soNoPar:
+                rel.Aviso(f"{soNoPar} ativo(s) batem o PU no par mas erram FORA dele: fluxo e VNA "
+                          f"certos, DESCONTO errado. Um gate que so olhasse o par os aprovaria — e "
+                          f"e o desconto que produz a TAXA que vai para o relatorio.")
             if graves:
                 rel.Aviso(f"{len(graves)} ativo(s) acima de 0,1% de erro — ver {CSV_SAIDA}.")
 
-            log.info("%s: %d batem, %d divergem, %d graves", NOME_SCRIPT, exato, len(linhas), len(graves))
+            log.info("%s: %d batem (par+fora), %d so no par, %d divergem, %d graves",
+                     NOME_SCRIPT, exato, soNoPar, len(linhas), len(graves))
         finally:
             conn.close()
 
