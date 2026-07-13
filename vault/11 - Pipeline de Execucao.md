@@ -12,31 +12,34 @@ O relatório **agrupa por `dtLiquidacao`** (não `dtNegocio`). Para uma data de 
   - **`X`** → liquidam em X por **D+0** (mesmo dia);
   - ocasionalmente datas anteriores (trades *forward*), cujo MtM já costuma estar na base.
 
-## Os 17 passos
+## Os 18 passos
 
 | # | Script | Parâmetro | Data(s) | Rede? | Por quê |
 |---|---|---|---|---|---|
 | 1 | `scrape_b3_boletim` | `--start X-1u --end X` | X-1u, X | ✅ Playwright | negócios das 2 pontas que liquidam em X |
-| 2 | `scrape_anbima_debentures` | `--date X-1u` | X-1u | ✅ httpx | taxa indicativa deb — o relatório usa a Anbima de **D-1** (ver §"Por que D-1") |
-| 3 | `scrape_anbima_cri_cra` | `--date X-1u` | X-1u | ✅ Playwright | idem CRI/CRA (UI instável — ver nota) |
-| 4 | `scrape_fianalytics_planilha` | *(sem data)* | snapshot | ✅ Playwright | características (indexador, duration, venc.) de tickers novos |
-| 5 | `scrape_anbima_data_ativos` | `--start X-1u --end X` | X-1u, X | ✅ Playwright | características + **fluxo de caixa** dos tickers negociados/divulgados que tenham info faltante na base (modo incremental) |
-| 6 | `scrape_anbima_ntnb` | `--start X-1u --end X` | X-1u **e** X | ✅ httpx | MtM NTN-B nas 2 datas de **negócio** (não é D-1!) |
-| 7 | `scrape_b3_curva_di` | `--date` (rodar **2×**) | X-1u **e** X | ✅ httpx | MtM curva DI (contratos DI1 → `MtmAnbima`) **e** curva inteira → `di.db/CurvaDi` |
-| 8 | `scrape_ipca_ibge` | *(sem data)* | série toda | ✅ httpx | IPCA realizado (IBGE) → `ipca.db/IPCA` — insumo da calculadora |
-| 9 | `scrape_ipca_projetado_anbima` | *(sem data)* | janela da fonte | ✅ Playwright | projeção de IPCA (Anbima) → `ipca.db/IPCAProjetado` — **rodar antes das 17h30** |
-| 10 | `scrape_di_bcb` | *(sem data)* | incremental | ✅ httpx | DI realizado (BCB) → `di.db/DiHistorico` — insumo da calculadora |
-| 11 | `validar_fluxos` | *(sem args)* | fila c/ throttle | ✅ APIs B3/FI | confere o fluxo dos ativos → `InfoAtivos.stFluxoValidado` |
-| 12 | `calc_taxa_negocios` | `--date X` | X | ✅ APIs FI/B3 | taxa por trade (cascata FI Analytics → B3) |
-| 13 | `filtrar_trades` | `--date X` | X | ❌ local | classifica VALIDO / FUNDO / BROKER / PF |
-| 14 | `calc_spread_anbima` | `--date X-1u` | X-1u | ❌ local | spread Anbima das indicativas (mesma data que o relatório exibe) |
-| 15 | `match_referencias` | *(sem data)* | — | ❌ local | preenche `cdReferencia` faltante via duration vs MtmAnbima |
-| 16 | `calc_spread_over` | `--date X` | X | ❌ local | spread dos trades — **casa MtM por `dtNegocio`** |
-| 17 | `gerar_relatorio_credito` | *(sem args)* | — | ❌ local | regenera `data/relatorios/relatorio_secundario.html` (toda a base) |
+| 2 | `scrape_b3_bond_details` | `--start X-1u --end X` | X-1u, X | ✅ httpx | **FONTE PRIMÁRIA do cadastro.** Cadastro + fluxo dos tickers que negociaram e têm campo faltante. Grava o pacote da B3 e marca `stFluxoValidado = 1` |
+| 3 | `scrape_anbima_debentures` | `--date X-1u` | X-1u | ✅ httpx | taxa indicativa deb — o relatório usa a Anbima de **D-1** (ver §"Por que D-1") |
+| 4 | `scrape_anbima_cri_cra` | `--date X-1u` | X-1u | ✅ Playwright | idem CRI/CRA (UI instável — ver nota) |
+| 5 | `scrape_fianalytics_planilha` | *(sem data)* | snapshot | ✅ Playwright | características (indexador, duration, venc.) de tickers novos |
+| 6 | `scrape_anbima_data_ativos` | `--start X-1u --end X` | X-1u, X | ✅ Playwright | **FALLBACK.** Só o que a B3 (2) não cobriu. Não sobrescreve cadastro de fonte B3 |
+| 7 | `scrape_anbima_ntnb` | `--start X-1u --end X` | X-1u **e** X | ✅ httpx | MtM NTN-B nas 2 datas de **negócio** (não é D-1!) |
+| 8 | `scrape_b3_curva_di` | `--date` (rodar **2×**) | X-1u **e** X | ✅ httpx | MtM curva DI (contratos DI1 → `MtmAnbima`) **e** curva inteira → `di.db/CurvaDi` |
+| 9 | `scrape_ipca_ibge` | *(sem data)* | série toda | ✅ httpx | IPCA realizado (IBGE) → `ipca.db/IPCA` — insumo da calculadora |
+| 10 | `scrape_ipca_projetado_anbima` | *(sem data)* | janela da fonte | ✅ Playwright | projeção de IPCA (Anbima) → `ipca.db/IPCAProjetado` — **rodar antes das 17h30** |
+| 11 | `scrape_di_bcb` | *(sem data)* | incremental | ✅ httpx | DI realizado (BCB) → `di.db/DiHistorico` — insumo da calculadora |
+| 12 | `validar_fluxos` | *(sem args)* | fila c/ throttle | ✅ API FI | valida o fluxo da **Anbima** pela FI + **tripwire de saldo** em tudo que está validado |
+| 13 | `calc_taxa_negocios` | `--date X` | X | ✅ APIs FI/B3 | taxa por trade (cascata FI → B3; a **calc local** é o 1º degrau mas está **desligada** — ver [[98 - Backlog]]) |
+| 14 | `filtrar_trades` | `--date X` | X | ❌ local | classifica VALIDO / FUNDO / BROKER / PF |
+| 15 | `calc_spread_anbima` | `--date X-1u` | X-1u | ❌ local | spread Anbima das indicativas (mesma data que o relatório exibe) |
+| 16 | `match_referencias` | *(sem data)* | — | ❌ local | preenche `cdReferencia` faltante via duration vs MtmAnbima |
+| 17 | `calc_spread_over` | `--date X` | X | ❌ local | spread dos trades — **casa MtM por `dtNegocio`** |
+| 18 | `gerar_relatorio_credito` | *(sem args)* | — | ❌ local | regenera `data/relatorios/relatorio_secundario.html` (toda a base) |
 
 > **Ordem do passo 5:** `scrape_anbima_data_ativos` roda **depois** de boletim (1) e Anbima deb/cri (2-3) — porque monta a fila de tickers a partir da união `NegociosBrutos.dtNegocio` + `AnbimaIndicativos.dtReferencia` — e **antes** de `match_referencias` (15), que usa `InfoAtivos.vrDuration` que este passo pode preencher. Rodar o FI Analytics (4) antes reduz o trabalho dele (menos tickers "incompletos").
 
-> **Passos 8–11 (insumos da calculadora, adotados em 12/07/2026):** não dependem da liquidação X — rodam **uma vez por ciclo**, no bloco global do `pipeline_core`. Os passos 8–10 alimentam os bancos que a **calculadora de renda fixa** lê (`data/ipca.db` e `data/di.db`, ver [[14 - Rotinas da Calculadora]]); o passo 11 marca quais ativos ela pode precificar. O `validar_fluxos` roda **depois do `scrape_anbima_data_ativos` (5)**: é ele que atualiza `FluxoAtivos`/`InfoAtivos` e, quando o fluxo muda de verdade, **zera a validação** — o ativo volta pro topo da fila. Rodar antes validaria um fluxo prestes a mudar.
+> **Passo 2 (cadastro pela B3, adotado em 13/07/2026):** roda logo depois do boletim e **antes** do `scrape_anbima_data_ativos` — a B3 é a fonte **primária** do cadastro e do fluxo; a Anbima só preenche o que ela não cobriu. O fluxo da B3 **nasce validado**. Tem gate próprio (só chama a API para ticker com campo faltante): sem ele seriam ~2.900 chamadas por rodada. Ver [[15 - Cadastro dos Ativos]].
+
+> **Passos 9–12 (insumos da calculadora, adotados em 12/07/2026):** não dependem da liquidação X — rodam **uma vez por ciclo**, no bloco global do `pipeline_core`. Os passos 9–11 alimentam os bancos que a **calculadora de renda fixa** lê (`data/ipca.db` e `data/di.db`, ver [[14 - Rotinas da Calculadora]]); o passo 12 marca quais ativos ela pode precificar. O `validar_fluxos` roda **depois do `scrape_anbima_data_ativos` (6)**: é ele que atualiza `FluxoAtivos`/`InfoAtivos` e, quando o fluxo muda de verdade, **zera a validação** — o ativo volta pro topo da fila. Rodar antes validaria um fluxo prestes a mudar.
 
 ## Por que D-1?
 

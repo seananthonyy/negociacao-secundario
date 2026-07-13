@@ -40,9 +40,9 @@ Use `/agents` no Claude Code pra ver/invocar.
 ## Convenções fechadas (não revisitar sem motivo forte)
 
 - **Python 3.11+**, sem venv, sem tests automatizados
-- **SQLite único** em `code/data/trades.db`
+- **SQLite** em `code/data/trades.db` — mais `ipca.db` e `di.db` (insumos da calculadora; schema é **contrato**, não segue o prefixo `vr/cd/dt`)
 - **Paths relativos ao cwd** (projeto vai ser migrado entre PC pessoal e PC trabalho)
-- **Tabelas SQLite**: PascalCase (`TradesRaw`, `InfoAtivos`, etc)
+- **Tabelas SQLite**: PascalCase e **em português** (`NegociosBrutos`, `NegociosProcessados`, `InfoAtivos`, `FluxoAtivos`)
 - **Colunas SQLite**: camelCase com prefixos `vr` (valor), `cd` (código/categoria), `dt` (data/hora), `id` (identificador)
 - **Nomes de arquivo de script**: snake_case, sem prefixo numérico (`scrape_b3_boletim.py`, não `01_scrape_...`). Nome de arquivo é a **única** coisa em snake_case.
 - **Python funções e classes**: PascalCase, **em português** (`LerArgumentos`, `ProcessarData`, `MontarUrl`, `AnalisarCsv`, `Principal`)
@@ -55,7 +55,8 @@ Use `/agents` no Claude Code pra ver/invocar.
 - **Cada script é independente**, idempotente, com CLI próprio (`--date` ou `--start --end`)
 - **Email no fim de cada script** via Outlook (`pywin32`), sucesso ou erro
 - **Filtro de duplicados**: union-find, status só `PRIMARY` ou `DUPLICATE`
-- **Cascata calculadoras**: FI Analytics → B3 → NULL (só Deb/CRI/CRA)
+- **Cascata de taxa**: FI Analytics → B3 → NULL (só Deb/CRI/CRA). A **calculadora local** está implementada como 1º degrau (`[calc].usarCalcTaxa`) mas vem **desligada** — ela reproduz o PU par das fontes, não a taxa fora do par. Ver [[14 - Rotinas da Calculadora]].
+- **Cadastro dos ativos**: a **B3** (`getBondDetails`) é a fonte **primária**; a Anbima Data é fallback, só para o que negociou e a B3 não cobriu. `vrVNE` + `dtInicioRentabilidade` + `FluxoAtivos` são um **pacote indivisível** por ativo — a coluna `cdFonteCadastro` diz de quem é, e misturar as duas fontes conta a carência duas vezes, em silêncio.
 - **Match de referência** (`IPCA→NTN-B`, `PREFIXADO→DI1`): script separado (`match_referencias.py`), sem args — roda idempotente sobre a base toda a cada ciclo do pipeline. Duration-match data-exata contra `MtmAnbima`; não sobrescreve refs da Anbima (`cdFonteReferencia='Anbima'`)
 - **Relatório agrupa por `dtLiquidacao`**, não `dtNegocio`
 

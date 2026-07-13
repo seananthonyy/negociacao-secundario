@@ -4,7 +4,7 @@
 
 ## Estado atual
 
-**Pipeline operacional end-to-end, agora com 17 passos** — desde 12/07/2026 ele também roda as **rotinas de dados da calculadora de renda fixa** (IPCA, projeção de IPCA, DI realizado, curva DI arquivada) e a **validação de fluxo** dos ativos; ver [[14 - Rotinas da Calculadora]]. Relatório histórico interativo (`relatorio_secundario.html`) com 6 abas (Boletim, Visão Mercado, Por Ativo, Spread×Duration, Info Ativos, Visão Anbima) cobrindo 09–24/06/2026 (12 pregões, 2.064 ativos, R$ 10.717,92 MM). F17 concluída. Banco SQLite otimizado para lookups por ticker do add-in externo da calculadora (índice cobridor em `FluxoAtivos`, PRAGMAs de performance, `get_readonly_connection`). `AnbimaIndicativos` com taxa indicativa de debêntures backfillada de 23/02→24/06 (janela de arquivamento de ~4 meses). Resta F12 (hardening).**
+**Pipeline operacional end-to-end, agora com 18 passos.** Em 13/07/2026 o **cadastro dos ativos inverteu**: a **B3** (`getBondDetails`) virou a fonte **primária** de cadastro e fluxo, e a Anbima Data virou fallback, puxada **por demanda** (só o que negociou). Ver [[15 - Cadastro dos Ativos]]. Desde 12/07 o pipeline também roda as **rotinas de dados da calculadora de renda fixa** (IPCA, projeção de IPCA, DI realizado, curva DI arquivada) e a **validação de fluxo**; ver [[14 - Rotinas da Calculadora]]. Relatório histórico interativo (`relatorio_secundario.html`) com 6 abas (Boletim, Visão Mercado, Por Ativo, Spread×Duration, Info Ativos, Visão Anbima) cobrindo 09–24/06/2026 (12 pregões, 2.064 ativos, R$ 10.717,92 MM). F17 concluída. Banco SQLite otimizado para lookups por ticker do add-in externo da calculadora (índice cobridor em `FluxoAtivos`, PRAGMAs de performance, `get_readonly_connection`). `AnbimaIndicativos` com taxa indicativa de debêntures backfillada de 23/02→24/06 (janela de arquivamento de ~4 meses). Resta F12 (hardening).**
 
 ## Checklist de implementação
 
@@ -248,6 +248,22 @@ A calculadora de renda fixa (`D:\ItauBBA\calculadora-renda-fixa`) vai passar a *
 - **Backlog:** 2 itens novos — (1) usar o `getBondDetails` da B3 como fonte de cadastro (conversa com "duration de corporates"); (2) trazer o `validar_fluxos.py` pra cá como passo do pipeline. Ver [[98 - Backlog]].
 
 ## Histórico de sessões
+
+### 13/07/2026 — B3 como fonte primária do cadastro; a calc ainda não fecha a taxa
+
+**O que mudou.** A **B3 virou a fonte primária** do cadastro e do fluxo (`scrape_b3_bond_details`, novo — passo 2). A Anbima Data virou **fallback demanda-dirigido**: só o que negociou e a B3 não cobriu. O `validar_fluxos` encolheu (o ramo B3 saiu: o fluxo dela nasce validado) e ganhou um **tripwire de saldo** que roda em tudo que está validado.
+
+**Por quê, com número.** Modelo B3 acerta o PU em **92,4%** dos IPCA validados contra **89,7%** do modelo Anbima — e **35 papéis só batem pelo B3**, justamente os graves (CRA020001US errava 50,8%; SSRU11, 58%). Mas o ganho maior veio de outro lugar: **1.085 tickers negociaram em 90 dias sem ter fluxo nenhum na base** — 38% do volume, e 701 deles nem existiam no `InfoAtivos`. Puxar por demanda leva a cobertura de fluxo validado de **58% → ~76% do volume**.
+
+**Três armadilhas do fluxo da B3**, todas silenciosas, que custaram 122 ativos com erro de PU acima de 1%: datas **cruas** (evento passado em fim de semana não casa com o aniversário e é descartado); `IPCA-I` **não emite a amortização do vencimento** (a soma dos `'A'` fica < 100 e o `InferirTipoAmort` da calc vira a convenção do papel inteiro); e as **datas de cupom precisam entrar** como amortização zero (sem elas a aderência cai de 92% para 25%). Ver [[15 - Cadastro dos Ativos]].
+
+**Correção nº 3 na calc (autorizada):** o **aniversário virou propriedade do ativo** (`vrAniversario`, só IPCA). `DIA_ANIV = 15` era constante de módulo — convenção de NTN-B — e a calc **descartava em silêncio** todo evento que não caísse no aniversário. No SSRU11 (aniversário 28) isso fazia o PU dar **15.403 contra 9.738** da B3. Default 15 mantido: o add-in do Excel não muda.
+
+**O que NÃO fechou — e é o item quente do backlog.** A calc reproduz o **PU par** (86,4% dos 2.861 ativos a 1e-6) mas **não a taxa fora do par**: triangulando, FI e B3 concordam entre si (0–1,7 bps) e a calc discorda das duas (**+2,2 a +13,7 bps**). Duas fontes independentes batendo e a nossa divergindo significa que **o erro é nosso**. Por isso o `calc_taxa_negocios` tem a calc como 1º degrau da cascata mas **desligada** (`[calc].usarCalcTaxa = false`). A lição de método: **o gate de PU par não basta — ele valida o fluxo, não o desconto.**
+
+**Também:** emails reescritos (`lib/relatorio_execucao.py`, paleta Itaú, com contadores/exemplos/datas/traceback); `NEGSEC_SEM_EMAIL` grava o corpo em disco em vez de tocar no Outlook; `conferir_pu` (novo) é o portão de aceitação da precificação local; bug do `CalcularPuGov` (lia `data["pu"]`, a B3 devolve `"PU"` — nunca retornou PU, nem para NTN-B).
+
+
 
 > **✅ COMMITADO E PUSHADO em 10/07/2026** (`origin/main` = `04ccec5`). Todo o trabalho abaixo (padronização de nomes, 3 notebooks novos, fix do CRI/CRA) foi validado, commitado e publicado. `bundle_banco.py` regenerado e conferido 1:1 contra o disco (82 arquivos, 0 sensíveis). **O GitHub está pronto para o download no banco.**
 >

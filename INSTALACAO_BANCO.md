@@ -33,19 +33,61 @@ O código resolve caminhos relativos à pasta `code/` — a **raiz pode ter qual
 <raiz>\code\
 ├── config.toml, requirements.txt, destinatarios.example.py
 │   setup_teste.ipynb, setup_inicial.ipynb, run_secundario.ipynb
-├── lib\        (__init__.py, config.py, db.py, logger.py, email_outlook.py, b3_calc_api.py, fianalytics_api.py)
-├── scripts\    (scrape_*.py, calc_*.py, filtrar_trades.py, gerar_*.py, match_referencias.py,
-│                pipeline_core.py, run_diario.py, check_no_secrets.py)
+├── lib\        (__init__.py, config.py, db.py, logger.py, email_outlook.py, relatorio_execucao.py,
+│                b3_calc_api.py, fianalytics_api.py, calc.py)
+├── scripts\    (scrape_*.py, calc_*.py, conferir_pu.py, validar_fluxos.py, filtrar_trades.py,
+│                gerar_*.py, match_referencias.py, pipeline_core.py, run_diario.py, check_no_secrets.py)
 ├── templates\  (relatorio.html.j2, relatorio_secundario.html)
 └── data\       (feriados_anbima.csv  ← OBRIGATÓRIO; as subpastas logs/ relatorios/ etc. são criadas sozinhas)
 ```
 
 `trades.db` **não** vem do repo — é criado no Passo 5 (teste) e populado no Passo 6 (carga).
+`ipca.db` e `di.db` também são criados sozinhos (vazios) e populados pelas rotinas da calculadora.
+
+---
+
+## A calculadora de renda fixa (projeto vizinho)
+
+Este projeto **importa** `calculadora_rf.py`, que vive em **outro repositório**
+(`calculadora-renda-fixa`) e **não é copiado para dentro daqui**. Só o `lib/calc.py`
+sabe onde ela está — nenhum outro módulo precisa saber.
+
+**Onde colocar:** qualquer pasta. O padrão do `config.toml` assume que ela é **irmã** da
+raiz deste projeto:
+
+```
+<pasta-qualquer>\
+├── negociacao-secundario\code\...     ← este projeto
+└── calculadora-renda-fixa\            ← a calc  (calculadora_rf.py na raiz dela)
+```
+
+**Se ficar em outro lugar**, aponte de um dos dois jeitos — a variável de ambiente vence:
+
+| Como | Onde | Quando usar |
+|---|---|---|
+| `[paths] calculadoraDir` no `config.toml` | caminho **relativo a `code/`** (default `"../../calculadora-renda-fixa"`) | layout fixo |
+| Variável de ambiente **`CALCULADORA_DIR`** | caminho absoluto | quando não dá para mexer no config (é o caso do banco) |
+
+```powershell
+# no banco, se a calc estiver em outro drive/pasta:
+setx CALCULADORA_DIR "D:\ferramentas\calculadora-renda-fixa"
+```
+
+**Não copie os `.db` da calc para dentro dela.** Os insumos (`ipca.db`, `di.db`,
+`feriados_anbima.csv`) vivem em **`code/data/`** — deste projeto — e o `lib/calc.py`
+aponta a calc para cá via `CALCRF_FILES_DIR`. Sem a env var, a calc volta ao
+comportamento antigo (o `files/` dela), então o add-in do Excel continua funcionando.
+
+Conferir que resolveu:
+```powershell
+python -c "import sys; sys.path.insert(0,'.'); from lib.calc import DirCalculadora, ImportarCalc; print(DirCalculadora()); ImportarCalc(); print('calc OK')"
+```
 
 ---
 
 ## Passo 1 — Conferir a estrutura
-Verifique que os arquivos acima estão nos caminhos certos e que `code/data/feriados_anbima.csv` existe.
+Verifique que os arquivos acima estão nos caminhos certos, que `code/data/feriados_anbima.csv`
+existe e que a calculadora resolve (comando acima).
 
 ## Passo 2 — Python e dependências
 A partir da pasta `code\`:
@@ -56,7 +98,7 @@ playwright install chromium
 ```
 
 ## Passo 3 — Segredos (variáveis de ambiente da conta)
-Os segredos são lidos por `lib.config.get_secret()` via o bloco `[env]` do `config.toml` (mapeia nomes de variáveis; ver `vault/99`). Necessárias:
+Os segredos são lidos por `lib.config.ObterSegredo()` via o bloco `[env]` do `config.toml` (mapeia nomes de variáveis; ver `vault/99`). Necessárias:
 
 | Segredo | Variável de ambiente | Situação no banco |
 |---|---|---|
@@ -65,19 +107,24 @@ Os segredos são lidos por `lib.config.get_secret()` via o bloco `[env]` do `con
 | Login FI Analytics | `user_fianalytics` | **criar** |
 | Senha FI Analytics | `password_fianalytics` | **criar** |
 | Proxy | `proxy_http`, `proxy_https` | já existem |
+| Pasta da calculadora | `CALCULADORA_DIR` | **só se ela não for irmã da raiz** (ver seção acima) |
 
 Criar as duas do FI (cmd): `setx user_fianalytics "..."` e `setx password_fianalytics "..."`.
 **Depois feche e reabra o terminal/Jupyter** (variáveis novas só aparecem em processos novos).
 
 ## Passo 4 — Emails
-Copie `destinatarios.example.py` para **`destinatarios.py`** e preencha `EMAIL_DESTINATARIOS` (rascunho do relatório) e `OUTLOOK_TO` (status `[OK]/[ERROR]`; deixe `[]` para usar a variável `OUTLOOK_TO`).
+Copie `destinatarios.example.py` para **`destinatarios.py`** e preencha `EMAIL_DESTINATARIOS` (rascunho do relatório) e `OUTLOOK_TO` (status `[OK]/[ERRO]`; deixe `[]` para usar a variável `OUTLOOK_TO`).
+
+Todo script manda um email HTML de conclusão (paleta Itaú) com: datas processadas, contadores de inserido/atualizado/ignorado, exemplos do que entrou, avisos e — se falhar — o traceback.
+
+Para rodar **sem tocar no Outlook** (útil ao depurar, ou se o COM travar): defina `NEGSEC_SEM_EMAIL=1`. O corpo do email é gravado em `data/emails/*.html` em vez de enviado.
 
 **Verificação rápida** (rodar de `code\`):
 ```powershell
-python -c "import sys; sys.path.insert(0,'.'); from lib.config import get_secret, get_email_list; \
-print('B3:', bool(get_secret('b3CalcToken')), '| FIkey:', bool(get_secret('fianalyticsApiKey')), \
-'| FIuser:', bool(get_secret('fianalyticsUser')), '| FIpass:', bool(get_secret('fianalyticsPass')), \
-'| emails:', get_email_list('destinatarios'))"
+python -c "import sys; sys.path.insert(0,'.'); from lib.config import ObterSegredo, ObterListaEmails; `
+print('B3:', bool(ObterSegredo('b3CalcToken')), '| FIkey:', bool(ObterSegredo('fianalyticsApiKey')), `
+'| FIuser:', bool(ObterSegredo('fianalyticsUser')), '| FIpass:', bool(ObterSegredo('fianalyticsPass')), `
+'| emails:', ObterListaEmails('destinatarios'))"
 ```
 Tudo `True` = segredos resolvendo.
 

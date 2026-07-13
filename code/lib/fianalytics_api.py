@@ -36,7 +36,7 @@ CACHE_MISS = object()
 # Guarda float (% a.a.) ou None. Ambos são cacheados para evitar chamadas repetidas.
 cacheTaxas: dict[tuple, object] = {}
 
-# Lista de bonds do usuário — carregada uma única vez por processo via _GetUserBonds().
+# Lista de bonds do usuário — carregada uma única vez por processo via ObterBondsUsuario().
 # None significa "ainda não buscado"; lista vazia/None pós-fetch significa "falhou ou sem bonds".
 userBondsCarregados: bool = False
 userBonds: list[dict] | None = None

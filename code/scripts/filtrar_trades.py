@@ -583,7 +583,7 @@ def ProcessarData(
     """
     Lê todos os trades válidos de uma dtLiquidacao, aplica os três filtros
     sequencialmente e faz UPDATE em NegociosProcessados com cdStatus e idGrupoNegocio.
-    Retorna _DateStats com os contadores.
+    Retorna EstatisticasData com os contadores.
     """
     stats = EstatisticasData(dtLiquidacao=dtLiquidacao)
 

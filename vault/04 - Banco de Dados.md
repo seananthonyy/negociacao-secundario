@@ -107,18 +107,30 @@ Informações estáticas dos ativos, consolidadas de três fontes: planilha FI A
 | `cdIndexador` | TEXT | Anbima, FI Analytics | `CDI+` / `%CDI` / `IPCA` / `PREFIXADO` |
 | `cdReferencia` | TEXT | Anbima, `match_referencias.py` | Benchmark para spread: `FUNDING`, `NTN-B {YY}`, `DI1F{YY}` |
 | `cdFonteReferencia` | TEXT | automático | Quem populou `cdReferencia` — ver tabela abaixo |
-| `vrTaxaEmissao` | REAL | FI Analytics, Anbima Data | Taxa de emissão (% a.a.) |
-| `vrVNE` | REAL | Anbima Data | Valor nominal na emissão / saldo devedor inicial |
-| `dtInicioRentabilidade` | TEXT | Anbima Data | Data de início do rendimento |
-| `cdISIN` | TEXT | Anbima Data | Código ISIN do ativo |
-| `vrQuantidadeEmissao` | REAL | Anbima Data | Quantidade emitida desta série |
-| `dtEmissao` | TEXT | Anbima Data | Data de emissão da série |
+| `vrTaxaEmissao` | REAL | **B3**, FI Analytics, Anbima Data | Taxa de emissão (% a.a.) |
+| `vrVNE` | REAL | **B3** ou Anbima Data | Valor nominal na emissão / saldo devedor inicial — ⚠️ **pacote** |
+| `dtInicioRentabilidade` | TEXT | **B3** ou Anbima Data | Data de início do rendimento — ⚠️ **pacote** |
+| `vrAniversario` | INTEGER | **B3** (`anniversaryday`) | Dia do mês em que o ativo aniversaria. **Só IPCA**; NULL no resto |
+| `cdFonteCadastro` | TEXT | scrapers | `'B3'` \| `'AnbimaData'` — de quem é o **pacote** (ver abaixo) |
+| `cdISIN` | TEXT | Anbima Data | Código ISIN do ativo (a B3 não traz) |
+| `vrQuantidadeEmissao` | REAL | Anbima Data | Quantidade emitida desta série (a B3 não traz) |
+| `dtEmissao` | TEXT | **B3**, Anbima Data | Data de emissão da série |
 | `dtAtualizacao` | TEXT | automático | Timestamp do último UPSERT |
 | `stTemFluxo` | INTEGER | ingestor | `1` se o ativo tem linha em `FluxoAtivos`, senão `0` |
 | `stFluxoValidado` | INTEGER | ingestor zera / validador marca | `1` = fluxo conferido contra a fonte de verdade |
 | `dtValidacaoFluxo` | TEXT | validador | ISO da validação OK |
 | `cdFonteValidacaoFluxo` | TEXT | validador | `'B3'` / `'FiAnalytics'` / `'Manual'` |
 | `dtUltimaTentativa` | TEXT | validador | ISO da última tentativa (validou ou não) — base do throttle |
+
+#### ⚠️ O pacote indivisível: `vrVNE` + `dtInicioRentabilidade` + `FluxoAtivos`
+
+As duas fontes descrevem a **mesma carência de jeitos incompatíveis**. No SSRU11, a B3 diz VNE **10.561,83** / início 28/11/2018 e **nenhuma** incorporação (ela pré-capitaliza a carência dentro do VNE); a Anbima diz VNE **10.000** / início 29/06/2018 **mais** um evento de incorporação de 100%. As duas estão certas.
+
+**Pegar o VNE de uma e o fluxo da outra conta a capitalização duas vezes** — sem erro, sem exceção, só um PU errado. Por isso `cdFonteCadastro`, e por isso `lib.db.SincronizarFluxoAtivos` **se recusa a escrever** em ativo de fonte `'B3'`. A guarda mora na lib, não no scraper, porque `FluxoAtivos` tem vários writers.
+
+#### `vrAniversario` — por que ele existe
+
+O aniversário é o dia em que o índice de referência do IPCA vira. Dia 15 é convenção de **NTN-B**; a debênture aniversaria no dia das **suas** datas de pagamento. A calc só aplica evento que caia **exatamente** no aniversário — então, com o aniversário errado, ela **descarta os eventos do fluxo em silêncio** (SSRU11, aniversário 28: PU 15.403 contra 9.738 da B3). Só importa para IPCA. Ver [[15 - Cadastro dos Ativos]].
 
 #### `cdFonteReferencia`
 

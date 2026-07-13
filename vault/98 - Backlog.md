@@ -6,6 +6,45 @@
 
 ---
 
+## 🔴 PRIORIDADE — a calc não reproduz a taxa fora do par (2 a 14 bps)
+
+**Origem:** 13/07/2026, na tentativa de trocar o `calc_taxa_negocios` pela calculadora local.
+
+**O que é:** a calc reproduz o **PU par** das fontes com precisão (**86,4%** dos 2.861 ativos validados batem a 1e-6 — rodar `scripts/conferir_pu.py`), mas **não reproduz a taxa implícita num PU fora do par**.
+
+Triangulando 4 negócios de 16/06/2026:
+
+| ativo | calc | FI | B3 | calc − B3 | FI − B3 |
+|---|---|---|---|---|---|
+| TRGP13 (IPCA) | 7,3838 | 7,3620 | 7,3620 | **+2,18 bps** | 0,00 |
+| CRA02300MJ7 (%CDI) | 99,0308 | 98,9105 | 98,8934 | **+13,74 bps** | +1,71 |
+| 22J0346710 (%CDI) | 91,9606 | 92,0145 | 92,0015 | **−4,09 bps** | +1,30 |
+| CRA025002S1 (%CDI) | 113,7916 | 113,8021 | 113,8011 | −0,95 bps | +0,10 |
+
+**FI e B3 concordam entre si; a calc discorda das duas.** O erro é nosso.
+
+**O detalhe que aponta a causa:** o TRGP13 **bate o PU par a 1e-6** e mesmo assim erra a taxa em 2,18 bps. Se os fluxos e o VNA estão certos (e estão — o PU par fecha), a diferença só pode estar no **desconto**. Candidatos: o truncamento de 6 casas em cada VP (`Trunca(FV_i / fatorDesc, 6)`), a contagem de DU do fator de desconto, ou a convenção do %CDI (onde a taxa muda o fluxo **e** o desconto).
+
+**Estado:** a calc está implementada como 1º degrau da cascata do `calc_taxa_negocios`, porém **desligada** (`config.toml [calc] usarCalcTaxa = false`). Ligar é uma linha.
+
+**Como fechar:** falta o **round-trip da taxa** — dado o PU que a fonte devolve para uma taxa **fora do par**, a calc tem que reproduzir aquela taxa. O `conferir_pu` hoje só testa no par; estendê-lo é o próximo passo.
+
+**Prêmio se fechar:** medido no pregão mais cheio (16/06, 8.065 negócios validados), só há **598 pares (ticker, PU) distintos** — o cache corta 93% do trabalho, e a ~0,7s por par dá **~7 min/dia num core**, contra os ~25 min/dia da cascata de API no banco. A calc é mais rápida **e** offline.
+
+---
+
+## 31 ativos ainda erram o PU acima de 1%
+
+**Origem:** 13/07/2026. Rodar `python scripts/conferir_pu.py --date <dia útil>` → `data/pu_divergencias.csv`.
+
+Depois de corrigir o aniversário por ativo e as três armadilhas do fluxo da B3 (ver [[15 - Cadastro dos Ativos]]), os graves caíram de **122 → 31** (de 2.861 comparados). Sem padrão único: 16 IPCA, 10 CDI+, 5 PREFIXADO.
+
+Piores: `RED711` (7,0×), `CRA02300MJ8` (5,7×), `TPER11` (0,70), `RENTE2`, `24H0031235`, `ITSA17`.
+
+O `conferir_pu --desvalidar` tira a validação de quem erra acima de 1e-3 — eles caem na cascata de API e não são precificados pela calc. **Não está no pipeline por padrão**; decidir se entra.
+
+---
+
 ## Migração e instalação no ambiente do Banco (Itaú BBA)
 
 **Origem:** 20/06/2026.

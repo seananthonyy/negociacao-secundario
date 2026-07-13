@@ -100,7 +100,7 @@ def CalcularSpread(
     cdReferencia: Optional[str],
     conn,
     log,
-    stats: "_DateStats",
+    stats: "EstatisticasData",
 ) -> Optional[float]:
     """
     Calcula vrSpreadAnbima para um ticker/data.

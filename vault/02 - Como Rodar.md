@@ -22,7 +22,7 @@ playwright install chromium
 
 ### Configurar credenciais
 
-Segredos são resolvidos por `lib.config.get_secret()` via bloco `[env]` do `config.toml` (ver [[99 - Credenciais e Links]] e [[13 - Migracao Banco]] §3):
+Segredos são resolvidos por `lib.config.ObterSegredo()` via bloco `[env]` do `config.toml` (ver [[99 - Credenciais e Links]] e [[13 - Migracao Banco]] §3):
 
 - **PC pessoal:** crie `code/.env` (nunca versionar) a partir de `code/.env.example` com os nomes canônicos:
   ```

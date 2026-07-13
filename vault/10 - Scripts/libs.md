@@ -10,11 +10,11 @@ Proxy lazy para `config.toml` via `tomllib` nativo (Python 3.11+ stdlib) + resol
 
 **Como usar:**
 ```python
-from lib.config import cfg, get_secret, get_email_list, get_env
+from lib.config import cfg, ObterSegredo, ObterListaEmails, ObterEnv
 
 base_url = cfg["scrape"]["b3"]["baseUrl"]
-apiKey   = get_secret("fianalyticsApiKey")     # resolve via [env]
-emails   = get_email_list("outlook")            # destinatarios.py → env → []
+apiKey   = ObterSegredo("fianalyticsApiKey")     # resolve via [env]
+emails   = ObterListaEmails("outlook")            # destinatarios.py → env → []
 ```
 
 **Funções expostas:**
@@ -22,16 +22,16 @@ emails   = get_email_list("outlook")            # destinatarios.py → env → [
 | Função | O que faz |
 |---|---|
 | `cfg` | proxy lazy de `config.toml` (`__getitem__`/`__contains__`/`get`). |
-| `get_secret(chave, default)` | **Novo (01/07).** Resolve um segredo pela lista de nomes de variáveis de ambiente em `[env].chave`; usa o 1º candidato preenchido. Ver [[99 - Credenciais e Links]] e [[13 - Migracao Banco]] §3. |
-| `get_email_list(which)` | **Novo (01/07).** `which` ∈ {`destinatarios`, `outlook`}. Tenta `code/destinatarios.py` → variável de ambiente (`[env]`) → `[]`. |
-| `get_env(key, default)` | leitura direta de variável de ambiente (garante `.env` carregado). Ainda usado para config não-sensível. |
+| `ObterSegredo(chave, default)` | **Novo (01/07).** Resolve um segredo pela lista de nomes de variáveis de ambiente em `[env].chave`; usa o 1º candidato preenchido. Ver [[99 - Credenciais e Links]] e [[13 - Migracao Banco]] §3. |
+| `ObterListaEmails(which)` | **Novo (01/07).** `which` ∈ {`destinatarios`, `outlook`}. Tenta `code/destinatarios.py` → variável de ambiente (`[env]`) → `[]`. |
+| `ObterEnv(key, default)` | leitura direta de variável de ambiente (garante `.env` carregado). Ainda usado para config não-sensível. |
 
 **Como funciona internamente:**
-- `_ensure_cfg()` carrega o TOML uma vez e, em seguida, chama `_apply_proxy_env()` — copia o proxy resolvido (`httpProxy`/`httpsProxy`) para `HTTP_PROXY`/`HTTPS_PROXY` padrão (que httpx e Playwright leem nativamente), respeitando valores já presentes.
-- `get_secret` lê os candidatos de `[env]` e retorna o 1º `os.getenv` não-vazio → mesmo código roda no PC pessoal (`.env`, nomes canônicos) e no banco (variáveis da conta).
+- `_ensure_cfg()` carrega o TOML uma vez e, em seguida, chama `AplicarProxyEnv()` — copia o proxy resolvido (`httpProxy`/`httpsProxy`) para `HTTP_PROXY`/`HTTPS_PROXY` padrão (que httpx e Playwright leem nativamente), respeitando valores já presentes.
+- `ObterSegredo` lê os candidatos de `[env]` e retorna o 1º `os.getenv` não-vazio → mesmo código roda no PC pessoal (`.env`, nomes canônicos) e no banco (variáveis da conta).
 - O `.env` é lido de `code/.env` (relativo à raiz `code/`); `load_dotenv` **não** sobrescreve variáveis já no ambiente.
 
-**Decisões:** proxy lazy (30/05) evita erro de import sem `config.toml`. O modelo `[env]`/`get_secret`/`destinatarios.py` (01/07) tira todo segredo do código para permitir repo público — ver [[13 - Migracao Banco]].
+**Decisões:** proxy lazy (30/05) evita erro de import sem `config.toml`. O modelo `[env]`/`ObterSegredo`/`destinatarios.py` (01/07) tira todo segredo do código para permitir repo público — ver [[13 - Migracao Banco]].
 
 ---
 
@@ -119,7 +119,7 @@ send_completion_email(
 
 **Comportamento:**
 - Verifica `cfg["email"]["ativo"]` antes de qualquer coisa. Se `false`, loga e retorna sem enviar.
-- Destinatários resolvidos por `get_email_list("outlook")` (`code/destinatarios.py` → variável `OUTLOOK_TO` → `[]`). Aceita múltiplos, separados por `;` ou `,`. Sem default hardcoded — se vazio, loga aviso e não envia. Ver [[99 - Credenciais e Links]].
+- Destinatários resolvidos por `ObterListaEmails("outlook")` (`code/destinatarios.py` → variável `OUTLOOK_TO` → `[]`). Aceita múltiplos, separados por `;` ou `,`. Sem default hardcoded — se vazio, loga aviso e não envia. Ver [[99 - Credenciais e Links]].
 - Cria uma mensagem Outlook por destinatário via `win32com.client.Dispatch("Outlook.Application")`.
 - Assunto: `[OK] {script_name}` ou `[ERROR] {script_name}`. Esse é o formato padrão para **todos** os scripts do projeto.
 - Corpo inclui o `summary_text` e, em caso de erro, o `error_traceback` completo.

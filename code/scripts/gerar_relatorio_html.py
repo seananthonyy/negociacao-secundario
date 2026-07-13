@@ -233,7 +233,7 @@ def MediaPonderada(valores: list[tuple[float | None, float]]) -> float | None:
 
 
 def BuscarNegocios(conn, dtLiquidacao: str, dtAnbima: str) -> list[LinhaNegocio]:
-    """Executa o SELECT principal e retorna lista de _TradeRow."""
+    """Executa o SELECT principal e retorna lista de LinhaNegocio."""
     rows = conn.execute(SQL_BUSCAR, (dtAnbima, dtLiquidacao)).fetchall()
     result: list[LinhaNegocio] = []
     for r in rows:
@@ -257,7 +257,7 @@ def BuscarNegocios(conn, dtLiquidacao: str, dtAnbima: str) -> list[LinhaNegocio]
 
 def BuscarGruposBroker(conn, dtLiquidacao: str, dtAnbima: str) -> list[LinhaNegocio]:
     """
-    Busca grupos BROKER, agrega por idGrupoNegocio e retorna _TradeRow virtuais
+    Busca grupos BROKER, agrega por idGrupoNegocio e retorna LinhaNegocio virtuais
     (uma por grupo): taxa=(MAX+MIN)/2, volume=SUM/2, spread calculado em Python.
     """
     rows = conn.execute(SQL_BUSCAR_BROKER, (dtAnbima, dtLiquidacao)).fetchall()
@@ -313,7 +313,7 @@ def BuscarGruposBroker(conn, dtLiquidacao: str, dtAnbima: str) -> list[LinhaNego
 
 def AgregarTicker(cdTicker: str, grupo: list[LinhaNegocio]) -> TickerAgregado:
     """
-    Agrega uma lista de _TradeRow do mesmo ticker em um único _TickerAgregado.
+    Agrega uma lista de LinhaNegocio do mesmo ticker em um único TickerAgregado.
     Atributos do ativo (cdIndexador, vrDuration, dtVencimento, etc.) são
     lidos da primeira linha — são constantes por ticker.
     """
