@@ -17,6 +17,11 @@ Sistema Python local que gera relatórios HTML diários consolidando negócios s
 - [[04 - Banco de Dados]]
 - [[07 - Filtro de Duplicados]]
 - [[08 - Match de Referencia]]
+- [[11 - Pipeline de Execucao]] — os 18 passos e a ordem entre eles
+
+### Precificação (leia estas antes de mexer em cadastro, fluxo ou calc)
+- [[15 - Cadastro dos Ativos]] — **a B3 é a fonte primária**; o pacote indivisível; as 3 armadilhas do fluxo da B3
+- [[14 - Rotinas da Calculadora]] — o que a calc é, as 4 mudanças autorizadas nela, e **o que ainda não fecha**
 
 ### Fontes de dados
 - [[05 - Fontes/B3 Boletim]]

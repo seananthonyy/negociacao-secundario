@@ -102,37 +102,60 @@ log.debug("Detalhe técnico só vai pro arquivo")
 
 ## lib/email_outlook.py
 
-Envia email via Outlook (COM automation) ao final de cada script.
+Email de fim de script, via Outlook (COM). **Reescrito em 13/07/2026** — o corpo passou a ser **HTML** (paleta Itaú) montado pelo `lib/relatorio_execucao.py`.
 
-**Como usar:**
 ```python
-from lib.email_outlook import send_completion_email
+from lib.email_outlook import EnviarEmailConclusao
+from lib.relatorio_execucao import RelatorioExecucao
 
-send_completion_email(
-    script_name="scrape_b3_boletim",
-    success=True,
-    summary_text="Total trades: 142\n...",
-    error_traceback=None,   # passa traceback como string se success=False
-    logger=log,             # opcional — passa o logger do script chamador
-)
+rel = RelatorioExecucao("scrape_b3_boletim", args=vars(args))
+rel.Datas(["2026-07-10"])
+rel.Contar("inseridos", 17667)
+rel.Aviso("...")
+EnviarEmailConclusao("scrape_b3_boletim", True, rel, tracebackErro=None, logger=log)
 ```
 
-**Comportamento:**
-- Verifica `cfg["email"]["ativo"]` antes de qualquer coisa. Se `false`, loga e retorna sem enviar.
-- Destinatários resolvidos por `ObterListaEmails("outlook")` (`code/destinatarios.py` → variável `OUTLOOK_TO` → `[]`). Aceita múltiplos, separados por `;` ou `,`. Sem default hardcoded — se vazio, loga aviso e não envia. Ver [[99 - Credenciais e Links]].
-- Cria uma mensagem Outlook por destinatário via `win32com.client.Dispatch("Outlook.Application")`.
-- Assunto: `[OK] {script_name}` ou `[ERROR] {script_name}`. Esse é o formato padrão para **todos** os scripts do projeto.
-- Corpo inclui o `summary_text` e, em caso de erro, o `error_traceback` completo.
-- **Logger opcional:** aceita parâmetro `logger: logging.Logger`. Se passado, usa esse logger para registrar o envio; caso contrário usa `logging.getLogger(__name__)`. Permite que os logs de email apareçam no arquivo de log do script chamador.
-- **Falha silenciosa:** qualquer exceção (Outlook não aberto, pywin32 não instalado, etc.) é capturada e logada — nunca propaga para o script chamador.
+- `resumo` aceita um **`RelatorioExecucao`** (o formato bom) **ou uma string** — os scripts antigos passavam texto solto, e a string vira um bloco dentro do mesmo template. Nenhum script quebrou na migração.
+- Assunto: `[OK] {script}` ou `[ERRO] {script}`.
+- Destinatários por `ObterListaEmails("outlook")` (`code/destinatarios.py` → `OUTLOOK_TO` → `[]`). Ver [[99 - Credenciais e Links]].
+- **Falha silenciosa, intencional:** qualquer exceção (Outlook fechado, pywin32 ausente) é capturada e logada. **Email que falha não pode derrubar uma rodada que deu certo.**
+- Timeout de 20s (`EMAIL_TIMEOUT`).
 
-**Dependências externas:** `pywin32` (só funciona no Windows com Outlook instalado).
+### `NEGSEC_SEM_EMAIL` — rodar sem tocar no Outlook
 
-**Decisão (30/05/2026):** falha silenciosa é intencional — problema de email não deve interromper o pipeline de dados.
+```powershell
+$env:NEGSEC_SEM_EMAIL = "1"
+```
 
-**Decisão (31/05/2026):** formato de assunto padronizado para `[OK] script` / `[ERROR] script` em todos os scripts. Formato anterior (`[credito-privado] OK · script`) era mais verboso sem ganho prático.
+Com a variável setada, **nada vai para o Outlook**: o corpo do email é gravado em `data/emails/*.html`. Existe porque o COM do Outlook trava (diálogo de permissão) e derruba qualquer rodada em lote — e porque não dá para depurar o template esperando 20s de timeout a cada script. `data/emails/` está no `.gitignore`.
 
-**Decisão (20/06/2026):** timeout reduzido de 60s para 20s (`_EMAIL_TIMEOUT = 20`). O Outlook raramente demora mais de 20s para confirmar permissão; 60s era desnecessariamente longo.
+**Dependências:** `pywin32` (Windows + Outlook).
+
+---
+
+## lib/relatorio_execucao.py
+
+**Novo em 13/07/2026.** O que cada script acumula durante a rodada e manda por email.
+
+Antes, cada script montava à mão um bloco de texto solto — o que dava um email diferente por script e sem o essencial: não dava para saber **quais dias** rodaram, o que foi **inserido** contra o que foi **atualizado**, nem ver **exemplo nenhum** do que entrou na base.
+
+```python
+rel = RelatorioExecucao("scrape_b3_bond_details", args=vars(args))
+rel.Datas(["2026-07-10"])              # dias processados
+rel.Contar("inseridos", 161)           # contadores (viram cartões no topo)
+rel.Exemplo("inseridos", {...})        # até 10 exemplos por ação
+rel.Metrica("Cobertura da B3", "64%")  # chave-valor
+rel.Secao("Título", ["col"], linhas)   # tabela livre
+rel.Aviso("...")  /  rel.Erro("...")
+rel.PorData("Resultado por data", ["data", "n"], linhas)   # atalho dos scrapers
+```
+
+- **`PorData`** cobre o padrão que quase todo scraper produz (uma linha por data com contadores): soma o TOTAL, marca as datas e **avisa sobre data que não trouxe nada**. Esse aviso é o ponto: data sem registro, em dia útil, quase sempre é **falha silenciosa de coleta**, não ausência de dado — foi assim que o bug do proxy no Playwright (03/07) e o do seletor do CRI/CRA (08/07) passaram dias despercebidos, os dois com exit 0 e email de "concluído".
+- **`LIMITE_EXEMPLOS = 10`.** Listar tudo trava o Outlook quando a rodada insere dezenas de milhares de linhas.
+- Renderiza em **HTML** (paleta Itaú: laranja `#EC7000`, azul `#003B7D`) e em **texto** (para o log).
+- Erro vem **primeiro** no email, com o traceback em bloco próprio — é o que importa quando falha.
+
+**Os 24 scripts usam.**
 
 ---
 
@@ -194,3 +217,32 @@ ResetToken()  # força renovação do token na próxima chamada
 - **Cache de resultados:** `CalcYield` cacheia cada resultado por `(cdTicker, dtLiquidacao, vrPU)` exatos em `_rateCache`. Usa sentinel `_CACHE_MISS` para distinguir "ausente do cache" de "valor `None` cacheado". Evita chamadas duplicadas ao reprocessar trades.
 - **Sem retries genéricos:** tentativa única. Em 401, `_DoRequest()` renova o token e repete uma segunda vez imediatamente (sem sleep) — cobre expiração de sessão mid-run sem loop de retry.
 - **Thread-safe:** `_tokenLock = threading.Lock()` protege `_EnsureToken()` com double-check locking — garante que apenas uma thread faz login mesmo com várias disparando simultaneamente (ex: `ThreadPoolExecutor` em `calc_taxa_negocios.py`).
+
+
+---
+
+## lib/calc.py
+
+**Novo em 12/07/2026.** O **único** módulo que sabe onde a calculadora de renda fixa está instalada. Ver [[14 - Rotinas da Calculadora]].
+
+```python
+from lib.calc import ImportarCalc, CarregarAtivo, CalcularPu, CalcularTaxa, CalcularVnaAtivo
+
+C = ImportarCalc()                     # módulo calculadora_rf, apontado p/ code/data/
+ativo = CarregarAtivo(conn, "SSRU11")  # cadastro + fluxo no formato que a calc consome
+pu    = CalcularPu(ativo, dtCalc, taxa)
+taxa  = CalcularTaxa(ativo, dtCalc, pu)
+vna   = CalcularVnaAtivo(ativo, dtCalc)
+```
+
+**Onde a calc mora:** `config.toml [paths] calculadoraDir` (relativo a `code/`), sobrescrevível pela variável de ambiente **`CALCULADORA_DIR`** — que é como se aponta no banco.
+
+**Onde os dados moram:** em `code/data/` (`ipca.db`, `di.db`, `feriados_anbima.csv`). O `lib/calc.py` seta `CALCRF_FILES_DIR` para cá antes de importar. **Sem a env var a calc volta ao comportamento antigo** (o `files/` dela) — é o que o add-in do Excel usa, e nada quebrou lá.
+
+`ImportarCalc()` cria os dois bancos (vazios, com as tabelas) **antes** de importar: a calc carrega feriados/IPCA/projeção **no import**, e sem isso quebraria numa máquina nova.
+
+### `CarregarAtivo` — por que existe
+
+Um lugar só monta os argumentos da calc a partir da nossa base. Sem isso, cada script (`calc_taxa`, `conferir_pu`, `validar_fluxos`) remontaria o mesmo dicionário — e a chance de um deles **esquecer o `vrAniversario`**, fazendo a calc **ignorar em silêncio todos os eventos do fluxo**, é alta demais. Ver [[15 - Cadastro dos Ativos]].
+
+Devolve `None` quando não dá para precificar (falta taxa de emissão, início de rentabilidade, fluxo ou indexador suportado).

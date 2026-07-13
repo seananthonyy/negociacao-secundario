@@ -42,72 +42,46 @@ Segredos são resolvidos por `lib.config.ObterSegredo()` via bloco `[env]` do `c
 
 ## Rotina de fechamento diário
 
-Todos os comandos são executados a partir da pasta `code/`. Substitua as datas conforme o dia de trabalho.
+> **Não se roda script por script à mão.** O pipeline tem **18 passos** com dependências entre si — ver [[11 - Pipeline de Execucao]]. Use uma das duas portas:
 
-### Exemplo: fechamento do dia 03/06/2026
+### Notebook (o jeito normal)
 
-```powershell
-# 1. Boletim B3 — baixar D-1 (trades D+1 que liquidam hoje) e o dia atual
-python scripts/scrape_b3_boletim.py --date 2026-06-02
-python scripts/scrape_b3_boletim.py --date 2026-06-03
+Abra **`code/run_secundario.ipynb`** a partir de `code/` e dê **Run All**. Um bloco por fluxo, processando as liquidações **D-3 .. D-1**, com conferência no `.db` a cada passo e o relatório no fim.
 
-# 2. Infos estáticas dos ativos (FI Analytics)
-python scripts/scrape_fianalytics_planilha.py
-
-# 3. Taxas indicativas Anbima
-python scripts/scrape_anbima_debentures.py --date 2026-06-03
-python scripts/scrape_anbima_cri_cra.py    --date 2026-06-03
-
-# 4. Calcular taxas — DEVE rodar antes de filtrar_trades
-#    (popula NegociosProcessados; filtrar_trades só atualiza cdStatus nos registros existentes)
-python scripts/calc_taxa_negocios.py --date 2026-06-03
-
-# 5. Filtrar duplicados
-python scripts/filtrar_trades.py --date 2026-06-03
-
-# 6. Taxas de referência — X-1 E X (spread usa dtNegocio, não dtLiquidacao)
-#    Trades negociados em X-1 precisam da curva de X-1 para ter spread calculado.
-python scripts/scrape_anbima_ntnb.py  --date 2026-06-02
-python scripts/scrape_b3_curva_di.py  --date 2026-06-02
-python scripts/scrape_anbima_ntnb.py  --date 2026-06-03
-python scripts/scrape_b3_curva_di.py  --date 2026-06-03
-python scripts/calc_spread_anbima.py  --date 2026-06-03
-
-# 7. Match de referência (atribui cdReferencia em InfoAtivos via duration-match)
-python scripts/match_referencias.py
-
-# 8. Spread over (calcula vrSpreadOver em NegociosProcessados)
-python scripts/calc_spread_over.py --date 2026-06-03
-
-# 9. Gerar relatório
-python scripts/gerar_relatorio_html.py --date 2026-06-03 --mode definitivo
-```
-
-**Ordem obrigatória — calc_taxa ANTES de filtrar:** `calc_taxa_negocios.py` insere os registros em `NegociosProcessados`. `filtrar_trades.py` apenas atualiza o campo `cdStatus` nesses registros. Se `filtrar_trades` rodar antes de `calc_taxa`, encontra `NegociosProcessados` vazio e não filtra nada.
-
-**match_referencias ANTES de calc_spread_over:** `calc_spread_over.py` lê `InfoAtivos.cdReferencia` para calcular o spread. Se `match_referencias` não tiver rodado, ativos IPCA/PREFIXADO sem ref da Anbima ficam com `vrSpreadOver = NULL`.
-
-**Regra do boletim B3:** para o relatório do dia X (dtLiquidacao), sempre baixar boletim de **X-1 e X**. Trades negociados em X-1 com liquidação D+1 (= X) só aparecem no boletim de X-1. Se X-1 não tiver pregão (feriado/fim de semana), o scraper retorna zero registros — sem problema. Nunca pular X-1 por julgamento próprio.
-
----
-
-## Reprocessar uma janela histórica
-
-Para recalcular taxas, spreads e filtros de duplicados em um período passado:
+### Linha de comando (para agendar)
 
 ```powershell
-python scripts/calc_taxa_negocios.py  --start 2026-05-01 --end 2026-05-27
-python scripts/filtrar_trades.py      --start 2026-05-01 --end 2026-05-27
-python scripts/calc_spread_anbima.py  --start 2026-05-01 --end 2026-05-27 --force
-python scripts/match_referencias.py
-python scripts/calc_spread_over.py    --start 2026-05-01 --end 2026-05-27
+cd code
+python scriptsun_diario.py --last 3            # últimos 3 dias úteis (padrão)
+python scriptsun_diario.py --start 2026-07-01 --end 2026-07-10   # intervalo
 ```
 
-Para forçar recálculo dos spreads, use `--force` em `calc_spread_anbima.py`. `match_referencias.py` não aceita `--start/--end` — processa todos os ativos elegíveis de uma vez.
+É o que vai no Task Scheduler (o Agendador não roda `.ipynb`).
 
-Os scripts de scraping também aceitam `--start --end` se precisar rebaixar o boletim B3 ou Anbima para um período mais longo.
+### Rodar sem tocar no Outlook
 
----
+```powershell
+$env:NEGSEC_SEM_EMAIL = "1"
+```
+
+O corpo de cada email é gravado em `data/emails/*.html` em vez de enviado. Útil ao depurar, e obrigatório se o COM do Outlook travar (ele derruba rodadas em lote).
+
+## Depois de mexer em cadastro, fluxo ou na calculadora
+
+**Rode o portão de aceitação:**
+
+```powershell
+python scripts\conferir_pu.py --date 2026-07-10
+```
+
+Ele compara o PU da nossa calc com o da fonte, **no par e fora do par**, e escreve `data/pu_divergencias.csv`. Ver [[10 - Scripts/conferir_pu]].
+
+## Setup de uma máquina nova
+
+1. **`code/setup_teste.ipynb`** — smoke: cria o `.db` e roda **cada fluxo no menor período possível**, conferindo no banco que gravou o que devia. Objetivo: provar que tudo funciona, rápido, **antes** de puxar histórico.
+2. **`code/setup_inicial.ipynb`** — carga histórica (defina `INICIO`/`FIM` na 1ª célula).
+
+No banco, siga o runbook **`INSTALACAO_BANCO.md`** na raiz.
 
 ## Onde ficam os relatórios gerados
 
@@ -125,6 +99,9 @@ Cada rodada de prévia cria um arquivo com timestamp no nome (para manter histó
 ## Dicas de troubleshooting
 
 - **Playwright não abre o browser**: verifique se o Chromium foi instalado com `playwright install chromium`.
-- **Email não envia**: confirme que o Outlook está aberto e logado. O script usa COM via `pywin32`.
-- **Taxa NULL no relatório**: significa que nem FI Analytics nem B3 Calculator conseguiram calcular. Ver [[06 - Calculadoras/FI Analytics API]] e [[06 - Calculadoras/B3 Calculator API]].
-- **`cdReferencia` vazio para um ticker**: rode `match_referencias.py --force` para tentar o match automático. Se falhar, preencha manualmente em `InfoAtivos`.
+- **Email não envia / trava**: o COM do Outlook pendura (diálogo de permissão) e derruba rodadas em lote. Rode com `NEGSEC_SEM_EMAIL=1` — o corpo vai para `data/emails/*.html`.
+- **Taxa NULL no relatório**: nem FI Analytics nem B3 conseguiram calcular. Ver [[06 - Calculadoras/FI Analytics API]] e [[06 - Calculadoras/B3 Calculator API]].
+- **`cdReferencia` vazio para um ticker**: o `match_referencias.py` roda **sem argumentos**, idempotente sobre a base toda, a cada ciclo do pipeline. Se ficar vazio, o ativo provavelmente não tem `vrDuration` — ver [[98 - Backlog]] ("duration de corporates").
+- **PU errado num ativo**: rode `conferir_pu.py --tickers XXXX`. Se ele bate **no par** e erra **fora do par**, o problema é o **desconto**, não o fluxo. Ver [[14 - Rotinas da Calculadora]].
+- **A calc ignora os eventos do fluxo de um IPCA**: `vrAniversario` errado ou NULL. A calc só aplica evento que caia **exatamente** no aniversário — dia 15 é convenção de NTN-B, não de debênture. Ver [[15 - Cadastro dos Ativos]].
+- **`scrape_fianalytics_planilha` grava 0 tickers**: ⚠️ **está quebrado** (seletor Tailwind morto desde 08/07). Ver [[98 - Backlog]].

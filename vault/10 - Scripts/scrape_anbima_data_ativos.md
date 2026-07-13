@@ -4,7 +4,15 @@
 
 **Arquivo:** `code/scripts/scrape_anbima_data_ativos.py`
 
-**Status:** implementado e validado (21/06/2026). Modo incremental reescrito em 29/06/2026 (união trades+Anbima + completude real + skip-list manual) — ainda não testado com Playwright no PC do banco.
+**Status:** implementado e validado (21/06/2026). Modo incremental reescrito em 29/06/2026 (união trades+Anbima + completude real + skip-list manual).
+
+> ⚠️ **Virou FALLBACK em 13/07/2026.** A **B3** (`scrape_b3_bond_details`, passo 2) é agora a fonte **primária** do cadastro e do fluxo. Este script roda **depois** dela (passo 6) e só preenche o que ela **não cobriu** — na prática, `cdISIN` e `vrQuantidadeEmissao` (que a B3 não traz) e o fluxo dos ~1.842 ativos fora da cobertura da B3. Ver [[../15 - Cadastro dos Ativos]].
+>
+> **Duas guardas foram postas para ele não estragar cadastro de fonte B3:**
+> 1. O `UpsertInfoAtivos` usa `COALESCE` em tudo e grava `cdFonteCadastro = 'AnbimaData'` **só quando a coluna está NULL** — num ativo B3 ela fica.
+> 2. O `lib.db.SincronizarFluxoAtivos` **se recusa a escrever** no fluxo de um ativo `cdFonteCadastro = 'B3'`. A guarda mora na lib, não aqui, porque `FluxoAtivos` tem vários writers.
+>
+> **Por quê:** `vrVNE` + `dtInicioRentabilidade` + `FluxoAtivos` são um **pacote indivisível**. A B3 pré-capitaliza a carência dentro do VNE; a Anbima traz o VNE cru mais a incorporação como evento. Reescrever só o fluxo por cima deixaria o VNE capitalizado órfão, e a carência passaria a contar **duas vezes** — sem erro, sem exceção, só um PU errado.
 
 ---
 
