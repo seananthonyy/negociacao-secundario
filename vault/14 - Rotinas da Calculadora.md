@@ -91,7 +91,29 @@ A calc **não é repositório git** — há uma cópia de segurança em `calcula
 2. **`FatorDi`: contador de DU incremental** (12/07/2026) — era **quadrático**. Ele chamava `ContarDu(dataCalc, d)` a cada dia útil projetado, e o `ContarDu` varre dia a dia desde `dataCalc`; num CDI+ longo isso dava **19s por PU**, e o `CalcularTaxaNegociacao` faz até 100 PUs → **~30 min por negócio**. Agora `z` acumula (`z += 1`) em vez de ser recontado — é exatamente o mesmo número. Depois do fix: **8 negócios DI em 18,7s**.
 3. **Aniversário por ativo** (12/07/2026) — `DIA_ANIV = 15` era **constante de módulo**, e o `CalcularVna` (ramo IPCA) só aplica evento que caia **exatamente** na data de aniversário calculada (`if anivAtual in eventos`, busca por data exata). Dia 15 é convenção de **NTN-B**; a debênture aniversaria no dia das **suas** datas de pagamento. Num papel de aniversário 28 (SSRU11), **os 25 eventos eram silenciosamente descartados** — o VNA ficava sem amortizar e o PU dava **15.403 contra 9.738** da B3. Agora `CalcularAniv`, `ObterUltimoProximoAniv`, `CalcularVna`, `CalcularPupar`, `CalcularPuOperacao` e `CalcularTaxaNegociacao` aceitam `diaAniversario`, **sempre por último na assinatura** e com **default 15** — o add-in do Excel e os gabaritos não mudam de comportamento. O `CalcularAniv` também passou a truncar dia 31 em mês de 30 (antes: `ValueError`).
 
+4. **`CalcularPuOperacao`: a incorporação era IGNORADA** (13/07/2026) — o laço dos eventos futuros desempacotava `pctIncorp` e **nunca o usava**. Num evento de incorporação o juro **não é pago** (vira principal), mas a calc **pagava em dinheiro** e **não fazia o VNA crescer**. O erro é **invisível no par** — capitalizar um fluxo a `jEmi` e descontá-lo a `jNeg` tem VP idêntico quando as duas taxas são iguais — e só aparece **fora do par**. Foi por isso que o TRGP13 batia o PU par a **5,7e-09** e errava **1,3% a 100 bps do par**. Corrigido: `juros *= (1 - pctIncorp/100)`, `vnaVigente *= fatorIncorp`, e a face original cresce junto (mesma álgebra do `CalcularVna`). O ramo DI (`_PuOperacaoDi`) **já tratava certo** — o bug era exclusivo do IPCA.
+
 **Gabaritos depois de tudo: 11 OK, 1 FAIL** — igual a antes. O FAIL (PALF38, VNA de 2025-09-15) é **anterior** e não passa por nenhuma das funções mexidas (verificado por instrumentação: `FatorDi` é chamado **zero** vezes nesse caso).
+
+## O gate de aceitação — e por que o PU par não bastava
+
+O `scripts/conferir_pu.py` compara o PU da calc com o da fonte em **duas** taxas:
+
+1. **no par** (taxa de negociação = taxa de emissão) → valida o **fluxo** e o **VNA**
+2. **a 100 bps do par** → valida o **desconto**
+
+**Só no par não basta**, e isso custou caro: o TRGP13 batia o par a 5,7e-09 e errava 1,3% fora dele. Um ativo pode ter fluxo perfeito e desconto quebrado — e é o desconto que produz a **taxa** que vai para o relatório.
+
+Estado em 13/07/2026 (3.023 ativos validados, referência 10/07):
+
+| | ativos |
+|---|---|
+| batem **no par E fora dele** (≤ 1e-6) | **1.947 — 64,4%** |
+| erram fora do par **por um fio** (1e-6 a 1e-5 ≈ 0,02 bps em taxa) | 596 — **579 CDI+, 16 %CDI, 1 PRE, zero IPCA** |
+| erram fora do par de forma **material** (> 1e-4) | **3** |
+| a investigar (> 1e-3) | 108 |
+
+Com o sarrafo em 1e-5, **2.543 (84,1%)** passam nos dois testes. Os 596 são ruído numérico da projeção DI, não bug.
 
 ## ⚠️ O que ainda NÃO fecha: a taxa fora do par
 
