@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from playwright.async_api import async_playwright
 
 from lib.config import cfg, ObterProxyPlaywright
-from lib.db import ObterBanco
+from lib.db import ObterBanco, SincronizarFluxoAtivos
 from lib.email_outlook import EnviarEmailConclusao
 from lib.logger import ObterLogger
 
@@ -204,12 +204,9 @@ def UpsertInfoAtivos(conn: sqlite3.Connection, ticker: str, cdInstrumento: str, 
         Agora(),
     ))
 
-def UpsertFluxoAtivos(conn: sqlite3.Connection, rows: list):
-    conn.executemany("""
-        INSERT OR REPLACE INTO FluxoAtivos
-            (cdTicker, dtEvento, vrPctAmortizacao, vrPctIncorporacao, dtAtualizacao)
-        VALUES (:cdTicker, :dtEvento, :vrPctAmortizacao, :vrPctIncorporacao, :dtAtualizacao)
-    """, rows)
+# A escrita do fluxo passa por lib.db.SincronizarFluxoAtivos: ele so grava se a
+# agenda mudou de verdade e, nesse caso, invalida a validacao do fluxo do ativo
+# (contrato com a calculadora). Re-scrape que devolve a mesma agenda nao escreve.
 
 # Colunas de InfoAtivos que precisam estar preenchidas para o ticker ser
 # considerado "completo" (não precisa de re-scrape no modo incremental).
@@ -598,7 +595,8 @@ async def Trabalhador(wid: int, queue: asyncio.Queue, browser, dirJson: Path,
             async with lock:
                 UpsertInfoAtivos(conn, ticker, cdInstrumento, info)
                 if linhasFluxo is not None:
-                    UpsertFluxoAtivos(conn, linhasFluxo)
+                    if SincronizarFluxoAtivos(conn, ticker, linhasFluxo):
+                        stats['fluxo_mudou'] += 1
                     stats['fluxo_ok'] += 1
                 else:
                     stats['fluxo_skip'] += 1
@@ -635,7 +633,7 @@ async def PrincipalAsync():
     dirJson.mkdir(parents=True, exist_ok=True)
 
     stats = {'scrappados': 0, 'inseridos': 0, 'erros': 0,
-             'fluxo_ok': 0, 'fluxo_skip': 0, 'descartados': 0,
+             'fluxo_ok': 0, 'fluxo_skip': 0, 'fluxo_mudou': 0, 'descartados': 0,
              'skip_list': 0,        # tickers excluídos pela skip-list manual
              'anomalias': [],       # [(ticker, [skip_reasons])]
              'info_faltante': [],   # [(ticker, cdInstrumento, [campos_null])]
@@ -757,6 +755,7 @@ async def PrincipalAsync():
         f"Descartados (indexador)       : {stats['descartados']}",
         f"Pulados (skip-list)           : {stats['skip_list']}",
         f"FluxoAtivos OK                : {stats['fluxo_ok']}",
+        f"FluxoAtivos mudou (invalidado): {stats['fluxo_mudou']}",
         f"FluxoAtivos skip (evento desc): {stats['fluxo_skip']}",
         f"Erros                         : {stats['erros']}",
     ]

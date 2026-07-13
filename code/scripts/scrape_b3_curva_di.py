@@ -1,8 +1,18 @@
 """
 scrape_b3_curva_di.py
 =====================
-Baixa a curva pré × DI da B3 via API (sem browser) e extrai as taxas nos
-vértices dos contratos DI Futuro (DI1F27–DI1F34), populando MtmAnbima.
+Baixa a curva pré × DI da B3 via API (sem browser). Um download, dois destinos:
+
+  1. `trades.db/MtmAnbima` — as taxas nos vértices dos contratos DI Futuro
+     (DI1F27–DI1F34), que é o que o relatório usa como referência de spread.
+  2. `data/di.db/CurvaDi`  — a **curva inteira** (todos os vértices, du a du),
+     insumo da calculadora de renda fixa para projetar/descontar fluxos DI
+     (ver `lib/calc.py`). Metade do antigo `atualizar_di.py` da calculadora;
+     a outra metade (DI realizado do BCB) virou `scrape_di_bcb.py`.
+
+O arquivamento da curva importa porque a **B3 não guarda histórico**: a API só
+expõe ~20 pregões. Rodando todo dia, acumulamos os snapshots que ela descarta —
+é o que permite reprecificar uma data passada.
 
 API: sistemaswebb3-derivativos.b3.com.br/referenceRatesProxy/
   - Search/GetDate/{base64(json)}   → datas disponíveis (~20 últimos pregões)
@@ -28,6 +38,7 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from lib.calc import ObterBancoDi
 from lib.db import ObterBanco
 from lib.logger import ObterLogger
 from lib.email_outlook import EnviarEmailConclusao
@@ -54,6 +65,12 @@ VALUES (?, ?, ?, ?)
 ON CONFLICT(cdTicker, dtReferencia) DO UPDATE SET
     vrTaxa     = excluded.vrTaxa,
     vrDuration = excluded.vrDuration
+"""
+
+# Curva completa (di.db) — schema é contrato com a calculadora, ver lib/calc.py.
+SQL_UPSERT_CURVA = """
+INSERT OR REPLACE INTO CurvaDi (dtReferencia, du, diasCorridos, vrTaxa)
+VALUES (?, ?, ?, ?)
 """
 
 HEADERS = {"Accept": "application/json", "User-Agent": "Mozilla/5.0"}
@@ -122,7 +139,8 @@ def DatasDisponiveis(client: httpx.Client) -> list[date]:
     return [date.fromisoformat(d[:10]) for d in data]
 
 
-def CsvDuMap(client: httpx.Client, dtStr: str, log) -> dict[int, float] | None:
+def CsvVertices(client: httpx.Client, dtStr: str, log) -> list[tuple[int, int, float]] | None:
+    """Curva completa do pregão: [(du, diasCorridos, taxa)]. None se o CSV vier vazio."""
     raw = ChamarApi(client, "Search/GetDownloadFile", {"language": "pt-br", "id": PRODUTO, "date": dtStr})
     csvBytes = base64.b64decode(raw)
     try:
@@ -130,7 +148,7 @@ def CsvDuMap(client: httpx.Client, dtStr: str, log) -> dict[int, float] | None:
     except UnicodeDecodeError:
         csvText = csvBytes.decode("latin-1")
 
-    duMap: dict[int, float] = {}
+    vertices: list[tuple[int, int, float]] = []
     reader = csv.reader(io.StringIO(csvText), delimiter=";")
     next(reader, None)  # skip header
     for row in reader:
@@ -138,14 +156,27 @@ def CsvDuMap(client: httpx.Client, dtStr: str, log) -> dict[int, float] | None:
             continue
         try:
             du   = int(row[1].strip())
+            dc   = int(row[2].strip())
             taxa = float(row[3].strip().replace(",", "."))
             if du > 0 and taxa > 0:
-                duMap[du] = taxa
+                vertices.append((du, dc, taxa))
         except (ValueError, IndexError):
             continue
 
-    log.debug("curva_di: %s — %d vertices no CSV", dtStr, len(duMap))
-    return duMap if duMap else None
+    log.debug("curva_di: %s — %d vertices no CSV", dtStr, len(vertices))
+    return vertices if vertices else None
+
+
+def GravarCurvaDi(vertices: list[tuple[int, int, float]], dtStr: str, log) -> int:
+    """Arquiva a curva inteira em di.db/CurvaDi (insumo da calculadora)."""
+    conn = ObterBancoDi()
+    try:
+        conn.executemany(SQL_UPSERT_CURVA, [(dtStr, du, dc, taxa) for du, dc, taxa in vertices])
+        conn.commit()
+    finally:
+        conn.close()
+    log.info("curva_di: %s — %d vertices arquivados em di.db/CurvaDi", dtStr, len(vertices))
+    return len(vertices)
 
 
 # ---------------------------------------------------------------------------
@@ -192,8 +223,11 @@ def LerArgumentos() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def MontarResumo(dtStr: str, upserted: int, semMatch: list[str], taxas: dict[str, float]) -> str:
-    lines = ["Resultado:", f"Data: {dtStr}", f"Contratos salvos: {upserted}"]
+def MontarResumo(dtStr: str, upserted: int, semMatch: list[str], taxas: dict[str, float],
+                 nVertices: int) -> str:
+    lines = ["Resultado:", f"Data: {dtStr}",
+             f"Contratos salvos (MtmAnbima): {upserted}",
+             f"Vertices arquivados (CurvaDi): {nVertices}"]
     if semMatch:
         lines.append(f"Sem match du: {', '.join(semMatch)}")
     lines.append("")
@@ -224,17 +258,29 @@ def Principal() -> None:
             datasDisponiveis = DatasDisponiveis(client)
             log.info("curva_di: %d datas disponiveis, mais recente: %s", len(datasDisponiveis), datasDisponiveis[0] if datasDisponiveis else "?")
 
-            if dtRef not in datasDisponiveis:
-                datas = [d.isoformat() for d in datasDisponiveis]
-                raise ValueError(
-                    f"Data {dtStr} nao disponivel na API B3. "
-                    f"Disponiveis: {datas}"
-                )
+            if not datasDisponiveis:
+                raise RuntimeError("API B3 nao devolveu nenhuma data disponivel — fonte quebrada.")
 
-            duMap = CsvDuMap(client, dtStr, log)
-            if duMap is None:
+            if dtRef not in datasDisponiveis:
+                # A B3 só publica ~20 pregões. Data fora dessa janela é "a fonte
+                # não tem esse dado", não "o scraper quebrou": WARNING e exit 0
+                # (senão a carga histórica derruba o pipeline inteiro à toa).
+                datas = ", ".join(d.isoformat() for d in datasDisponiveis)
+                log.warning("curva_di: %s fora da janela da API B3 — nada gravado. Disponiveis: %s", dtStr, datas)
+                summary = (f"Data {dtStr} nao esta na janela publicada pela B3 (~20 pregoes) — nada gravado.\n\n"
+                           f"Datas disponiveis: {datas}")
+                EnviarEmailConclusao(NOME_SCRIPT, True, summary, logger=log)
+                return
+
+            vertices = CsvVertices(client, dtStr, log)
+            if vertices is None:
                 raise ValueError(f"CSV vazio para {dtStr}")
 
+        # Destino 1: a curva inteira (calculadora). Destino 2: os vértices dos
+        # contratos DI1 (relatório). Mesmo CSV, uma requisição só.
+        nVertices = GravarCurvaDi(vertices, dtStr, log)
+
+        duMap = {du: taxa for du, _dc, taxa in vertices}
         upsertRows, semMatch = ProcessarDuMap(duMap, dtRef, feriados, dtStr, log)
 
         conn = ObterBanco()
@@ -247,7 +293,7 @@ def Principal() -> None:
             conn.close()
 
         taxas   = {row[0]: row[2] for row in upsertRows}
-        summary = MontarResumo(dtStr, len(upsertRows), semMatch, taxas)
+        summary = MontarResumo(dtStr, len(upsertRows), semMatch, taxas, nVertices)
         log.info("curva_di: concluido.\n%s", summary)
 
     except Exception:
@@ -257,6 +303,9 @@ def Principal() -> None:
 
     finally:
         EnviarEmailConclusao(NOME_SCRIPT, success, summary, logger=log)
+
+    if not success:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

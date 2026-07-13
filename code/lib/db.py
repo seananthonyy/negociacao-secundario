@@ -67,8 +67,18 @@ CREATE TABLE IF NOT EXISTS InfoAtivos (
     vrTaxaEmissao        REAL NULL,
     vrVNE                REAL NULL,
     dtInicioRentabilidade TEXT NULL,
-    dtAtualizacao      TEXT NOT NULL
+    dtAtualizacao      TEXT NOT NULL,
+    -- Validacao do fluxo (contrato com a calculadora de renda fixa).
+    -- O INGESTOR (este projeto) so escreve stTemFluxo e ZERA as demais;
+    -- quem VALIDA (marca 1 / grava data / fonte) e o validar_fluxos.py.
+    stTemFluxo            INTEGER NOT NULL DEFAULT 0,  -- 1 tem linha em FluxoAtivos
+    stFluxoValidado       INTEGER NOT NULL DEFAULT 0,  -- 1 fluxo conferido contra a fonte
+    dtValidacaoFluxo      TEXT NULL,                   -- ISO da validacao OK
+    cdFonteValidacaoFluxo TEXT NULL,                   -- 'B3' | 'FiAnalytics' | 'Manual'
+    dtUltimaTentativa     TEXT NULL                    -- ISO da ultima tentativa (validou ou nao)
 );
+-- idxInfoAtivosStFluxoValidado e criado no Bootstrap(), DEPOIS dos ALTER TABLE:
+-- numa base que ja existe, a coluna so aparece na migracao.
 CREATE INDEX IF NOT EXISTS idxInfoAtivosCdIndexador ON InfoAtivos(cdIndexador);
 
 -- ===== AnbimaIndicativos =====
@@ -118,6 +128,47 @@ CREATE TABLE IF NOT EXISTS Outstanding (
     PRIMARY KEY (cdTicker, dtOutstanding)
 );
 CREATE INDEX IF NOT EXISTS idxOutstandingDtOutstanding ON Outstanding(dtOutstanding);
+"""
+
+
+# Colunas de InfoAtivos que DEFINEM o fluxo de caixa do ativo: se qualquer uma
+# delas mudar de valor, a validacao do fluxo (stFluxoValidado) deixa de valer.
+# dtVencimento NAO entra: e deduzido do proprio fluxo (ultimo evento).
+COLS_INVALIDAM_FLUXO = (
+    "dtInicioRentabilidade",
+    "vrTaxaEmissao",
+    "cdIndexador",
+    "vrVNE",
+)
+
+SQL_ZERA_VALIDACAO = """
+    stFluxoValidado       = 0,
+    dtValidacaoFluxo      = NULL,
+    cdFonteValidacaoFluxo = NULL,
+    dtUltimaTentativa     = NULL
+"""
+
+# Trigger de invalidacao. Fica no BANCO (nao nos scrapers) porque as colunas de
+# COLS_INVALIDAM_FLUXO tem 4 writers (anbima_data, fianalytics_planilha,
+# anbima_debentures, anbima_cri_cra) e todos usam ON CONFLICT DO UPDATE, que
+# dispara AFTER UPDATE. Um lugar so, e cobre qualquer script futuro.
+#
+# `IS NOT` e comparacao null-safe: so dispara em mudanca REAL de valor
+# (reescrever o mesmo valor, ou COALESCE que preserva o existente, nao invalida;
+# preencher um NULL invalida, porque isso muda o calculo).
+#
+# O UPDATE de dentro do trigger nao se re-dispara: recursive_triggers e OFF por
+# padrao no SQLite e, mesmo ligado, ele nao toca nenhuma coluna do WHEN.
+DDL_TRIGGERS = f"""
+CREATE TRIGGER IF NOT EXISTS trgInfoAtivosInvalidaFluxo
+AFTER UPDATE OF {", ".join(COLS_INVALIDAM_FLUXO)} ON InfoAtivos
+FOR EACH ROW
+WHEN {" OR ".join(f"old.{c} IS NOT new.{c}" for c in COLS_INVALIDAM_FLUXO)}
+BEGIN
+    UPDATE InfoAtivos
+       SET {SQL_ZERA_VALIDACAO}
+     WHERE cdTicker = new.cdTicker;
+END;
 """
 
 
@@ -191,20 +242,44 @@ def Bootstrap(conn: sqlite3.Connection) -> None:
     """Executa DDL completo. Idempotente (IF NOT EXISTS em tudo)."""
     conn.executescript(DDL)
     # Migração segura: adiciona colunas novas em tabelas existentes
-    for sql in [
-        "ALTER TABLE InfoAtivos ADD COLUMN dtAtualizacaoDuration TEXT NULL",
-        "ALTER TABLE InfoAtivos ADD COLUMN cdFonteReferencia TEXT NULL",
-        "ALTER TABLE InfoAtivos ADD COLUMN vrTaxaEmissao REAL NULL",
-        "ALTER TABLE InfoAtivos ADD COLUMN vrVNE REAL NULL",
-        "ALTER TABLE InfoAtivos ADD COLUMN dtInicioRentabilidade TEXT NULL",
-        "ALTER TABLE InfoAtivos ADD COLUMN cdISIN              TEXT NULL",
-        "ALTER TABLE InfoAtivos ADD COLUMN vrQuantidadeEmissao REAL NULL",
-        "ALTER TABLE InfoAtivos ADD COLUMN dtEmissao           TEXT NULL",
+    novas = set()
+    for coluna, sql in [
+        ("dtAtualizacaoDuration", "ALTER TABLE InfoAtivos ADD COLUMN dtAtualizacaoDuration TEXT NULL"),
+        ("cdFonteReferencia",     "ALTER TABLE InfoAtivos ADD COLUMN cdFonteReferencia TEXT NULL"),
+        ("vrTaxaEmissao",         "ALTER TABLE InfoAtivos ADD COLUMN vrTaxaEmissao REAL NULL"),
+        ("vrVNE",                 "ALTER TABLE InfoAtivos ADD COLUMN vrVNE REAL NULL"),
+        ("dtInicioRentabilidade", "ALTER TABLE InfoAtivos ADD COLUMN dtInicioRentabilidade TEXT NULL"),
+        ("cdISIN",                "ALTER TABLE InfoAtivos ADD COLUMN cdISIN              TEXT NULL"),
+        ("vrQuantidadeEmissao",   "ALTER TABLE InfoAtivos ADD COLUMN vrQuantidadeEmissao REAL NULL"),
+        ("dtEmissao",             "ALTER TABLE InfoAtivos ADD COLUMN dtEmissao           TEXT NULL"),
+        # Validacao de fluxo. Os dois INTEGER tem DEFAULT NOT NULL, entao o
+        # ALTER ja preenche as linhas existentes com 0 (= nada validado ainda).
+        ("stTemFluxo",            "ALTER TABLE InfoAtivos ADD COLUMN stTemFluxo            INTEGER NOT NULL DEFAULT 0"),
+        ("stFluxoValidado",       "ALTER TABLE InfoAtivos ADD COLUMN stFluxoValidado       INTEGER NOT NULL DEFAULT 0"),
+        ("dtValidacaoFluxo",      "ALTER TABLE InfoAtivos ADD COLUMN dtValidacaoFluxo      TEXT NULL"),
+        ("cdFonteValidacaoFluxo", "ALTER TABLE InfoAtivos ADD COLUMN cdFonteValidacaoFluxo TEXT NULL"),
+        ("dtUltimaTentativa",     "ALTER TABLE InfoAtivos ADD COLUMN dtUltimaTentativa     TEXT NULL"),
     ]:
         try:
             conn.execute(sql)
+            novas.add(coluna)
         except Exception:
             pass  # coluna já existe
+
+    # Backfill do stTemFluxo: so na migracao (uma passada). Dai em diante quem
+    # mantem e o MarcarTemFluxo(), chamado por quem escreve em FluxoAtivos.
+    if "stTemFluxo" in novas:
+        conn.execute("""
+            UPDATE InfoAtivos SET stTemFluxo =
+                CASE WHEN EXISTS (SELECT 1 FROM FluxoAtivos f
+                                  WHERE f.cdTicker = InfoAtivos.cdTicker)
+                     THEN 1 ELSE 0 END
+        """)
+
+    # Trigger de invalidacao: DEPOIS dos ALTERs (o corpo referencia as colunas novas).
+    conn.executescript(DDL_TRIGGERS)
+    conn.execute("CREATE INDEX IF NOT EXISTS idxInfoAtivosStFluxoValidado "
+                 "ON InfoAtivos(stFluxoValidado)")
     # Remove indice redundante (coberto pela PK composta de FluxoAtivos).
     conn.execute("DROP INDEX IF EXISTS idxFluxoAtivosCdTicker")
     conn.commit()
@@ -222,3 +297,76 @@ def ObterBanco(caminhoBanco: str | None = None) -> sqlite3.Connection:
     conn = ObterConexao(caminhoBanco)
     Bootstrap(conn)
     return conn
+
+
+# ---------------------------------------------------------------------------
+# Contrato de validacao de fluxo (ver vault "98 - Backlog")
+#
+# Este projeto (ingestor) NUNCA valida nada: so mantem stTemFluxo e ZERA a
+# validacao quando o fluxo do ativo muda. Quem marca stFluxoValidado = 1 e
+# grava dtValidacaoFluxo/cdFonteValidacaoFluxo/dtUltimaTentativa e o
+# validar_fluxos.py (hoje no projeto da calculadora, lendo o mesmo trades.db).
+#
+# As 4 colunas de InfoAtivos que invalidam (COLS_INVALIDAM_FLUXO) sao cobertas
+# pelo trigger trgInfoAtivosInvalidaFluxo. O FluxoAtivos NAO da pra cobrir por
+# trigger: o INSERT OR REPLACE e DELETE+INSERT, entao dispararia mesmo
+# reescrevendo dado identico (o caso dos tickers re-enfileirados todo dia).
+# Por isso a escrita do fluxo passa por SincronizarFluxoAtivos(), que compara
+# antes de escrever.
+# ---------------------------------------------------------------------------
+
+def InvalidarValidacaoFluxo(conn: sqlite3.Connection, cdTicker: str) -> None:
+    """Marca o fluxo do ativo como nao-validado e limpa o resultado anterior.
+
+    dtUltimaTentativa tambem vai a NULL: o resultado da ultima tentativa virou
+    lixo no instante em que o fluxo mudou, entao o ativo volta pro topo da fila
+    do validador em vez de esperar a janela de throttle."""
+    conn.execute(f"UPDATE InfoAtivos SET {SQL_ZERA_VALIDACAO} WHERE cdTicker = ?",
+                 (cdTicker,))
+
+
+def MarcarTemFluxo(conn: sqlite3.Connection, cdTicker: str, temFluxo: bool = True) -> None:
+    """Mantem InfoAtivos.stTemFluxo em dia. Chamado por quem escreve FluxoAtivos."""
+    conn.execute("UPDATE InfoAtivos SET stTemFluxo = ? WHERE cdTicker = ?",
+                 (1 if temFluxo else 0, cdTicker))
+
+
+def LerFluxoAtivos(conn: sqlite3.Connection, cdTicker: str) -> dict:
+    """Agenda atual do ticker: {dtEvento: (vrPctAmortizacao, vrPctIncorporacao)}."""
+    rows = conn.execute(
+        "SELECT dtEvento, vrPctAmortizacao, vrPctIncorporacao "
+        "FROM FluxoAtivos WHERE cdTicker = ?", (cdTicker,)).fetchall()
+    return {r["dtEvento"]: (r["vrPctAmortizacao"], r["vrPctIncorporacao"]) for r in rows}
+
+
+def SincronizarFluxoAtivos(conn: sqlite3.Connection, cdTicker: str, linhas: list) -> bool:
+    """Escreve a agenda do ticker em FluxoAtivos SO se ela mudou. Retorna se mudou.
+
+    `linhas`: dicts com cdTicker, dtEvento, vrPctAmortizacao, vrPctIncorporacao,
+    dtAtualizacao (o formato que ProcessarAgenda produz).
+
+    Mudou = evento novo, ou evento existente com %amortizacao/%incorporacao
+    diferente. Reescrever a agenda identica (re-scrape do dia a dia) nao conta
+    como mudanca: nao escreve, nao invalida, nao mexe no dtAtualizacao.
+
+    Quando muda: grava, invalida a validacao do fluxo e atualiza stTemFluxo."""
+    if not linhas:
+        return False
+
+    atual = LerFluxoAtivos(conn, cdTicker)
+    mudou = any(
+        atual.get(l["dtEvento"], object())
+        != (l["vrPctAmortizacao"], l["vrPctIncorporacao"])
+        for l in linhas
+    )
+    if not mudou:
+        return False
+
+    conn.executemany("""
+        INSERT OR REPLACE INTO FluxoAtivos
+            (cdTicker, dtEvento, vrPctAmortizacao, vrPctIncorporacao, dtAtualizacao)
+        VALUES (:cdTicker, :dtEvento, :vrPctAmortizacao, :vrPctIncorporacao, :dtAtualizacao)
+    """, linhas)
+    InvalidarValidacaoFluxo(conn, cdTicker)
+    MarcarTemFluxo(conn, cdTicker, True)
+    return True

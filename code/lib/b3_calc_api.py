@@ -37,6 +37,9 @@ CACHE_MISS = object()
 # Guarda float (% a.a.) ou None. Ambos são cacheados para evitar chamadas repetidas.
 cacheTaxas: dict[tuple, object] = {}
 
+# Cache do getBondDetails por cdTicker (cadastro estático: não muda na rodagem).
+cacheDetalhes: dict[str, object] = {}
+
 
 def ResetarToken() -> None:
     """Descarta o token em memória, forçando novo login na próxima chamada."""
@@ -135,7 +138,11 @@ def CalcularPuGov(cetip: str, dtRef: str, taxa: float) -> tuple[float | None, fl
         log.warning("b3_calc_api: resposta nao e JSON valido em calcPU %s: %s", url, exc)
         return None, None
 
-    rawPu       = data.get("pu")
+    # A B3 devolve o PU em "PU" (maiúsculo) e a duration em "duration" (minúsculo) —
+    # tanto para CETIP de governo quanto para ticker de debênture. Ler "pu" trazia
+    # None sempre; passou despercebido porque o único chamador (scrape_anbima_ntnb)
+    # só usa a duration.
+    rawPu       = data.get("PU", data.get("pu"))
     rawDuration = data.get("duration")
 
     pu       = float(rawPu)       if rawPu       is not None else None
@@ -143,6 +150,53 @@ def CalcularPuGov(cetip: str, dtRef: str, taxa: float) -> tuple[float | None, fl
 
     log.debug("b3_calc_api: calcPU %s/%s/%s → pu=%s duration=%s", cetip, dtRef, taxa, pu, duration)
     return pu, duration
+
+
+def ObterDetalhesAtivo(cdTicker: str) -> dict | None:
+    """
+    Cadastro + agenda de eventos de um ativo, via GET /getBondDetails/{cdTicker}.
+
+    Estático: não leva data nem taxa. Devolve o dict cru da B3 ou None se ela não
+    cobrir o ativo. Campos usados pelo validar_fluxos.py:
+      startingdate, issuedate, expiredate, yield (taxa de emissão), method
+      (IPCA-I | IPCA | DI-PERC | DI-SPREAD | PRE), anniversaryday, vne, issuer,
+      events: [{date, eventType, yield}] — 'A' = %amortização, 'J' = cupom
+      (no estilo IPCA-I o yield do 'J' é a %incorporação).
+
+    Resultados (incluindo None) são cacheados por ticker — o cadastro não muda
+    dentro de uma rodagem.
+    """
+    cached = cacheDetalhes.get(cdTicker, CACHE_MISS)
+    if cached is not CACHE_MISS:
+        return cached  # type: ignore[return-value]
+
+    baseUrl = cfg["api"]["b3"]["baseUrl"]
+    timeout = cfg["calc"]["timeoutSeconds"]
+    url = f"{baseUrl}/getBondDetails/{cdTicker}"
+
+    log.debug("b3_calc_api: GET %s", url)
+    resp = Requisitar(url, timeout)
+
+    if resp is None or not resp.is_success:
+        if resp is not None:
+            log.debug("b3_calc_api: HTTP %d em getBondDetails %s", resp.status_code, cdTicker)
+        cacheDetalhes[cdTicker] = None
+        return None
+
+    try:
+        data = resp.json()
+    except Exception as exc:
+        log.warning("b3_calc_api: resposta não é JSON válido em %s: %s", url, exc)
+        cacheDetalhes[cdTicker] = None
+        return None
+
+    # Sem 'codbond' a B3 não conhece o papel (devolve corpo vazio/erro com HTTP 200).
+    result = data if isinstance(data, dict) and data.get("codbond") else None
+    if result is None:
+        log.debug("b3_calc_api: getBondDetails sem cadastro para %s", cdTicker)
+
+    cacheDetalhes[cdTicker] = result
+    return result
 
 
 def CalcularYield(cdTicker: str, dtLiquidacao: str, vrPU: float) -> float | None:

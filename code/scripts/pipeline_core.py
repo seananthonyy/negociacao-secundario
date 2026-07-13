@@ -173,8 +173,39 @@ def Ntnb(inicio, fim=None, workers=None, resultados=None) -> bool:
     return RodarPasso("scrape_anbima_ntnb", *ArgsData(inicio, fim), *extra, resultados=resultados)
 
 def CurvaDi(d, resultados=None) -> bool:
-    """Curva DI B3 (MtM). Só aceita data única — rodar 1× por pregão."""
+    """Curva DI B3. Dois destinos num download: MtmAnbima (contratos DI1, p/ o
+    relatório) e di.db/CurvaDi (curva inteira, p/ a calculadora).
+    Só aceita data única — rodar 1× por pregão."""
     return RodarPasso("scrape_b3_curva_di", "--date", d, resultados=resultados)
+
+
+# --- Insumos da calculadora de renda fixa (ver lib/calc.py) -----------------
+# Não dependem da liquidação X: rodam uma vez por ciclo, no bloco global.
+
+def IpcaIbge(resultados=None) -> bool:
+    """IPCA realizado (IBGE/SIDRA) → ipca.db/IPCA. Sem data: reprocessa a série."""
+    return RodarPasso("scrape_ipca_ibge", resultados=resultados)
+
+def IpcaProjetado(resultados=None) -> bool:
+    """Projeção de IPCA (Anbima) → ipca.db/IPCAProjetado. Rodar ANTES das 17h30."""
+    return RodarPasso("scrape_ipca_projetado_anbima", resultados=resultados)
+
+def DiBcb(inicio=None, fim=None, resultados=None) -> bool:
+    """DI realizado (BCB/SGS) → di.db/DiHistorico. Sem args: incremental desde o
+    último dia gravado. Com intervalo: força a janela (backfill)."""
+    args = ArgsData(inicio, fim) if inicio else ()
+    return RodarPasso("scrape_di_bcb", *args, resultados=resultados)
+
+def ValidarFluxos(limite=None, tickers=None, resultados=None) -> bool:
+    """Valida o fluxo dos ativos contra B3/FI e marca InfoAtivos.stFluxoValidado.
+    DEPOIS do anbima_data (que popula FluxoAtivos) — a fila tem throttle de 10 dias,
+    então rodar todo dia é barato. limite/tickers: só para smoke test."""
+    extra = []
+    if limite is not None:
+        extra += ["--limite", str(limite)]
+    if tickers:
+        extra += ["--tickers", tickers]
+    return RodarPasso("validar_fluxos", *extra, resultados=resultados)
 
 def Outstanding(inicio, fim=None, resultados=None) -> bool:
     """Outstanding via Bloomberg — SÓ NO BANCO. Data única ou intervalo."""
@@ -219,7 +250,7 @@ def Relatorio(resultados=None) -> bool:
 
 def RodarDia(X: date | str, resultados: list | None = None,
             gerarRelatorio: bool = True) -> list:
-    """Cadeia completa dos 13 passos para a liquidação X (ver [[11 - Pipeline de Execucao]]).
+    """Cadeia completa para a liquidação X (ver [[11 - Pipeline de Execucao]]).
     Raspa Anbima deb/CRI/CRA de X E X-1u (Anbima casado por dtNegocio).
     Passe gerarRelatorio=False ao rodar em loop (relatório 1× no fim)."""
     res = resultados if resultados is not None else []
@@ -235,6 +266,13 @@ def RodarDia(X: date | str, resultados: list | None = None,
     for d in (Xant, X):
         CurvaDi(d, resultados=res)
 
+    # Insumos da calculadora (sem data) + validação do fluxo, que depende do
+    # anbima_data acima ter atualizado InfoAtivos/FluxoAtivos.
+    IpcaIbge(resultados=res)
+    IpcaProjetado(resultados=res)
+    DiBcb(resultados=res)
+    ValidarFluxos(resultados=res)
+
     CalcTaxa(X, resultados=res)
     Filtrar(X, resultados=res)
     for d in (Xant, X):
@@ -249,10 +287,10 @@ def RodarDia(X: date | str, resultados: list | None = None,
 
 
 def RodarCadeiaDias(dias: list[date], rotulo: str) -> list:
-    """Roda a cadeia completa dos 13 passos para uma lista de liquidações `dias`
-    (cronológica) e gera o relatório 1× no fim. Passos globais (fianalytics,
-    anbima_data, match_ref) rodam uma vez sobre a janela inteira. Base das duas
-    rotinas públicas: RodarUltimosN (padrão) e RodarIntervalo (range explícito)."""
+    """Roda a cadeia completa para uma lista de liquidações `dias` (cronológica) e
+    gera o relatório 1× no fim. Passos globais (fianalytics, anbima_data, insumos da
+    calculadora, validar_fluxos, match_ref) rodam uma vez sobre a janela inteira.
+    Base das duas rotinas públicas: RodarUltimosN (padrão) e RodarIntervalo (range)."""
     if not dias:
         raise SystemExit("Sem dias úteis para processar — confira as datas.")
     res: list[tuple[str, bool]] = []
@@ -260,6 +298,11 @@ def RodarCadeiaDias(dias: list[date], rotulo: str) -> list:
     print(f"{rotulo} — liquidações {dias[0]} .. {dias[-1]} ({len(dias)} dias); X-1u da 1ª = {Xant0}")
 
     FiAnalytics(resultados=res)
+
+    # Insumos da calculadora: não dependem de X, uma passada por ciclo.
+    IpcaIbge(resultados=res)
+    IpcaProjetado(resultados=res)
+    DiBcb(resultados=res)
 
     for X in dias:
         Xant = DiaUtilAnterior(X)
@@ -274,6 +317,9 @@ def RodarCadeiaDias(dias: list[date], rotulo: str) -> list:
     CurvaDi(Xant0, resultados=res)
 
     AnbimaData(Xant0, dias[-1], resultados=res)
+    # Depois do anbima_data: é ele quem atualiza InfoAtivos/FluxoAtivos e, quando o
+    # fluxo muda de verdade, zera a validação — o ativo volta pro topo da fila.
+    ValidarFluxos(resultados=res)
 
     for X in dias:
         CalcTaxa(X, resultados=res)
@@ -336,6 +382,14 @@ def RodarSetup(inicioBoletim: date | str,
     Boletim(inicioBoletim, hoje, resultados=res)          # janela escolhida
     if rodarOutstanding:
         Outstanding(inicioBoletim, hoje, resultados=res)  # só no banco
+
+    # Insumos da calculadora: séries inteiras (IPCA desde 1979, DI desde 2000).
+    IpcaIbge(resultados=res)
+    IpcaProjetado(resultados=res)
+    DiBcb(resultados=res)
+    # Validação em massa: na base virgem a fila é o universo inteiro (~4.800 ativos,
+    # 1 chamada à B3 cada) — é o passo mais demorado depois do anbima_data.
+    ValidarFluxos(resultados=res)
 
     dias = DiasUteisEntre(inicioBoletim, hoje)
     for X in dias:

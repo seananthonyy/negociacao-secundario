@@ -1,8 +1,19 @@
 # Banco de Dados
 
-> Ver também: [[00 - Inicio]] | [[03 - Estrutura de Pastas]] | [[07 - Filtro de Duplicados]]
+> Ver também: [[00 - Inicio]] | [[03 - Estrutura de Pastas]] | [[07 - Filtro de Duplicados]] | [[14 - Rotinas da Calculadora]]
 
 Um único arquivo SQLite em `code/data/trades.db`. O módulo `lib/db.py` faz o bootstrap automático do DDL na primeira execução de qualquer script — não é preciso criar o banco manualmente.
+
+## Os outros dois bancos (insumos da calculadora — 12/07/2026)
+
+Desde a adoção das rotinas da calculadora de renda fixa, `code/data/` guarda mais **dois** SQLite. Eles **não** são o `trades.db` nem seguem as convenções dele: o schema é **contrato com a calc**, que os lê direto (via `lib/calc.py`). Não renomear coluna.
+
+| Arquivo | Tabelas | Quem escreve |
+|---|---|---|
+| `data/ipca.db` | `IPCA` (`dtIPCA` PK 'YYYY-MM', `vrIndiceIPCA`, `dtDivulgacaoIPCA`) · `IPCAProjetado` (`dtIPCAProjetado` PK, `vrProjecaoIPCA`) | `scrape_ipca_ibge`, `scrape_ipca_projetado_anbima` |
+| `data/di.db` | `DiHistorico` (`dtReferencia` PK, `vrTaxaDiAnual`, `vrTaxaDiDiaria`) · `CurvaDi` (PK `dtReferencia`+`du`, `diasCorridos`, `vrTaxa`) | `scrape_di_bcb`, `scrape_b3_curva_di` |
+
+DDL e conexões em `lib/calc.py` (`ObterBancoIpca`, `ObterBancoDi`) — não em `lib/db.py`, que continua sendo só do `trades.db`. Detalhes das rotinas em [[14 - Rotinas da Calculadora]].
 
 ---
 
@@ -103,6 +114,11 @@ Informações estáticas dos ativos, consolidadas de três fontes: planilha FI A
 | `vrQuantidadeEmissao` | REAL | Anbima Data | Quantidade emitida desta série |
 | `dtEmissao` | TEXT | Anbima Data | Data de emissão da série |
 | `dtAtualizacao` | TEXT | automático | Timestamp do último UPSERT |
+| `stTemFluxo` | INTEGER | ingestor | `1` se o ativo tem linha em `FluxoAtivos`, senão `0` |
+| `stFluxoValidado` | INTEGER | ingestor zera / validador marca | `1` = fluxo conferido contra a fonte de verdade |
+| `dtValidacaoFluxo` | TEXT | validador | ISO da validação OK |
+| `cdFonteValidacaoFluxo` | TEXT | validador | `'B3'` / `'FiAnalytics'` / `'Manual'` |
+| `dtUltimaTentativa` | TEXT | validador | ISO da última tentativa (validou ou não) — base do throttle |
 
 #### `cdFonteReferencia`
 
@@ -137,10 +153,50 @@ CREATE TABLE IF NOT EXISTS InfoAtivos (
     cdISIN               TEXT NULL,          -- código ISIN — fonte: Anbima Data
     vrQuantidadeEmissao  REAL NULL,          -- quantidade emitida desta série — fonte: Anbima Data
     dtEmissao            TEXT NULL,          -- data de emissão da série — fonte: Anbima Data
-    dtAtualizacao          TEXT NOT NULL
+    dtAtualizacao          TEXT NOT NULL,
+    -- colunas adicionadas via migração em bootstrap() (11/07/2026) — validação de fluxo:
+    stTemFluxo            INTEGER NOT NULL DEFAULT 0,
+    stFluxoValidado       INTEGER NOT NULL DEFAULT 0,
+    dtValidacaoFluxo      TEXT NULL,
+    cdFonteValidacaoFluxo TEXT NULL,
+    dtUltimaTentativa     TEXT NULL
 );
-CREATE INDEX IF NOT EXISTS idxInfoAtivosCdIndexador ON InfoAtivos(cdIndexador);
+CREATE INDEX IF NOT EXISTS idxInfoAtivosCdIndexador    ON InfoAtivos(cdIndexador);
+CREATE INDEX IF NOT EXISTS idxInfoAtivosStFluxoValidado ON InfoAtivos(stFluxoValidado);
 ```
+
+#### Validação de fluxo — o contrato com a calculadora (11/07/2026)
+
+A calculadora de renda fixa precifica lendo `InfoAtivos` + `FluxoAtivos`, mas esses dados vêm raspados da Anbima e **podem estar errados** (cupom classificado como amortização, data DU-ajustada, incorporação faltando). Por isso ela **só precifica ativo com `stFluxoValidado = 1`** — fluxo conferido campo a campo contra a B3 (`getBondDetails`) ou a FI Analytics. Spec completa: `D:\ItauBBA\calculadora-renda-fixa\PLANO_VALIDACAO_FLUXOS.md`.
+
+**Divisão de papéis — este projeto (ingestor) NUNCA valida nada:**
+
+| coluna | ingestor (este projeto) | validador (`validar_fluxos.py`) |
+|---|---|---|
+| `stTemFluxo` | **mantém** (1/0 conforme tenha fluxo) | não toca |
+| `stFluxoValidado` | escreve **só `0`** | escreve `1` ao validar |
+| `dtValidacaoFluxo` | escreve **só `NULL`** | grava a data do OK |
+| `cdFonteValidacaoFluxo` | escreve **só `NULL`** | grava `B3`/`FiAnalytics`/`Manual` |
+| `dtUltimaTentativa` | escreve **só `NULL`** (na invalidação) | grava em toda tentativa |
+
+> **Atualizado em 12/07/2026:** o `validar_fluxos.py` **migrou para cá** (`code/scripts/validar_fluxos.py`) e virou o passo 11 do pipeline. A divisão de papéis acima continua idêntica — o script de validação escreve as 4 colunas, os scrapers mantêm `stTemFluxo` e zeram a validação. Ver [[14 - Rotinas da Calculadora]].
+
+**Invalidação — só em mudança REAL de valor.** Cinco coisas invalidam o fluxo de um ativo:
+
+1. a agenda dele em `FluxoAtivos`
+2. `dtInicioRentabilidade`
+3. `vrTaxaEmissao`
+4. `cdIndexador`
+5. `vrVNE`
+
+`dtVencimento` **não** entra (é deduzido do último evento do fluxo). Emissor, ISIN, quantidade de emissão, duration e referência também não — não entram no cálculo de PU/VNA.
+
+Reescrever o **mesmo** valor não invalida. Isso é essencial: os scrapers reescrevem `InfoAtivos`/`FluxoAtivos` todo dia com dado quase sempre idêntico, e um reset "a cada escrita" colocaria a base em churn permanente (valida → reescreve → invalida → revalida), queimando chamadas de API e deixando a calculadora sem ativos para precificar.
+
+**Como é implementado (dois mecanismos, por necessidade):**
+
+- **Colunas de `InfoAtivos` → trigger `trgInfoAtivosInvalidaFluxo`** (`lib/db.py`, `DDL_TRIGGERS`). Fica no banco, não nos scrapers, porque `cdIndexador` e `vrTaxaEmissao` têm **4 writers** (`scrape_anbima_data_ativos`, `scrape_fianalytics_planilha`, `scrape_anbima_debentures`, `scrape_anbima_cri_cra`) e todos usam `ON CONFLICT DO UPDATE`, que dispara `AFTER UPDATE`. Um lugar só, cobre qualquer script futuro. O `WHEN old.X IS NOT new.X` (comparação null-safe) garante o "só em mudança real". Preencher um NULL **conta** como mudança — o buraco preenchido muda o cálculo.
+- **`FluxoAtivos` → `SincronizarFluxoAtivos()`** em Python (`lib/db.py`). Trigger não serve aqui: o `INSERT OR REPLACE` é DELETE+INSERT, então dispararia mesmo reescrevendo agenda idêntica. A função compara a agenda nova com a gravada e **só escreve se mudou** (evento novo, ou %amortização/%incorporação diferente); quando muda, grava, invalida e atualiza `stTemFluxo`. É o **único** caminho de escrita em `FluxoAtivos`.
 
 **Decisao (01/06/2026):** `cdReferencia` e `vrDuration` populados primariamente pelos scrapers Anbima/FI Analytics. `match_referencias.py` só atua nos ativos sem `cdReferencia` preenchido. COALESCE garante que nenhum scraper sobrescreva valor existente com NULL.
 

@@ -15,7 +15,7 @@ negociacao-secundario/
 ├── code/                    Projeto Python (todos os paths internos relativos a esta pasta)
 │   ├── scripts/             Scripts executáveis independentes (CLI)
 │   ├── lib/                 Módulos compartilhados
-│   ├── data/                trades.db, logs/, relatorios/
+│   ├── data/                trades.db + ipca.db/di.db (insumos da calc), logs/, relatorios/
 │   ├── templates/           Jinja2 do relatório HTML
 │   ├── config.toml          Configurações
 │   ├── .env                 Secrets (não versionar)
@@ -23,6 +23,12 @@ negociacao-secundario/
 ├── vault/                   Obsidian — fonte da verdade viva do projeto
 └── .claude/agents/          Subagents customizados (coder, documenter)
 ```
+
+## Calculadora de renda fixa (projeto vizinho)
+
+`D:\ItauBBA\calculadora-renda-fixa` é a **biblioteca de cálculo** (precifica: VNA, PU Par, PU de operação, duration). **Não modificar `calculadora_rf.py` sem permissão explícita do usuário.**
+
+Desde 12/07/2026, **este** projeto roda as rotinas de dados que ela consome (IPCA, projeção de IPCA, DI, curva DI) e valida o fluxo dos ativos que ela pode precificar. Os bancos `data/ipca.db` e `data/di.db` são nossos; o schema deles é **contrato com a calc** (não segue o prefixo `vr/cd/dt` — não renomear). Import via `lib/calc.py`. Ver **[[14 - Rotinas da Calculadora]]** no vault.
 
 ## Agentes customizados
 

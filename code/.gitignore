@@ -14,6 +14,10 @@ data/relatorios/
 data/anbima_data_raw/
 data/api_samples/
 data/debug/
+data/backups/
+data/divergencias_fluxo.csv
+data/carencia_conferir_pu.csv
+data/pu_divergencias.csv
 
 # --- Python ---
 __pycache__/
@@ -23,3 +27,6 @@ venv/
 
 # --- Playwright ---
 .playwright/
+data/*.bak-*
+data/*.csv.bak
+data/cobertura_fontes.csv

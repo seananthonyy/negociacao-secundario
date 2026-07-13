@@ -5,6 +5,16 @@ logsDir        = "data/logs"
 templatesDir   = "templates"
 anbimaDataRaw  = "data/anbima_data_raw"
 
+# Insumos da calculadora de renda fixa (ver lib/calc.py). Ficam em data/, junto do
+# trades.db — este projeto é quem os coleta; a calc só os lê.
+ipcaDb         = "data/ipca.db"
+diDb           = "data/di.db"
+
+# Onde a calculadora está instalada (biblioteca de cálculo — não versionada aqui).
+# Relativo a code/ ou absoluto. No banco pode ser sobrescrito pela variável de
+# ambiente mapeada em [env].calculadoraDir.
+calculadoraDir = "../../calculadora-renda-fixa"
+
 [env]
 # Mapeia cada segredo para os NOMES das variáveis de ambiente que o guardam
 # (apenas nomes — nunca valores; seguro para repositório público).
@@ -19,6 +29,7 @@ httpProxy          = ["proxy_http",  "HTTP_PROXY",  "http_proxy"]
 httpsProxy         = ["proxy_https", "HTTPS_PROXY", "https_proxy"]
 outlookTo          = ["OUTLOOK_TO"]
 emailDestinatarios = ["EMAIL_DESTINATARIOS"]
+calculadoraDir     = ["CALCULADORA_DIR"]
 
 [filtro]
 # Filtro 1 — Passagem de Fundo

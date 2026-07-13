@@ -111,6 +111,43 @@ def ChamarPrimaria(cdTicker: str, cdInstrumento: str, dtLiquidacao: str, vrPU: f
     return rate
 
 
+def ChamarCompleto(cdTicker: str, dtIso: str, vrTaxa: float) -> dict | None:
+    """
+    Resposta CRUA do calculador da FI, dado (ticker, data, taxa) — modo `rate`.
+
+    Enquanto ChamarPrimaria() extrai só o m2mRate, aqui devolvemos o dict inteiro:
+    `cashFlowEvents` (a agenda), `issueRate`, `maturityDate`, `adjustedFaceValue`
+    (VNA) e `accruedInterest`. É o que o validar_fluxos.py precisa para conferir a
+    agenda quando a B3 não cobre o ativo.
+
+    Não recebe cdInstrumento: tenta o endpoint de debênture e, se não for, o de
+    CRI/CRA (os dois devolvem os mesmos campos). Retorna None se nenhum responder.
+    """
+    baseUrl: str = cfg["api"]["fianalytics"]["baseUrl"]
+    timeout: int = cfg["calc"]["timeoutSeconds"]
+    corpo = {"ticker": cdTicker, "date": dtIso, "rate": float(vrTaxa)}
+
+    for chave in ("debPath", "cricraPath"):
+        url = f"{baseUrl}{cfg['api']['fianalytics'][chave]}"
+        try:
+            resp = ObterCliente().post(url, json=corpo, headers=ObterHeaders(), timeout=timeout)
+        except (httpx.TimeoutException, httpx.RequestError) as exc:
+            log.warning("fianalytics_api: erro em %s para %s: %s", chave, cdTicker, exc)
+            continue
+
+        if not resp.is_success:
+            log.debug("fianalytics_api: HTTP %d em %s ticker=%s", resp.status_code, url, cdTicker)
+            continue
+
+        data = AnalisarResposta(resp, url)
+        # Resposta válida = a FI reconheceu o papel e precificou.
+        if isinstance(data, dict) and (data.get("m2m") is not None or data.get("m2mRate") is not None):
+            return data
+
+    log.debug("fianalytics_api: sem resposta completa para %s em %s", cdTicker, dtIso)
+    return None
+
+
 def ObterBondsUsuario() -> list[dict] | None:
     """
     Retorna a lista de bonds do usuário, buscando da API na primeira chamada
