@@ -1,28 +1,37 @@
 """
 validar_fluxos.py
 =================
-Confere o **fluxo** de cada ativo (agenda de amortização e incorporação) contra a
-B3 (primária) e a FI Analytics (secundária), e marca `InfoAtivos.stFluxoValidado`.
+Decide quais ativos a calculadora pode precificar (`InfoAtivos.stFluxoValidado`).
 
-Por quê: a agenda vem do scraper da Anbima e pode estar errada ou truncada (cupom
-classificado como amortização, data DU-ajustada, evento faltando). A calculadora de
-renda fixa só deve precificar ativo com fluxo **confirmado** — `stFluxoValidado = 1`.
-Migrado do projeto `calculadora-renda-fixa` (handoff 12/07/2026); a lógica de
-comparação é a mesma que rodou lá sobre 4.840 ativos em 11/07.
+Desde 13/07/2026 a B3 é a fonte PRIMÁRIA do cadastro (ver `scrape_b3_bond_details`), e
+isso parte o trabalho em dois — que é o que este script faz:
 
-Régua central: divergente **ou não-confirmável** ⇒ **não valida** (rigor > cobertura).
-Validado = zero divergência.
+1. VALIDAÇÃO — só para fluxo de origem Anbima (`cdFonteCadastro = 'AnbimaData'`).
+   O fluxo da B3 já nasce validado: ela *é* a fonte, não há contra o que conferir.
+   Confere pela FI: vencimento, taxa de emissão, a cauda futura da agenda e o SALDO.
+   Régua: divergente **ou não-confirmável** ⇒ não valida (rigor > cobertura).
+   Cobertura é magra — a FI só tem 146 dos ~1.670 ativos que a B3 não cobre. B3 e FI
+   cobrem quase o mesmo universo, então onde uma falha a outra falha junto.
 
-Contrato das 5 colunas (ver `lib/db.py` e [[04 - Banco de Dados]]):
+2. TRIPWIRE — para TODO ativo já validado, seja qual for a origem (`ConferirSaldo`).
+   Existe porque "fluxo da B3 = válido" é uma tautologia, e fonte também apodrece: o
+   EMIV11 foi aditado em fev/26 (seis meses de carência), a agenda velha continuou de
+   pé, e a taxa dava −19,6%. E não é vício só da Anbima — a B3 diz que o FGEN13 vale
+   1.280, a FI diz 508, e o mercado negocia a 503. Divergiu ⇒ DESVALIDA.
+
+O ConferirSaldo é o único teste que enxerga o PASSADO da agenda: a FI só devolve
+eventos futuros, então a comparação evento a evento cobre só a cauda — e a cauda bate
+perfeitamente num papel cuja agenda passada mudou. O saldo devedor, não: ele é função
+de toda a agenda. Um número só, que já vem na resposta.
+
+Contrato das colunas (ver `lib/db.py` e [[04 - Banco de Dados]]):
   - `stTemFluxo`            — do INGESTOR (scrapers). Este script **só lê**.
-  - `stFluxoValidado`       — 1 aqui; zerado pelo ingestor quando o fluxo muda.
+  - `stFluxoValidado`       — 1 aqui (ou pelo scrape_b3_bond_details); zerado pelo
+                              ingestor quando o fluxo muda, e por este script quando o
+                              saldo diverge.
   - `dtValidacaoFluxo`      — ISO da validação OK.
   - `cdFonteValidacaoFluxo` — 'B3' | 'FiAnalytics'.
   - `dtUltimaTentativa`     — ISO de TODA tentativa (alimenta o throttle).
-
-Fila (idempotente, com throttle): ativos com `stFluxoValidado <> 1` cuja
-`dtUltimaTentativa` é NULL ou mais velha que DIAS_THROTTLE. A invalidação do
-ingestor zera `dtUltimaTentativa`, então ativo que mudou volta pro topo da fila.
 
 Saídas: `data/divergencias_fluxo.csv` e `data/carencia_conferir_pu.csv`.
 
@@ -30,6 +39,7 @@ CLI:
     python scripts/validar_fluxos.py                    # a fila (rotina)
     python scripts/validar_fluxos.py --limite 50        # smoke test
     python scripts/validar_fluxos.py --tickers ABFR12   # ignora o throttle
+    python scripts/validar_fluxos.py --sem-tripwire     # só validação, sem reconferir
 """
 
 import argparse
@@ -41,12 +51,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from lib.b3_calc_api import ObterDetalhesAtivo
-from lib.calc import ImportarCalc
+from lib.calc import CalcularVnaAtivo, CarregarAtivo, ImportarCalc
 from lib.db import ObterBanco
 from lib.email_outlook import EnviarEmailConclusao
 from lib.fianalytics_api import ChamarCompleto
 from lib.logger import ObterLogger
+from lib.relatorio_execucao import RelatorioExecucao
 
 # ---------------------------------------------------------------------------
 # Constantes
@@ -62,14 +72,6 @@ TOL_SALDO = 0.05      # tolerância do saldo devedor, em % do VNA (ver ConferirS
 DIAS_THROTTLE = 10    # não re-bater na fonte antes disso (ativo já tentado e não validado)
 
 CSV_DIVERGENCIAS = Path("data/divergencias_fluxo.csv")
-CSV_CARENCIA = Path("data/carencia_conferir_pu.csv")
-
-# 'method' da B3 → nosso cdIndexador.
-MAPA_INDEXADOR = {
-    "IPCA-I": "IPCA", "IPCA": "IPCA",
-    "DI-PERC": "%CDI", "DI-SPREAD": "CDI+",
-    "PRE": "PREFIXADO",
-}
 
 calc = ImportarCalc()
 FERIADOS = calc.FERIADOS_ANBIMA
@@ -79,13 +81,6 @@ FERIADOS = calc.FERIADOS_ANBIMA
 # Datas e convenções
 # ---------------------------------------------------------------------------
 
-def MapearIndexador(method) -> str | None:
-    """A B3 tem duas variantes de IPCA (IPCA e IPCA-I) — normaliza por prefixo."""
-    if not method:
-        return None
-    if str(method).upper().startswith("IPCA"):
-        return "IPCA"
-    return MAPA_INDEXADOR.get(method)
 
 
 def AjustarDu(d: date) -> date:
@@ -139,43 +134,8 @@ def NossoFluxo(cdTicker: str, conn) -> tuple:
     return info, amortizacoes, incorporacoes
 
 
-def FluxoParaCalc(cdTicker: str, conn) -> list[tuple[date, float, float]]:
-    """A agenda no formato que a calculadora consome: (dtEvento, pctAmort, pctIncorp)."""
-    return [(date.fromisoformat(e["dtEvento"]),
-             e["vrPctAmortizacao"] or 0.0,
-             e["vrPctIncorporacao"] or 0.0)
-            for e in conn.execute(
-                "SELECT dtEvento, vrPctAmortizacao, vrPctIncorporacao FROM FluxoAtivos "
-                "WHERE cdTicker = ? ORDER BY dtEvento", (cdTicker,))]
 
 
-def CarenciaCemNoInicio(cdTicker: str, conn) -> tuple[bool, date | None]:
-    """Detecta a carência clássica: a base incorpora 100% de forma CONTÍGUA no início
-    (todas as incorporações ~100, antes de qualquer cupom pago ou amortização).
-
-    Nesses, a B3 (estilo 'IPCA' simples) colapsa a carência dentro do VNE e não expõe
-    a % em lugar nenhum — mas, sendo 100% por definição, dá para validar o resto e
-    conferir a JANELA (fim da carência ↔ startingdate), deixando o PU para depois.
-
-    Devolve (é carência limpa, data de fim da carência)."""
-    eventos = conn.execute(
-        "SELECT dtEvento, vrPctAmortizacao, vrPctIncorporacao FROM FluxoAtivos "
-        "WHERE cdTicker = ? ORDER BY dtEvento", (cdTicker,)).fetchall()
-
-    incorporacoes = [(date.fromisoformat(e["dtEvento"]), e["vrPctIncorporacao"])
-                     for e in eventos if (e["vrPctIncorporacao"] or 0) > 0]
-    if not incorporacoes:
-        return False, None
-    if any(abs(pct - 100.0) > TOL_PCT for _, pct in incorporacoes):
-        return False, None  # incorporação parcial → não é carência limpa
-
-    fim = incorporacoes[-1][0]
-    for e in eventos:  # contiguidade: nada de cupom pago/amortização antes do fim
-        if (e["vrPctIncorporacao"] or 0) > 0:
-            continue
-        if date.fromisoformat(e["dtEvento"]) < fim:
-            return False, None
-    return True, fim
 
 
 # ---------------------------------------------------------------------------
@@ -215,113 +175,8 @@ def CasarEventos(nossos: list, referencia: list, dtVencRef: date | None = None) 
 # Fonte primária — B3 (getBondDetails)
 # ---------------------------------------------------------------------------
 
-def ReferenciaB3(cdTicker: str) -> dict | None:
-    """Cadastro + agenda da B3, normalizados. None se a B3 não cobre o ativo."""
-    bond = ObterDetalhesAtivo(cdTicker)
-    if not isinstance(bond, dict) or not bond.get("events"):
-        return None
-
-    # SÓ o estilo 'IPCA-I' codifica a %incorporação no yield do evento 'J'. Nos demais
-    # (IPCA simples, DI-PERC, DI-SPREAD) o yield do 'J' é a TAXA do cupom PAGO — ler
-    # como incorporação transformaria todo IPCA simples em falso-divergente.
-    lerIncorporacao = bond.get("method") == "IPCA-I"
-
-    amortizacoes, incorporacoes = [], []
-    for evento in bond["events"]:
-        try:
-            dtEvento = date.fromisoformat(evento["date"])
-            pct = evento.get("yield") or 0.0
-        except Exception:
-            continue
-        if evento.get("eventType") == "A":
-            amortizacoes.append((dtEvento, pct))
-        elif evento.get("eventType") == "J" and pct > 0 and lerIncorporacao:
-            incorporacoes.append((dtEvento, pct))
-
-    return {
-        "info": {
-            "inicio": bond.get("startingdate"),
-            "venc": bond.get("expiredate"),
-            "taxa": bond.get("yield"),
-            "indexador": MapearIndexador(bond.get("method")),
-            "method": bond.get("method"),
-        },
-        "amort": amortizacoes,
-        "incorp": incorporacoes,
-    }
 
 
-def ValidarPelaB3(cdTicker: str, conn) -> tuple:
-    """(validado, divergências, meta) — ou (None, None, {}) se a B3 não cobre o ativo.
-    meta['conferirPu'] = True marca carência-100% (incorporação não conferida aqui)."""
-    ref = ReferenciaB3(cdTicker)
-    if ref is None:
-        return None, None, {}
-
-    info, amortizacoes, incorporacoes = NossoFluxo(cdTicker, conn)
-    if not info:
-        return False, [("info", "ausente", None)], {}
-
-    refInfo = ref["info"]
-    dtVencRef = date.fromisoformat(refInfo["venc"]) if refInfo.get("venc") else None
-    divergencias: list[tuple] = []
-    meta: dict = {}
-
-    # Carência-100% no estilo 'IPCA' simples: a B3 colapsa a carência no VNE e usa o
-    # startingdate como FIM da carência. Aí o nosso início legitimamente não bate.
-    carenciaLimpa, fimCarencia = False, None
-    if incorporacoes and not ref["incorp"] and refInfo.get("method") == "IPCA":
-        carenciaLimpa, fimCarencia = CarenciaCemNoInicio(cdTicker, conn)
-
-    # Campos críticos. RIGOR: só passa se der para CONFIRMAR a igualdade dos dois
-    # lados — nulo/faltando em qualquer um deles é divergência.
-    if carenciaLimpa:
-        if not refInfo.get("inicio") or not DatasBatem(fimCarencia, date.fromisoformat(refInfo["inicio"])):
-            divergencias.append(("carencia_fim", fimCarencia.isoformat(), refInfo.get("inicio") or "NULO"))
-        meta["conferirPu"] = True  # início e %incorporação ficam para conferência por PU
-    else:
-        inicio = info["dtInicioRentabilidade"]
-        if not inicio or not refInfo.get("inicio"):
-            divergencias.append(("inicio", inicio or "NULO", refInfo.get("inicio") or "NULO"))
-        elif not DatasBatem(date.fromisoformat(inicio), date.fromisoformat(refInfo["inicio"])):
-            divergencias.append(("inicio", inicio, refInfo["inicio"]))
-
-    venc = info["dtVencimento"]
-    if not venc or not dtVencRef:
-        divergencias.append(("venc", venc or "NULO", refInfo.get("venc") or "NULO"))
-    elif not DatasBatem(date.fromisoformat(venc), dtVencRef):
-        divergencias.append(("venc", venc, refInfo["venc"]))
-
-    taxa = info["vrTaxaEmissao"]
-    if taxa is None or refInfo.get("taxa") is None:
-        divergencias.append(("taxa", "NULO" if taxa is None else taxa,
-                             "NULO" if refInfo.get("taxa") is None else refInfo["taxa"]))
-    elif abs(float(taxa) - float(refInfo["taxa"])) > TOL_TAXA:
-        divergencias.append(("taxa", taxa, refInfo["taxa"]))
-
-    indexador = info["cdIndexador"]
-    if not indexador or not refInfo.get("indexador"):
-        divergencias.append(("indexador", indexador or "NULO", refInfo.get("indexador") or "NULO"))
-    elif indexador != refInfo["indexador"]:
-        divergencias.append(("indexador", indexador, refInfo["indexador"]))
-
-    # vrVNE NÃO é comparado: a B3 devolve o VNA corrente (ex.: 1006), não o VNE de emissão.
-
-    divergencias += [("amort",) + d for d in CasarEventos(
-        ParaOriginal(amortizacoes), ParaOriginal(ref["amort"]), dtVencRef)]
-
-    if not carenciaLimpa:
-        incorpRef = ref["incorp"]
-        if incorporacoes and not incorpRef and refInfo.get("method") == "IPCA":
-            # Incorporação na base + IPCA simples, mas não é carência limpa (parcial ou
-            # anômala): a B3 não expõe a % em lugar nenhum → não confirmável → não valida.
-            incorpRef = None
-        if incorpRef is None:
-            divergencias.append(("incorp", "NAO_CONFIRMAVEL", None))
-        else:
-            divergencias += [("incorp",) + d for d in CasarEventos(incorporacoes, incorpRef)]
-
-    return (len(divergencias) == 0), divergencias, meta
 
 
 # ---------------------------------------------------------------------------
@@ -336,38 +191,25 @@ def UltimoDuUtil() -> date:
     return d
 
 
-def ConferirSaldo(cdTicker: str, info, dados: dict, dtRef: date, conn) -> tuple | None:
+def ConferirSaldo(cdTicker: str, dados: dict, dtRef: date, conn) -> tuple | None:
     """Confere o saldo devedor: VNA da calculadora × `adjustedFaceValue` da FI.
 
-    É o único teste que enxerga o PASSADO da agenda. A FI só devolve eventos futuros,
-    então a comparação evento a evento cobre só a cauda — e a cauda bate perfeitamente
-    num papel cuja agenda passada mudou. Foi o caso do EMIV11: aditado em fev/26 (seis
-    meses de carência de amortização), cauda idêntica à nossa, saldo 25% errado.
+    É o único teste que enxerga o PASSADO da agenda — ver o cabeçalho do módulo.
 
-    O saldo resolve isso porque é função de TODA a agenda passada — cada amortização e
-    cada incorporação entram nele. Um número só, que já vem na resposta: custo zero.
-
-    Devolve None quando não dá para comparar — isso NÃO é divergência (o ativo cai em
-    sem_fonte e é re-tentado depois)."""
+    Devolve None quando não dá para comparar. Isso NÃO é divergência: o ativo fica
+    não-confirmável e é re-tentado depois."""
     fi = dados.get("adjustedFaceValue")
-    inicio = info["dtInicioRentabilidade"]
-    if fi is None or not inicio or info["vrTaxaEmissao"] is None:
+    if fi is None:
         return None
     fi = float(fi)
     if fi <= 0:
         return None
 
-    # A calculadora só distingue IPCA (VNA corrigido pelo índice) de PREFIXADO (VNA
-    # nominal). CDI é nominal também — o acúmulo do DI vive no PU par, não no VNA.
-    cdIndexador = "IPCA" if info["cdIndexador"] == "IPCA" else "PREFIXADO"
+    ativo = CarregarAtivo(conn, cdTicker)
+    if ativo is None:
+        return None
     try:
-        vna = calc.CalcularVna(
-            dtRef, date.fromisoformat(inicio),
-            vne=float(info["vrVNE"] or 1000.0),
-            fluxo=FluxoParaCalc(cdTicker, conn),
-            cdIndexador=cdIndexador,
-            taxaCupom=float(info["vrTaxaEmissao"]),
-        )
+        vna = CalcularVnaAtivo(ativo, dtRef)
     except Exception:
         return None  # a calc não conseguiu andar a agenda → não-confirmável
 
@@ -375,6 +217,24 @@ def ConferirSaldo(cdTicker: str, info, dados: dict, dtRef: date, conn) -> tuple 
     if abs(desvio) > TOL_SALDO:
         return ("saldo", f"VNA={vna:.4f}", f"adjustedFaceValue={fi:.4f} ({desvio:+.2f}%)")
     return None
+
+
+def Tripwire(cdTicker: str, conn, dtRef: date) -> tuple | None:
+    """Reconfere o saldo de um ativo JÁ validado, contra a FI. Divergiu ⇒ desvalida.
+
+    Roda em ativo de qualquer origem, inclusive B3. É a única checagem independente que
+    sobra depois que a B3 virou fonte primária — e ela pega tanto agenda desatualizada
+    (EMIV11, aditado) quanto dado ruim na própria B3 (FGEN13: B3 diz 1.280, FI diz 508,
+    o mercado negocia a 503).
+
+    Devolve a divergência, ou None quando bate / a FI não cobre."""
+    ativo = CarregarAtivo(conn, cdTicker)
+    if ativo is None:
+        return None
+    dados = ChamarCompleto(cdTicker, dtRef.isoformat(), ativo["vrTaxaEmissao"])
+    if not isinstance(dados, dict):
+        return None  # a FI não cobre → sem rede, mas não é divergência
+    return ConferirSaldo(cdTicker, dados, dtRef, conn)
 
 
 def ValidarPelaFi(cdTicker: str, conn) -> tuple:
@@ -428,7 +288,7 @@ def ValidarPelaFi(cdTicker: str, conn) -> tuple:
     divergencias += [("amort",) + d for d in CasarEventos(
         ParaOriginal(nossaCauda), ParaOriginal(sorted(amortFi)))]
 
-    divSaldo = ConferirSaldo(cdTicker, info, dados, corte, conn)
+    divSaldo = ConferirSaldo(cdTicker, dados, corte, conn)
     if divSaldo:
         divergencias.append(divSaldo)
 
@@ -463,25 +323,52 @@ def ValidarPelaFi(cdTicker: str, conn) -> tuple:
 
 def LerArgumentos() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Valida o fluxo dos ativos contra B3 (primária) e FI Analytics (secundária)."
+        description="Valida o fluxo da Anbima pela FI e reconfere o saldo de tudo que está validado."
     )
-    parser.add_argument("--limite", type=int, default=None, help="processa só os N primeiros da fila")
+    parser.add_argument("--limite", type=int, default=None, help="processa só os N primeiros de cada fila")
     parser.add_argument("--tickers", default=None, help="lista separada por vírgula; ignora o throttle")
+    parser.add_argument("--sem-tripwire", dest="semTripwire", action="store_true",
+                        help="pula a reconferência de saldo dos já validados")
     return parser.parse_args()
 
 
-def MontarFila(args: argparse.Namespace, conn, log) -> list[str]:
-    if args.tickers:
-        # Pedido manual re-tenta na hora, sem esperar a janela do throttle.
-        return [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
+def MontarFilas(args: argparse.Namespace, conn, log) -> tuple[list[str], list[str]]:
+    """(validação, tripwire).
 
-    fila = [r["cdTicker"] for r in conn.execute(
+    Validação — fluxo de origem Anbima ainda não validado. O de origem B3 nasce validado
+    (ele é a fonte) e não entra aqui.
+
+    Tripwire — tudo que está validado, de qualquer origem: reconfere o saldo contra a FI.
+    """
+    throttle = "(dtUltimaTentativa IS NULL OR dtUltimaTentativa < date('now', ?))"
+    dias = (f"-{DIAS_THROTTLE} days",)
+
+    if args.tickers:
+        # Pedido manual re-tenta na hora, sem esperar a janela do throttle. O ticker vai
+        # para a fila que couber pela origem dele.
+        alvos = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
+        marcas = ",".join("?" * len(alvos))
+        validar = [r["cdTicker"] for r in conn.execute(
+            f"SELECT cdTicker FROM InfoAtivos WHERE cdTicker IN ({marcas}) "
+            "AND COALESCE(cdFonteCadastro, 'AnbimaData') <> 'B3'", tuple(alvos))]
+        tripwire = [r["cdTicker"] for r in conn.execute(
+            f"SELECT cdTicker FROM InfoAtivos WHERE cdTicker IN ({marcas}) "
+            "AND stFluxoValidado = 1", tuple(alvos))]
+        return validar, ([] if args.semTripwire else tripwire)
+
+    validar = [r["cdTicker"] for r in conn.execute(
         "SELECT cdTicker FROM InfoAtivos "
-        "WHERE stFluxoValidado <> 1 "
-        "  AND (dtUltimaTentativa IS NULL OR dtUltimaTentativa < date('now', ?)) "
-        "ORDER BY cdTicker", (f"-{DIAS_THROTTLE} days",))]
-    log.info("validar_fluxos: %d ativo(s) na fila (throttle de %d dias)", len(fila), DIAS_THROTTLE)
-    return fila
+        " WHERE stFluxoValidado <> 1 AND stTemFluxo = 1 "
+        "   AND COALESCE(cdFonteCadastro, 'AnbimaData') <> 'B3' "
+        f"  AND {throttle} ORDER BY cdTicker", dias)]
+
+    tripwire = [] if args.semTripwire else [r["cdTicker"] for r in conn.execute(
+        "SELECT cdTicker FROM InfoAtivos "
+        f" WHERE stFluxoValidado = 1 AND {throttle} ORDER BY cdTicker", dias)]
+
+    log.info("%s: %d a validar (fluxo Anbima) | %d no tripwire (saldo) | throttle %dd",
+             NOME_SCRIPT, len(validar), len(tripwire), DIAS_THROTTLE)
+    return validar, tripwire
 
 
 def LinhaDivergencia(cdTicker: str, origem: str, div: tuple) -> list:
@@ -513,26 +400,6 @@ def AbrirCsv(caminho: Path, cabecalho: list[str]):
     return fh, escritor
 
 
-def MontarResumo(contadores: dict, total: int) -> str:
-    linhas = [
-        "Resultado:",
-        f"Ativos na fila                 : {total}",
-        "",
-        f"VALIDADOS por B3               : {contadores['B3']}",
-        f"VALIDADOS por FI Analytics     : {contadores['FiAnalytics']}",
-        "",
-        f"Divergentes                    : {contadores['divergente']}",
-        f"Sem fonte (nem B3 nem FI)      : {contadores['sem_fonte']}",
-        f"Com incorporação e sem B3      : {contadores['incorp_sem_b3']}",
-        f"Sem fluxo na base (stTemFluxo=0): {contadores['sem_fluxo']}",
-        "",
-        f"Carência-100% (conferir PU)    : {contadores['carencia_pu']}",
-        "",
-        f"Divergências detalhadas em {CSV_DIVERGENCIAS}",
-    ]
-    return "\n".join(linhas)
-
-
 # ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
@@ -540,114 +407,125 @@ def MontarResumo(contadores: dict, total: int) -> str:
 def Principal() -> None:
     log = ObterLogger(NOME_SCRIPT)
     args = LerArgumentos()
-    summary = ""
+    rel = RelatorioExecucao(NOME_SCRIPT, args=vars(args))
     success = True
 
     try:
         conn = ObterBanco()
         try:
-            fila = MontarFila(args, conn, log)
+            filaValidar, filaTripwire = MontarFilas(args, conn, log)
             if args.limite:
-                fila = fila[:args.limite]
+                filaValidar = filaValidar[:args.limite]
+                filaTripwire = filaTripwire[:args.limite]
 
             fhDiv, csvDiv = AbrirCsv(CSV_DIVERGENCIAS,
                                      ["cdTicker", "fonte", "campo", "situacao", "nosso", "fonte"])
-            fhPu, csvPu = AbrirCsv(CSV_CARENCIA, ["cdTicker", "inicio", "fimCarencia", "vencimento",
-                                                  "indexador", "taxa", "dtValidacao"])
-
-            contadores = {"B3": 0, "FiAnalytics": 0, "divergente": 0, "sem_fonte": 0,
-                          "incorp_sem_b3": 0, "sem_fluxo": 0, "carencia_pu": 0}
             hoje = date.today().isoformat()
+            dtRef = UltimoDuUtil()
+            rel.Datas([dtRef.isoformat()])
 
+            cont = {"validados": 0, "divergentes": 0, "sem_fonte": 0,
+                    "incorp_sem_fonte": 0, "desvalidados": 0, "conferidos": 0, "sem_rede": 0}
             try:
-                for i, cdTicker in enumerate(fila, 1):
+                # -- 1. Validacao: so o fluxo que veio da Anbima -----------------
+                for i, cdTicker in enumerate(filaValidar, 1):
                     validado, fonte, divergencias = 0, None, None
 
-                    # stTemFluxo é do ingestor — aqui só se LÊ. Sem fluxo na base não há
-                    # o que validar (mesmo que a B3 tenha; quem preenche é o scraper).
                     linha = conn.execute("SELECT stTemFluxo FROM InfoAtivos WHERE cdTicker = ?",
                                          (cdTicker,)).fetchone()
                     if not linha or not linha["stTemFluxo"]:
-                        contadores["sem_fluxo"] += 1
-                        conn.execute("UPDATE InfoAtivos SET dtUltimaTentativa = ? WHERE cdTicker = ?",
-                                     (hoje, cdTicker))
-                        continue
-
-                    ok, divs, meta = ValidarPelaB3(cdTicker, conn)
-
-                    if ok is True:
-                        validado, fonte = 1, "B3"
-                        contadores["B3"] += 1
-                        if meta.get("conferirPu"):
-                            # Validado sem conferir %incorporação/início: registrar para
-                            # bater o PU depois com a calculadora.
-                            contadores["carencia_pu"] += 1
-                            info = conn.execute(
-                                "SELECT dtInicioRentabilidade, dtVencimento, cdIndexador, vrTaxaEmissao "
-                                "FROM InfoAtivos WHERE cdTicker = ?", (cdTicker,)).fetchone()
-                            fimCarencia = conn.execute(
-                                "SELECT MAX(dtEvento) FROM FluxoAtivos "
-                                "WHERE cdTicker = ? AND vrPctIncorporacao > 0", (cdTicker,)).fetchone()[0]
-                            csvPu.writerow([cdTicker, info["dtInicioRentabilidade"], fimCarencia,
-                                            info["dtVencimento"], info["cdIndexador"],
-                                            info["vrTaxaEmissao"], hoje])
-                    elif ok is False:
-                        divergencias = divs
-                        contadores["divergente"] += 1
+                        cont["sem_fonte"] += 1
                     else:
-                        # A B3 não cobre o ativo.
                         _info, _amort, incorporacoes = NossoFluxo(cdTicker, conn)
                         if incorporacoes:
-                            # REGRA: nunca validar por FI um ativo COM incorporação — a FI
-                            # omite esses eventos. Fica não-validável (não é divergência).
-                            contadores["incorp_sem_b3"] += 1
+                            # A FI omite eventos de incorporacao: nunca poderia confirma-los.
+                            # Nao-validavel, o que NAO e divergencia.
+                            cont["incorp_sem_fonte"] += 1
                         else:
-                            okFi, divsFi = ValidarPelaFi(cdTicker, conn)
-                            if okFi is True:
+                            ok, divs = ValidarPelaFi(cdTicker, conn)
+                            if ok is True:
                                 validado, fonte = 1, "FiAnalytics"
-                                contadores["FiAnalytics"] += 1
-                            elif okFi is False:
-                                divergencias = divsFi
-                                contadores["divergente"] += 1
+                                cont["validados"] += 1
+                                rel.Contar("validados")
+                                rel.Exemplo("validados", {"cdTicker": cdTicker, "fonte": "FiAnalytics"})
+                            elif ok is False:
+                                divergencias = divs
+                                cont["divergentes"] += 1
                             else:
-                                contadores["sem_fonte"] += 1
+                                cont["sem_fonte"] += 1
 
-                    # dtUltimaTentativa em TODA tentativa (validou ou não) — é o throttle.
                     conn.execute(
                         "UPDATE InfoAtivos SET stFluxoValidado = ?, dtValidacaoFluxo = ?, "
                         "cdFonteValidacaoFluxo = ?, dtUltimaTentativa = ? WHERE cdTicker = ?",
                         (validado, hoje if validado else None, fonte, hoje, cdTicker))
 
-                    if divergencias:
-                        origem = "B3" if ok is not None else "FI"
-                        for div in divergencias:
-                            csvDiv.writerow(LinhaDivergencia(cdTicker, origem, div))
-
+                    for div in (divergencias or []):
+                        csvDiv.writerow(LinhaDivergencia(cdTicker, "FI", div))
+                        rel.Exemplo("divergentes", {"cdTicker": cdTicker, "campo": div[0],
+                                                    "nosso": str(div[1])[:40], "fonte": str(div[2])[:40]})
                     if i % 25 == 0:
                         conn.commit()
-                        log.info("validar_fluxos: [%d/%d] B3=%d FI=%d div=%d sem_fonte=%d",
-                                 i, len(fila), contadores["B3"], contadores["FiAnalytics"],
-                                 contadores["divergente"], contadores["sem_fonte"])
+                        log.info("%s: validacao [%d/%d] ok=%d div=%d", NOME_SCRIPT, i,
+                                 len(filaValidar), cont["validados"], cont["divergentes"])
+                conn.commit()
+
+                # -- 2. Tripwire: reconfere o SALDO de tudo que esta validado ----
+                # Inclusive o de origem B3. "Fluxo da B3 = valido" e uma tautologia, e a
+                # fonte tambem apodrece (EMIV11 aditado; FGEN13 com saldo 2,5x errado NA
+                # PROPRIA B3). Divergiu no saldo -> desvalida.
+                for i, cdTicker in enumerate(filaTripwire, 1):
+                    div = Tripwire(cdTicker, conn, dtRef)
+                    if div is None:
+                        # Bateu, ou a FI nao cobre. So ha rede onde ela cobre.
+                        cont["conferidos"] += 1
+                        conn.execute("UPDATE InfoAtivos SET dtUltimaTentativa = ? WHERE cdTicker = ?",
+                                     (hoje, cdTicker))
+                    else:
+                        cont["desvalidados"] += 1
+                        rel.Contar("desvalidados")
+                        rel.Exemplo("desvalidados", {"cdTicker": cdTicker,
+                                                     "nosso": str(div[1])[:40], "FI": str(div[2])[:50]})
+                        conn.execute(
+                            "UPDATE InfoAtivos SET stFluxoValidado = 0, dtValidacaoFluxo = NULL, "
+                            "cdFonteValidacaoFluxo = NULL, dtUltimaTentativa = ? WHERE cdTicker = ?",
+                            (hoje, cdTicker))
+                        csvDiv.writerow(LinhaDivergencia(cdTicker, "tripwire", div))
+                    if i % 50 == 0:
+                        conn.commit()
+                        log.info("%s: tripwire [%d/%d] desvalidados=%d", NOME_SCRIPT, i,
+                                 len(filaTripwire), cont["desvalidados"])
                 conn.commit()
             finally:
                 fhDiv.close()
-                fhPu.close()
+
+            rel.Contar("divergentes", cont["divergentes"])
+            rel.Metrica("Fila de validacao (fluxo Anbima)", len(filaValidar))
+            rel.Metrica("Fila do tripwire (saldo)", len(filaTripwire))
+            rel.Metrica("Validados pela FI", cont["validados"])
+            rel.Metrica("Divergentes (nao validam)", cont["divergentes"])
+            rel.Metrica("Nao-confirmaveis (FI nao cobre)", cont["sem_fonte"])
+            rel.Metrica("Com incorporacao (FI nao valida)", cont["incorp_sem_fonte"])
+            rel.Metrica("Saldo reconferido e OK", cont["conferidos"])
+            rel.Metrica("DESVALIDADOS pelo saldo", cont["desvalidados"])
+
+            total = conn.execute("SELECT COUNT(*) FROM InfoAtivos WHERE stFluxoValidado = 1").fetchone()[0]
+            rel.Metrica("Total validado na base (apos a rodada)", total)
+            if cont["desvalidados"]:
+                rel.Aviso(f"{cont['desvalidados']} ativo(s) perderam a validacao: o saldo devedor "
+                          f"da nossa agenda nao bate com o da FI. Ver {CSV_DIVERGENCIAS}.")
+            log.info("%s: concluido. %s", NOME_SCRIPT, cont)
         finally:
             conn.close()
 
-        summary = MontarResumo(contadores, len(fila))
-        log.info("validar_fluxos: concluído.\n%s", summary)
-
     except Exception:
         success = False
-        summary = traceback.format_exc()
-        log.exception("validar_fluxos: erro inesperado")
-
-    finally:
-        EnviarEmailConclusao(NOME_SCRIPT, success, summary, logger=log)
-
-    if not success:
+        rel.Erro("A rodada abortou — ver traceback.")
+        log.error("%s: falhou:\n%s", NOME_SCRIPT, traceback.format_exc())
+        EnviarEmailConclusao(NOME_SCRIPT, False, rel,
+                             tracebackErro=traceback.format_exc(), logger=log)
         sys.exit(1)
+
+    EnviarEmailConclusao(NOME_SCRIPT, success, rel, logger=log)
 
 
 if __name__ == "__main__":

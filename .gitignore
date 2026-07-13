@@ -34,3 +34,4 @@ venv/
 
 # Config local do Claude Code (pessoal)
 .claude/settings.local.json
+pv.html

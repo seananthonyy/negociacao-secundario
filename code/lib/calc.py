@@ -33,6 +33,7 @@ Uso:
 import os
 import sqlite3
 import sys
+from datetime import date
 from pathlib import Path
 
 from lib.config import cfg, ObterSegredo
@@ -139,3 +140,94 @@ def ImportarCalc():
 
     calcImportada = calculadora_rf
     return calcImportada
+
+
+# ---------------------------------------------------------------------------
+# Precificação — a ponte entre o trades.db e a calculadora
+# ---------------------------------------------------------------------------
+#
+# Um lugar só monta os argumentos da calc a partir da nossa base. Sem isso, cada script
+# (calc_taxa, conferir_pu, validar_fluxos) remontaria o mesmo dicionário, e a chance de
+# um deles esquecer o `vrAniversario` — e a calc então IGNORAR silenciosamente todos os
+# eventos do fluxo — é alta demais. Ver [[14 - Rotinas da Calculadora]].
+
+INDEXADORES_SUPORTADOS = ("IPCA", "PREFIXADO", "CDI+", "%CDI")
+
+
+def CarregarAtivo(conn, cdTicker: str) -> dict | None:
+    """Cadastro + fluxo no formato que a calculadora consome, ou None se não dá para
+    precificar (falta taxa de emissão, início de rentabilidade, fluxo ou indexador)."""
+    info = conn.execute(
+        "SELECT cdIndexador, vrTaxaEmissao, vrVNE, dtInicioRentabilidade, dtVencimento, "
+        "       vrAniversario, stFluxoValidado "
+        "FROM InfoAtivos WHERE cdTicker = ?", (cdTicker,)).fetchone()
+    if info is None:
+        return None
+
+    cdIndexador = info["cdIndexador"]
+    if (cdIndexador not in INDEXADORES_SUPORTADOS
+            or info["vrTaxaEmissao"] is None
+            or not info["dtInicioRentabilidade"]):
+        return None
+
+    fluxo = [(date.fromisoformat(e["dtEvento"]),
+              e["vrPctAmortizacao"] or 0.0,
+              e["vrPctIncorporacao"] or 0.0)
+             for e in conn.execute(
+                 "SELECT dtEvento, vrPctAmortizacao, vrPctIncorporacao FROM FluxoAtivos "
+                 "WHERE cdTicker = ? ORDER BY dtEvento", (cdTicker,))]
+    if not fluxo:
+        return None
+
+    # Aniversário é conceito de IPCA. Nos demais a calc ignora o parâmetro — passar o
+    # default (15) é inócuo, e evita um `if` em cada chamador.
+    aniversario = info["vrAniversario"] if cdIndexador == "IPCA" else None
+
+    return {
+        "cdTicker": cdTicker,
+        "cdIndexador": cdIndexador,
+        "vrTaxaEmissao": float(info["vrTaxaEmissao"]),
+        "vrVNE": float(info["vrVNE"]) if info["vrVNE"] else 1000.0,
+        "dtInicioRentabilidade": date.fromisoformat(info["dtInicioRentabilidade"]),
+        "dtVencimento": info["dtVencimento"],
+        "vrAniversario": int(aniversario) if aniversario is not None else None,
+        "stFluxoValidado": info["stFluxoValidado"],
+        "fluxo": fluxo,
+    }
+
+
+def ArgumentosCalc(ativo: dict) -> tuple:
+    """Os argumentos posicionais comuns a CalcularPuOperacao / CalcularTaxaNegociacao,
+    depois de (dataCalc, dataInicioRent, taxaEmissao)."""
+    C = ImportarCalc()
+    aniv = ativo["vrAniversario"]
+    return (ativo["fluxo"], ativo["vrVNE"], ativo["cdIndexador"],
+            aniv if aniv is not None else C.DIA_ANIV)
+
+
+def CalcularPu(ativo: dict, dtCalc: date, vrTaxa: float) -> float:
+    """PU de operação do ativo em dtCalc, descontado por vrTaxa (% a.a. base 252)."""
+    C = ImportarCalc()
+    return C.CalcularPuOperacao(
+        dtCalc, ativo["dtInicioRentabilidade"], ativo["vrTaxaEmissao"], vrTaxa,
+        *ArgumentosCalc(ativo))
+
+
+def CalcularTaxa(ativo: dict, dtCalc: date, vrPU: float) -> float:
+    """Taxa de negociação (% a.a. base 252) implícita num PU. Newton-Raphson."""
+    C = ImportarCalc()
+    return C.CalcularTaxaNegociacao(
+        dtCalc, ativo["dtInicioRentabilidade"], ativo["vrTaxaEmissao"], vrPU,
+        *ArgumentosCalc(ativo))
+
+
+def CalcularVnaAtivo(ativo: dict, dtCalc: date) -> float:
+    """VNA (saldo devedor atualizado) do ativo em dtCalc."""
+    C = ImportarCalc()
+    aniv = ativo["vrAniversario"]
+    # No VNA a calc só distingue IPCA (corrigido) de PREFIXADO (nominal). CDI é nominal
+    # também — o acúmulo do DI vive no PU par, não no VNA.
+    cdIndexador = "IPCA" if ativo["cdIndexador"] == "IPCA" else "PREFIXADO"
+    return C.CalcularVna(
+        dtCalc, ativo["dtInicioRentabilidade"], ativo["vrVNE"], ativo["fluxo"],
+        cdIndexador, ativo["vrTaxaEmissao"], aniv if aniv is not None else C.DIA_ANIV)

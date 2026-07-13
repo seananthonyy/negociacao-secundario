@@ -177,9 +177,13 @@ def UpsertInfoAtivos(conn: sqlite3.Connection, ticker: str, cdInstrumento: str, 
         INSERT INTO InfoAtivos
             (cdTicker, cdInstrumento, cdEmissor, dtVencimento, cdIndexador,
              vrTaxaEmissao, vrVNE, dtInicioRentabilidade,
-             cdISIN, vrQuantidadeEmissao, dtEmissao, dtAtualizacao)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+             cdISIN, vrQuantidadeEmissao, dtEmissao, cdFonteCadastro, dtAtualizacao)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,'AnbimaData',?)
         ON CONFLICT(cdTicker) DO UPDATE SET
+            -- COALESCE em tudo: a Anbima preenche buraco, nao sobrescreve. Num ativo de
+            -- fonte B3, vrVNE/dtInicioRentabilidade ja vieram de la e ficam. A agenda e
+            -- protegida em lib.db.SincronizarFluxoAtivos.
+            cdFonteCadastro      = COALESCE(cdFonteCadastro,      'AnbimaData'),
             cdInstrumento        = COALESCE(cdInstrumento,        excluded.cdInstrumento),
             cdEmissor            = COALESCE(cdEmissor,            excluded.cdEmissor),
             dtVencimento         = COALESCE(dtVencimento,         excluded.dtVencimento),

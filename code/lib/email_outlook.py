@@ -1,11 +1,37 @@
 import logging
+import os
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from lib.config import cfg, ObterListaEmails
+from lib.relatorio_execucao import RelatorioExecucao
 
 EMAIL_TIMEOUT = 20  # segundos antes de desistir e logar warning
+
+# Com NEGSEC_SEM_EMAIL setado, nada vai para o Outlook: o corpo do email e gravado em
+# data/emails/ para conferencia. Existe porque o COM do Outlook trava (dialog de
+# permissao) e derruba qualquer rodada em lote — e nao da para depurar o template
+# esperando 20s de timeout a cada script.
+ENV_SEM_EMAIL = "NEGSEC_SEM_EMAIL"
+DIR_EMAILS = Path("data/emails")
+
+
+def EmailDesligado() -> bool:
+    return bool(os.environ.get(ENV_SEM_EMAIL)) or not cfg["email"]["ativo"]
+
+
+def GravarEmailEmArquivo(subject: str, corpoHtml: str, log: logging.Logger) -> None:
+    """Despeja o email em disco em vez de mandar. Serve para conferir o template."""
+    try:
+        DIR_EMAILS.mkdir(parents=True, exist_ok=True)
+        seguro = "".join(c if c.isalnum() or c in "-_" else "_" for c in subject)[:80]
+        destino = DIR_EMAILS / f"{datetime.now():%Y-%m-%d_%H%M%S}_{seguro}.html"
+        destino.write_text(corpoHtml, encoding="utf-8")
+        log.info("Email nao enviado (%s). Corpo gravado em %s", ENV_SEM_EMAIL, destino)
+    except Exception as exc:
+        log.warning("Falha ao gravar o email em arquivo: %s", exc)
 
 
 def ResolverDestinatarios(log: logging.Logger) -> list[str]:
@@ -42,27 +68,35 @@ def DespacharEmail(subject: str, body: str, destinatarios: list[str], log: loggi
 def EnviarEmailConclusao(
     nomeScript: str,
     success: bool,
-    textoResumo: str,
+    resumo: "RelatorioExecucao | str",
     tracebackErro: str | None = None,
     logger: Optional[logging.Logger] = None,
 ) -> None:
     """
-    Envia email via Outlook (win32com) em thread separada com timeout de 20s.
-    OUTLOOK_TO aceita lista separada por ; .
-    Se cfg["email"]["ativo"] for false, loga e nao envia.
-    Falha silenciosa: loga o erro, nao propaga excecao.
+    Email de fim de script, em HTML (paleta Itau).
+
+    `resumo` aceita um RelatorioExecucao (o formato bom: contadores, exemplos, datas,
+    avisos) ou uma string — os scripts antigos passavam texto solto, e nao vale a pena
+    quebra-los; a string vira um <pre> dentro do mesmo template.
+
+    Nunca propaga excecao: um email que falha nao pode derrubar uma rodada que deu certo.
     """
     log = logger or logging.getLogger(__name__)
     try:
-        if not cfg["email"]["ativo"]:
-            log.info("Email desativado por config.toml — nao enviado.")
-            return
+        if isinstance(resumo, RelatorioExecucao):
+            corpoHtml = resumo.Html(success, tracebackErro)
+            log.info("Resumo da rodada:\n%s", resumo.Texto())
+        else:
+            rel = RelatorioExecucao(nomeScript)
+            rel.Secao("Resumo", ["saida"], [[l] for l in str(resumo).splitlines() if l.strip()])
+            corpoHtml = rel.Html(success, tracebackErro)
 
-        status = "OK" if success else "ERROR"
+        status = "OK" if success else "ERRO"
         subject = f"[{status}] {nomeScript}"
-        body = f"Script: {nomeScript}\nStatus: {status}\n\nResumo:\n{textoResumo}"
-        if tracebackErro:
-            body += f"\n\nTraceback:\n{tracebackErro}"
+
+        if EmailDesligado():
+            GravarEmailEmArquivo(subject, corpoHtml, log)
+            return
 
         destinatarios = ResolverDestinatarios(log)
         if not destinatarios:
@@ -70,8 +104,8 @@ def EnviarEmailConclusao(
             return
 
         t = threading.Thread(
-            target=DespacharEmail,
-            args=(subject, body, destinatarios, log),
+            target=DespacharEmailHtml,
+            args=(subject, corpoHtml, destinatarios, [], log, False),
             daemon=True,
         )
         t.start()
@@ -154,8 +188,8 @@ def EnviarEmailHtml(
     """
     log = logger or logging.getLogger(__name__)
     try:
-        if not cfg["email"]["ativo"]:
-            log.info("Email desativado por config.toml — nao gerado.")
+        if EmailDesligado():
+            GravarEmailEmArquivo(subject, corpoHtml, log)
             return
 
         destinatarios = to if to else ResolverDestinatarios(log)

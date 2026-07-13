@@ -3,7 +3,27 @@ calc_taxa_negocios.py
 =====================
 Para cada trade em NegociosBrutos com dtLiquidacao na janela informada:
   - Se vrTaxaNegocio NOT NULL: copia para vrTaxaCalculada (cdFonteTaxa = NULL)
-  - Se vrTaxaNegocio IS NULL:  cascata FI Analytics -> B3 Calculator
+  - Se vrTaxaNegocio IS NULL:  cascata **Calc local** -> FI Analytics -> B3 Calculator
+
+A CALCULADORA LOCAL esta implementada como 1o degrau da cascata, para ativo com
+`stFluxoValidado = 1` — mas vem DESLIGADA ([calc].usarCalcTaxa = false).
+
+Por que desligada (13/07/2026): a calc reproduz o PU PAR das fontes (86% dos ativos
+batem a 1e-6 — ver conferir_pu), mas NAO reproduz a taxa implicita num PU fora do par.
+Triangulando 4 negocios de 16/06/2026, FI Analytics e B3 concordam entre si (0 a 1,7
+bps) e a calc discorda das duas (+2,2 a +13,7 bps). Quando duas fontes independentes
+batem e a nossa diverge, o erro e nosso. Como os fluxos e o VNA estao certos (o PU par
+fecha), a suspeita e a convencao de DESCONTO.
+
+Licao: o gate de PU PAR nao basta. Ele valida o fluxo, nao o desconto. O teste que
+falta e o round-trip da taxa: dado o PU que a fonte devolve para uma taxa FORA do par,
+a calc tem que reproduzir aquela taxa.
+
+Performance (medido em 16/06/2026, o pregao mais cheio da base): 8.065 negocios
+validados, mas so 598 pares (cdTicker, vrPU) DISTINTOS — o cache corta 93% do trabalho.
+A ~0,7s por par, da ~7 min/dia num core, contra os ~25 min/dia da cascata de API no
+banco (onde cada chamada paga proxy). A calc e CPU-bound, entao o ThreadPoolExecutor
+nao a paraleliza (GIL) — quem faz o servico e o cache.
 
 Grava resultado em NegociosProcessados via UPSERT.
 Trades com cdSituacao = 'Cancelado' sao ignorados.
@@ -12,10 +32,12 @@ CLI:
     python scripts/calc_taxa_negocios.py --date 2026-05-29
     python scripts/calc_taxa_negocios.py --start 2026-05-01 --end 2026-05-29
     python scripts/calc_taxa_negocios.py --date 2026-05-29 --limit 40   # smoke test
+    python scripts/calc_taxa_negocios.py --date 2026-05-29 --sem-calc   # so API (A/B)
 """
 
 import argparse
 import sys
+import threading
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -27,12 +49,61 @@ from typing import Optional
 # Garante que code/ esteja no sys.path ao rodar como script
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from lib.calc import CalcularTaxa as CalcularTaxaLocal, CarregarAtivo
 from lib.config import cfg
 from lib.db import ObterBanco
 from lib.logger import ObterLogger
 from lib.email_outlook import EnviarEmailConclusao
 from lib.fianalytics_api import CalcularTaxa
 from lib.b3_calc_api import CalcularYield
+from lib.relatorio_execucao import RelatorioExecucao
+
+
+# ---------------------------------------------------------------------------
+# Calculadora local — primeiro degrau da cascata
+# ---------------------------------------------------------------------------
+
+# Ativos com fluxo validado, prontos para a calc. Carregado uma vez por rodada, na
+# thread principal: a conexao do SQLite nao e thread-safe, e os workers so leem daqui.
+ativosValidados: dict[str, dict] = {}
+
+# (cdTicker, dtLiquidacao, vrPU) -> taxa. E ele que viabiliza a troca: num pregao cheio,
+# 8.065 negocios colapsam em 598 calculos.
+cacheCalc: dict[tuple, Optional[float]] = {}
+travaCache = threading.Lock()
+
+
+def CarregarAtivosValidados(conn, log) -> None:
+    global ativosValidados
+    tickers = [r["cdTicker"] for r in conn.execute(
+        "SELECT cdTicker FROM InfoAtivos WHERE stFluxoValidado = 1")]
+    ativosValidados = {}
+    for cdTicker in tickers:
+        ativo = CarregarAtivo(conn, cdTicker)
+        if ativo:
+            ativosValidados[cdTicker] = ativo
+    log.info("calc_taxa: %d ativo(s) com fluxo validado, prontos para a calc local",
+             len(ativosValidados))
+
+
+def TaxaPelaCalc(trade: "NegocioBruto", log) -> Optional[float]:
+    """Taxa pela calculadora local, ou None se o ativo nao esta validado / a calc falhou."""
+    ativo = ativosValidados.get(trade.cdTicker)
+    if ativo is None:
+        return None
+
+    chave = (trade.cdTicker, trade.dtLiquidacao, trade.vrPU)
+    with travaCache:
+        if chave in cacheCalc:
+            return cacheCalc[chave]
+    try:
+        taxa = CalcularTaxaLocal(ativo, date.fromisoformat(trade.dtLiquidacao), trade.vrPU)
+    except Exception as exc:
+        log.debug("calc_taxa: calc local falhou para %s: %s", trade.cdTicker, exc)
+        taxa = None
+    with travaCache:
+        cacheCalc[chave] = taxa
+    return taxa
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +136,7 @@ class EstatisticasData:
     dtLiquidacao: str
     total: int = 0
     direta: int = 0       # vrTaxaNegocio copiado direto (sem chamada de API)
+    calc: int = 0         # calculada localmente (ativo com fluxo validado)
     fianalytics: int = 0  # calculada via FI Analytics
     b3: int = 0           # calculada via B3 Calculator
     semTaxa: int = 0      # vrTaxaCalculada = NULL (todas as calculadoras falharam)
@@ -111,18 +183,24 @@ ON CONFLICT(idTrade) DO UPDATE SET
 # Logica de cascata
 # ---------------------------------------------------------------------------
 
-def AplicarCascata(trade: NegocioBruto, log) -> tuple[Optional[float], Optional[str]]:
+def AplicarCascata(trade: NegocioBruto, log, usarCalc: bool = True) -> tuple[Optional[float], Optional[str]]:
     """
     Retorna (vrTaxaCalculada, cdFonteTaxa).
 
     Cascata:
       1. vrTaxaNegocio nao nulo -> copia direto (source = None)
-      2. FI Analytics           -> source = 'FiAnalytics'
-      3. B3 Calculator          -> source = 'B3'
-      4. Falhou tudo            -> (None, None)
+      2. Calculadora local      -> source = 'Calc'         (so ativo com fluxo validado)
+      3. FI Analytics           -> source = 'FiAnalytics'
+      4. B3 Calculator          -> source = 'B3'
+      5. Falhou tudo            -> (None, None)
     """
     if trade.vrTaxaNegocio is not None:
         return trade.vrTaxaNegocio, None
+
+    if usarCalc:
+        taxa = TaxaPelaCalc(trade, log)
+        if taxa is not None:
+            return taxa, "Calc"
 
     log.debug(
         "calc_taxa: vrTaxaNegocio NULL para %s/%s/%s — tentando FI Analytics",
@@ -154,7 +232,7 @@ def AplicarCascata(trade: NegocioBruto, log) -> tuple[Optional[float], Optional[
 # ---------------------------------------------------------------------------
 
 def ProcessarData(conn, dtLiquidacao: str, log, workers: int, force: bool,
-                 limit: Optional[int] = None) -> EstatisticasData:
+                 limit: Optional[int] = None, usarCalc: bool = True) -> EstatisticasData:
     """Processa todos os trades de uma dtLiquidacao e faz UPSERT em NegociosProcessados.
 
     `limit` (só para smoke test) processa apenas N trades, priorizando os que
@@ -231,7 +309,7 @@ def ProcessarData(conn, dtLiquidacao: str, log, workers: int, force: bool,
         tempoInicio = time.monotonic()
 
         with ThreadPoolExecutor(max_workers=workers) as executor:
-            futureParaNegocio = {executor.submit(AplicarCascata, t, log): t for t in aProcessar}
+            futureParaNegocio = {executor.submit(AplicarCascata, t, log, usarCalc): t for t in aProcessar}
             for future in as_completed(futureParaNegocio):
                 trade = futureParaNegocio[future]
                 try:
@@ -266,6 +344,8 @@ def ProcessarData(conn, dtLiquidacao: str, log, workers: int, force: bool,
     def ContarEstatisticas(trade: NegocioBruto, vrTaxaCalculada: Optional[float], cdFonteTaxa: Optional[str]) -> None:
         if trade.vrTaxaNegocio is not None:
             stats.direta += 1
+        elif cdFonteTaxa == "Calc":
+            stats.calc += 1
         elif cdFonteTaxa == "FiAnalytics":
             stats.fianalytics += 1
         elif cdFonteTaxa == "B3":
@@ -296,8 +376,8 @@ def ProcessarData(conn, dtLiquidacao: str, log, workers: int, force: bool,
     conn.commit()
 
     log.info(
-        "calc_taxa: dtLiquidacao=%s — direta=%d fianalytics=%d b3=%d semTaxa=%d",
-        dtLiquidacao, stats.direta, stats.fianalytics, stats.b3, stats.semTaxa,
+        "calc_taxa: dtLiquidacao=%s — direta=%d calc=%d fianalytics=%d b3=%d semTaxa=%d",
+        dtLiquidacao, stats.direta, stats.calc, stats.fianalytics, stats.b3, stats.semTaxa,
     )
     return stats
 
@@ -339,6 +419,15 @@ def LerArgumentos() -> argparse.Namespace:
         help="Recalcula taxa mesmo para trades que já têm vrTaxaCalculada no banco.",
     )
     parser.add_argument(
+        "--sem-calc", dest="semCalc", action="store_true",
+        help="forca so a cascata de API (ignora [calc].usarCalcTaxa)",
+    )
+    parser.add_argument(
+        "--com-calc", dest="comCalc", action="store_true",
+        help="forca a calculadora local (ignora [calc].usarCalcTaxa). Veja o aviso no "
+             "config.toml: hoje a calc diverge das APIs em 2-14 bps na taxa.",
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         default=None,
@@ -374,94 +463,87 @@ def MontarIntervaloDatas(args: argparse.Namespace) -> list[str]:
     return datas
 
 
-def MontarResumo(statsList: list[EstatisticasData]) -> str:
-    lines = ["Resultado por dtLiquidacao:", ""]
-    lines.append(
-        f"{'Data':<12}  {'Total':>6}  {'Direta':>7}  {'FIAnaly':>7}  {'B3':>5}  {'SemTaxa':>8}"
-    )
-    lines.append("-" * 56)
+def MontarRelatorio(statsList: list[EstatisticasData], args, rel) -> None:
+    """Preenche o RelatorioExecucao com o resultado por dtLiquidacao."""
+    rel.Datas([s.dtLiquidacao for s in statsList])
 
-    totalGeral    = 0
-    diretaGeral   = 0
-    fiGeral       = 0
-    b3Geral       = 0
-    semTaxaGeral  = 0
-
+    linhas, totais = [], {"total": 0, "direta": 0, "calc": 0, "fi": 0, "b3": 0, "sem": 0}
     for s in statsList:
-        lines.append(
-            f"{s.dtLiquidacao:<12}  {s.total:>6}  {s.direta:>7}  "
-            f"{s.fianalytics:>7}  {s.b3:>5}  {s.semTaxa:>8}"
-        )
-        totalGeral   += s.total
-        diretaGeral  += s.direta
-        fiGeral      += s.fianalytics
-        b3Geral      += s.b3
-        semTaxaGeral += s.semTaxa
+        linhas.append([s.dtLiquidacao, s.total, s.direta, s.calc, s.fianalytics, s.b3, s.semTaxa])
+        totais["total"] += s.total
+        totais["direta"] += s.direta
+        totais["calc"] += s.calc
+        totais["fi"] += s.fianalytics
+        totais["b3"] += s.b3
+        totais["sem"] += s.semTaxa
+    linhas.append(["TOTAL", totais["total"], totais["direta"], totais["calc"],
+                   totais["fi"], totais["b3"], totais["sem"]])
 
-    lines.append("-" * 56)
-    lines.append(
-        f"{'TOTAL':<12}  {totalGeral:>6}  {diretaGeral:>7}  "
-        f"{fiGeral:>7}  {b3Geral:>5}  {semTaxaGeral:>8}"
-    )
+    rel.Secao("Fonte da taxa, por liquidacao",
+              ["dtLiquidacao", "negocios", "direta (boletim)", "calc local",
+               "FI Analytics", "B3", "sem taxa"], linhas)
 
-    if semTaxaGeral > 0:
-        lines.append(f"\nATENCAO: {semTaxaGeral} trade(s) sem taxa calculada (vrTaxaCalculada = NULL).")
+    rel.Contar("processados", totais["total"])
+    rel.Metrica("Taxa direta do boletim", totais["direta"])
+    rel.Metrica("Calculadora local", totais["calc"])
+    rel.Metrica("FI Analytics (fallback)", totais["fi"])
+    rel.Metrica("B3 (fallback)", totais["b3"])
+    rel.Metrica("Sem taxa", totais["sem"])
+    if totais["calc"]:
+        rel.Metrica("Calculos distintos em cache (ticker, data, PU)", len(cacheCalc))
+    if args.semCalc:
+        rel.Aviso("--sem-calc: a calculadora local foi desligada; so a cascata de API rodou.")
+    if totais["sem"]:
+        rel.Aviso(f"{totais['sem']} negocio(s) sem taxa calculada (vrTaxaCalculada = NULL).")
 
-    # Alertas: sem taxa + volume acima do threshold
-    todoAlertas = [
-        (s.dtLiquidacao, a)
-        for s in statsList
-        for a in s.alertas
-    ]
-    if todoAlertas:
-        volumeMin: float = cfg["alerta"]["volumeMinSemTaxa"]
-        lines.append(f"\n{'='*56}")
-        lines.append(f"ALERTAS — sem taxa calculada, volume >= R$ {volumeMin:,.0f}:")
-        lines.append(f"  {'Data':<12}  {'Ticker':<12}  {'Emissor':<22}  {'Volume (R$)':>16}")
-        lines.append("  " + "-" * 66)
-        for dtLiq, a in sorted(todoAlertas, key=lambda x: (-x[1].vrVolume, x[0])):
-            lines.append(f"  {dtLiq:<12}  {a.cdTicker:<12}  {a.cdEmissor:<22}  {a.vrVolume:>16,.2f}")
-        lines.append(f"{'='*56}")
-
-    return "\n".join(lines)
-
-
-# ---------------------------------------------------------------------------
-# Entrypoint
-# ---------------------------------------------------------------------------
+    volumeMin: float = cfg["alerta"]["volumeMinSemTaxa"]
+    alertas = [[s.dtLiquidacao, a.cdTicker, a.cdEmissor, f"{a.vrVolume:,.0f}"]
+               for s in statsList for a in s.alertas]
+    if alertas:
+        rel.Secao(f"Sem taxa com volume >= R$ {volumeMin:,.0f}",
+                  ["data", "ticker", "emissor", "volume (R$)"], alertas)
+        rel.Aviso(f"{len(alertas)} negocio(s) de volume relevante ficaram sem taxa.")
 
 def Principal() -> None:
-    log     = ObterLogger("calc_taxa_negocios")
-    args    = LerArgumentos()
-    conn    = ObterBanco()
-    summary = ""
+    log = ObterLogger("calc_taxa_negocios")
+    args = LerArgumentos()
+    conn = ObterBanco()
+    rel = RelatorioExecucao("calc_taxa_negocios", args=vars(args))
     success = True
+    erro = None
 
     try:
         datas = MontarIntervaloDatas(args)
         log.info("calc_taxa: processando %d data(s): %s ... %s", len(datas), datas[0], datas[-1])
 
+        # Config manda; --sem-calc e --com-calc sobrescrevem pontualmente.
+        usarCalc = bool(cfg["calc"].get("usarCalcTaxa", False))
+        if args.semCalc:
+            usarCalc = False
+        if args.comCalc:
+            usarCalc = True
+        log.info("calc_taxa: calculadora local %s", "LIGADA" if usarCalc else "desligada")
+        if usarCalc:
+            CarregarAtivosValidados(conn, log)
+            rel.Metrica("Ativos prontos para a calc (fluxo validado)", len(ativosValidados))
+
         statsList: list[EstatisticasData] = []
         for dtLiquidacao in datas:
-            s = ProcessarData(conn, dtLiquidacao, log, args.workers, args.force, args.limit)
+            s = ProcessarData(conn, dtLiquidacao, log, args.workers, args.force, args.limit, usarCalc)
             statsList.append(s)
 
-        summary = MontarResumo(statsList)
-        log.info("calc_taxa: concluido.\n%s", summary)
+        MontarRelatorio(statsList, args, rel)
+        log.info("calc_taxa: concluido.\n%s", rel.Texto())
 
     except Exception:
         success = False
-        summary = traceback.format_exc()
+        erro = traceback.format_exc()
+        rel.Erro("A rodada abortou — ver traceback.")
         log.exception("calc_taxa: erro inesperado")
 
     finally:
         conn.close()
-        EnviarEmailConclusao(
-            "calc_taxa_negocios",
-            success,
-            summary,
-            logger=log,
-        )
+        EnviarEmailConclusao("calc_taxa_negocios", success, rel, tracebackErro=erro, logger=log)
 
 
 if __name__ == "__main__":

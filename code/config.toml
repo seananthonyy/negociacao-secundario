@@ -50,6 +50,20 @@ pfMinPctCdi             = 2.0    # %CDI: threshold em unidades %CDI (ex: 100 →
 [calc]
 timeoutSeconds  = 15
 
+# Usar a calculadora LOCAL como 1o degrau da cascata de taxa (calc_taxa_negocios),
+# nos ativos com stFluxoValidado = 1?
+#
+# DESLIGADO por decisao tecnica, 13/07/2026. A calc reproduz o PU PAR das fontes com
+# precisao (86% dos ativos batem a 1e-6), mas NAO reproduz a taxa implicita num PU fora
+# do par. Triangulacao em 16/06/2026: FI Analytics e B3 concordam entre si (0 a 1,7
+# bps de diferenca) e a calc discorda das duas (+2,2 a +13,7 bps). Duas fontes
+# independentes batendo e a nossa divergindo significa que o erro e nosso — provavelmente
+# na convencao de DESCONTO, ja que os fluxos e o VNA estao corretos (o PU par fecha).
+#
+# O gate de PU par nao basta: ele valida o fluxo, nao o desconto. Enquanto isso nao for
+# resolvido, a taxa continua vindo da cascata FI -> B3. Ver [[98 - Backlog]].
+usarCalcTaxa    = false
+
 [alerta]
 volumeMinSemTaxa = 5_000_000
 

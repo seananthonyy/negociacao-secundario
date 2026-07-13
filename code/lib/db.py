@@ -67,6 +67,17 @@ CREATE TABLE IF NOT EXISTS InfoAtivos (
     vrTaxaEmissao        REAL NULL,
     vrVNE                REAL NULL,
     dtInicioRentabilidade TEXT NULL,
+    -- Dia do mes em que o ativo aniversaria (o NIk/NIk-1 do IPCA vira). SO IPCA:
+    -- nos demais indexadores o VNA nao sofre correcao e a calc ignora o parametro.
+    -- Dia 15 e convencao de NTN-B; a debenture aniversaria no dia das SUAS datas de
+    -- pagamento. Errar isso faz a calc IGNORAR os eventos do fluxo, em silencio
+    -- (SSRU11, aniversario 28: PU 15.403 contra 9.738 da B3).
+    vrAniversario      INTEGER NULL,
+    -- Procedencia do cadastro. vrVNE + dtInicioRentabilidade + FluxoAtivos formam um
+    -- PACOTE INDIVISIVEL: a B3 pre-capitaliza a carencia dentro do VNE e nao emite
+    -- evento de incorporacao; a Anbima traz o VNE cru e a incorporacao como evento.
+    -- Misturar as duas fontes conta a capitalizacao DUAS VEZES, sem erro nenhum.
+    cdFonteCadastro    TEXT NULL,       -- 'B3' | 'AnbimaData'
     dtAtualizacao      TEXT NOT NULL,
     -- Validacao do fluxo (contrato com a calculadora de renda fixa).
     -- O INGESTOR (este projeto) so escreve stTemFluxo e ZERA as demais;
@@ -139,6 +150,10 @@ COLS_INVALIDAM_FLUXO = (
     "vrTaxaEmissao",
     "cdIndexador",
     "vrVNE",
+    # Nao define o fluxo, mas define como a calc o LE: com o aniversario errado, os
+    # eventos nao caem no aniversario e sao ignorados. Muda o VNA, logo muda o
+    # ConferirSaldo — que faz parte da validacao. Entao invalida.
+    "vrAniversario",
 )
 
 SQL_ZERA_VALIDACAO = """
@@ -259,6 +274,8 @@ def Bootstrap(conn: sqlite3.Connection) -> None:
         ("dtValidacaoFluxo",      "ALTER TABLE InfoAtivos ADD COLUMN dtValidacaoFluxo      TEXT NULL"),
         ("cdFonteValidacaoFluxo", "ALTER TABLE InfoAtivos ADD COLUMN cdFonteValidacaoFluxo TEXT NULL"),
         ("dtUltimaTentativa",     "ALTER TABLE InfoAtivos ADD COLUMN dtUltimaTentativa     TEXT NULL"),
+        ("vrAniversario",         "ALTER TABLE InfoAtivos ADD COLUMN vrAniversario   INTEGER NULL"),
+        ("cdFonteCadastro",       "ALTER TABLE InfoAtivos ADD COLUMN cdFonteCadastro TEXT NULL"),
     ]:
         try:
             conn.execute(sql)
@@ -349,8 +366,20 @@ def SincronizarFluxoAtivos(conn: sqlite3.Connection, cdTicker: str, linhas: list
     diferente. Reescrever a agenda identica (re-scrape do dia a dia) nao conta
     como mudanca: nao escreve, nao invalida, nao mexe no dtAtualizacao.
 
-    Quando muda: grava, invalida a validacao do fluxo e atualiza stTemFluxo."""
+    Quando muda: grava, invalida a validacao do fluxo e atualiza stTemFluxo.
+
+    NAO escreve em ativo de cdFonteCadastro = 'B3'. O fluxo da B3 vem casado com o VNE
+    ja capitalizado e o inicio de rentabilidade DELA (vrVNE + dtInicioRentabilidade +
+    FluxoAtivos sao um pacote indivisivel — ver scrape_b3_bond_details). Se a Anbima
+    reescrevesse a agenda por cima, o VNE capitalizado ficaria orfao e a carencia
+    passaria a contar DUAS vezes, sem erro nenhum, so um PU errado. A guarda mora aqui,
+    e nao no scraper, porque FluxoAtivos tem varios writers e vai ter mais."""
     if not linhas:
+        return False
+
+    fonte = conn.execute(
+        "SELECT cdFonteCadastro FROM InfoAtivos WHERE cdTicker = ?", (cdTicker,)).fetchone()
+    if fonte and fonte[0] == "B3":
         return False
 
     atual = LerFluxoAtivos(conn, cdTicker)

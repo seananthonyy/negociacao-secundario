@@ -141,6 +141,13 @@ def Boletim(inicio, fim=None, resultados=None) -> bool:
     """Boletim B3 (negócios). Na diária: inicio=X-1u, fim=X. fim=None → 1 pregão só."""
     return RodarPasso("scrape_b3_boletim", *ArgsData(inicio, fim), resultados=resultados)
 
+def BondDetails(inicio, fim=None, resultados=None) -> bool:
+    """B3 getBondDetails — cadastro + fluxo dos tickers que negociaram. FONTE PRIMÁRIA.
+
+    Roda logo depois do boletim e **antes** do anbima_data: assim a Anbima só preenche o
+    que a B3 não cobriu. Tem gate próprio (só chama a API para ticker com campo faltante)."""
+    return RodarPasso("scrape_b3_bond_details", *ArgsData(inicio, fim), resultados=resultados)
+
 def AnbimaDeb(inicio, fim=None, resultados=None) -> bool:
     """Anbima debêntures (taxa indicativa). Aceita data única ou intervalo."""
     return RodarPasso("scrape_anbima_debentures", *ArgsData(inicio, fim), resultados=resultados)
@@ -257,6 +264,8 @@ def RodarDia(X: date | str, resultados: list | None = None,
     Xant = DiaUtilAnterior(X)
 
     Boletim(Xant, X, resultados=res)
+    # B3 primeiro (fonte primária do cadastro), Anbima depois só para o que sobrar.
+    BondDetails(Xant, X, resultados=res)
     for d in (Xant, X):
         AnbimaDeb(d, resultados=res)
         AnbimaCriCra(d, resultados=res)
@@ -316,9 +325,11 @@ def RodarCadeiaDias(dias: list[date], rotulo: str) -> list:
     AnbimaCriCra(Xant0, resultados=res)
     CurvaDi(Xant0, resultados=res)
 
+    # Cadastro: B3 primeiro (fonte primária), Anbima depois só para o que ela não cobriu.
+    BondDetails(Xant0, dias[-1], resultados=res)
     AnbimaData(Xant0, dias[-1], resultados=res)
-    # Depois do anbima_data: é ele quem atualiza InfoAtivos/FluxoAtivos e, quando o
-    # fluxo muda de verdade, zera a validação — o ativo volta pro topo da fila.
+    # Depois dos dois: eles atualizam InfoAtivos/FluxoAtivos e, quando o fluxo muda de
+    # verdade, zeram a validação — o ativo volta pro topo da fila.
     ValidarFluxos(resultados=res)
 
     for X in dias:
@@ -371,15 +382,19 @@ def RodarSetup(inicioBoletim: date | str,
     hoje = date.today()
     iniInd = hoje - timedelta(days=diasIndicativas)
 
-    AnbimaData(full=True, resultados=res)                 # universo completo (o mais pesado)
+    # O boletim vem PRIMEIRO: o cadastro passou a ser puxado por demanda (só o que
+    # negociou), então sem os negócios não há de quem buscar cadastro.
+    Boletim(inicioBoletim, hoje, resultados=res)          # janela escolhida
+    BondDetails(inicioBoletim, hoje, resultados=res)      # B3 — fonte primária
     FiAnalytics(resultados=res)
+    AnbimaData(inicioBoletim, hoje, resultados=res)       # só o que a B3 não cobriu
+
     AnbimaDeb(iniInd, hoje, resultados=res)              # ~4 meses
     Ntnb(iniInd, hoje, resultados=res)                    # ~4 meses
     for d in UltimosNDiasUteis(diasCurvaDi, ref=hoje):
         CurvaDi(d, resultados=res)                        # ~20 pregões
     for d in UltimosNDiasUteis(diasCriCra, ref=hoje):
         AnbimaCriCra(d, resultados=res)                   # ~5 pregões
-    Boletim(inicioBoletim, hoje, resultados=res)          # janela escolhida
     if rodarOutstanding:
         Outstanding(inicioBoletim, hoje, resultados=res)  # só no banco
 
@@ -387,8 +402,8 @@ def RodarSetup(inicioBoletim: date | str,
     IpcaIbge(resultados=res)
     IpcaProjetado(resultados=res)
     DiBcb(resultados=res)
-    # Validação em massa: na base virgem a fila é o universo inteiro (~4.800 ativos,
-    # 1 chamada à B3 cada) — é o passo mais demorado depois do anbima_data.
+    # Validação: o fluxo da B3 já nasce validado, então a fila aqui é só o que veio da
+    # Anbima, mais o tripwire de saldo sobre tudo que está validado.
     ValidarFluxos(resultados=res)
 
     dias = DiasUteisEntre(inicioBoletim, hoje)
