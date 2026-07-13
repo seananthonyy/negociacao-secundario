@@ -64,6 +64,7 @@ from lib.config import cfg
 from lib.db import ObterBanco
 from lib.logger import ObterLogger
 from lib.email_outlook import EnviarEmailConclusao
+from lib.relatorio_execucao import RelatorioExecucao
 
 
 # ---------------------------------------------------------------------------
@@ -753,43 +754,34 @@ def MontarIntervaloDatas(args: argparse.Namespace) -> list[str]:
     return datas
 
 
-def MontarResumo(statsList: list[EstatisticasData]) -> str:
-    """Formata tabela de resumo por dtLiquidacao para o email e log."""
-    lines = ["Resultado por dtLiquidacao:", ""]
-    header = (
-        f"{'Data':<12}  {'Total':>6}  {'VALIDO':>7}  "
-        f"{'FUNDO':>6}  {'BROKER':>7}  {'PF':>5}  {'NullTaxa':>9}"
-    )
-    sep = "-" * len(header)
-    lines.extend([header, sep])
+def MontarRelatorio(statsList: list[EstatisticasData], rel) -> None:
+    """Preenche o RelatorioExecucao com a classificacao por dtLiquidacao."""
+    rel.Datas([s.dtLiquidacao for s in statsList])
 
     totais = EstatisticasData(dtLiquidacao="TOTAL")
+    linhas = []
     for s in statsList:
-        lines.append(
-            f"{s.dtLiquidacao:<12}  {s.total:>6}  {s.valido:>7}  "
-            f"{s.fundo:>6}  {s.broker:>7}  {s.pf:>5}  {s.nullTaxa:>9}"
-        )
-        totais.total    += s.total
-        totais.valido   += s.valido
-        totais.fundo    += s.fundo
-        totais.broker   += s.broker
-        totais.pf       += s.pf
+        linhas.append([s.dtLiquidacao, s.total, s.valido, s.fundo, s.broker, s.pf, s.nullTaxa])
+        totais.total += s.total
+        totais.valido += s.valido
+        totais.fundo += s.fundo
+        totais.broker += s.broker
+        totais.pf += s.pf
         totais.nullTaxa += s.nullTaxa
+    linhas.append(["TOTAL", totais.total, totais.valido, totais.fundo,
+                   totais.broker, totais.pf, totais.nullTaxa])
 
-    lines.append(sep)
-    lines.append(
-        f"{'TOTAL':<12}  {totais.total:>6}  {totais.valido:>7}  "
-        f"{totais.fundo:>6}  {totais.broker:>7}  {totais.pf:>5}  {totais.nullTaxa:>9}"
-    )
-
-    if totais.nullTaxa > 0:
-        lines.append(
-            f"\nATENCAO: {totais.nullTaxa} trade(s) com vrTaxaCalculada = NULL — "
-            "ficaram VALIDO isolados (sem classificação possível)."
-        )
-
-    return "\n".join(lines)
-
+    rel.Secao("Classificacao por liquidacao",
+              ["dtLiquidacao", "negocios", "VALIDO", "FUNDO", "BROKER", "PF", "sem taxa"], linhas)
+    rel.Contar("processados", totais.total)
+    rel.Metrica("VALIDO", totais.valido)
+    rel.Metrica("FUNDO (duplicata de fundo)", totais.fundo)
+    rel.Metrica("BROKER (intermediado)", totais.broker)
+    rel.Metrica("PF (pessoa fisica)", totais.pf)
+    if totais.nullTaxa:
+        rel.Metrica("Sem taxa (VALIDO isolado)", totais.nullTaxa)
+        rel.Aviso(f"{totais.nullTaxa} negocio(s) com vrTaxaCalculada = NULL — ficaram VALIDO "
+                  f"isolados, sem classificacao possivel.")
 
 # ---------------------------------------------------------------------------
 # Entrypoint
@@ -799,7 +791,8 @@ def Principal() -> None:
     log     = ObterLogger("filtrar_trades")
     args    = LerArgumentos()
     conn    = ObterBanco()
-    summary = ""
+    rel     = RelatorioExecucao("filtrar_trades", args=vars(args))
+    erro    = None
     success = True
 
     try:
@@ -844,22 +837,18 @@ def Principal() -> None:
             )
             statsList.append(s)
 
-        summary = MontarResumo(statsList)
-        log.info("filtrar_trades: concluido.\n%s", summary)
+        MontarRelatorio(statsList, rel)
+        log.info("filtrar_trades: concluido.\n%s", rel.Texto())
 
     except Exception:
         success = False
-        summary = traceback.format_exc()
+        erro = traceback.format_exc()
+        rel.Erro("A rodada abortou — ver traceback.")
         log.exception("filtrar_trades: erro inesperado")
 
     finally:
         conn.close()
-        EnviarEmailConclusao(
-            "filtrar_trades",
-            success,
-            summary,
-            logger=log,
-        )
+        EnviarEmailConclusao("filtrar_trades", success, rel, tracebackErro=erro, logger=log)
 
 
 if __name__ == "__main__":

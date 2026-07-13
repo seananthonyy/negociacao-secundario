@@ -37,6 +37,7 @@ from lib.db import ObterBanco
 from lib.config import cfg, ObterProxyPlaywright
 from lib.logger import ObterLogger
 from lib.email_outlook import EnviarEmailConclusao
+from lib.relatorio_execucao import RelatorioExecucao
 
 # ---------------------------------------------------------------------------
 # Constantes
@@ -865,7 +866,7 @@ async def ClicarBotaoCsv(page: Page, dataAlvo: date, log) -> str | None:
 # Main async
 # ---------------------------------------------------------------------------
 
-async def PrincipalAsync(args: argparse.Namespace) -> str:
+async def PrincipalAsync(args: argparse.Namespace) -> RelatorioExecucao:
     log = ObterLogger("scrape_b3_boletim")
 
     if args.date:
@@ -912,12 +913,12 @@ async def PrincipalAsync(args: argparse.Namespace) -> str:
                     totalInseridos  += ins
                     totalAtualizados   += upd
                     totalCancelados += cnl
-                    results.append(f"{dataStr}: {ins} inseridos, {upd} atualizados, {cnl} cancelados")
+                    results.append([dataStr, ins, upd, cnl])
                     log.info(f"{dataStr}: {ins} inseridos, {upd} atualizados, {cnl} cancelados")
                 except Exception as e:
                     log.error(f"{dataStr}: ERRO — {e}")
                     log.debug(traceback.format_exc())
-                    results.append(f"{dataStr}: ERRO — {e}")
+                    results.append([dataStr, "ERRO", str(e)[:60], ""])
                     try:
                         await SalvarDebug(page, f"ERRO_{dataStr}", log)
                     except Exception:
@@ -930,34 +931,43 @@ async def PrincipalAsync(args: argparse.Namespace) -> str:
     finally:
         conn.close()
 
-    summary = (
-        f"Operações inseridas:   {totalInseridos}\n"
-        f"Operações atualizadas: {totalAtualizados}\n"
-        f"Operações canceladas:  {totalCancelados}\n\n"
-        f"Datas processadas:\n" + "\n".join(f"  {r}" for r in results)
-    )
-    log.info(summary)
-    return summary
+    rel = RelatorioExecucao("scrape_b3_boletim", args=vars(args))
+    rel.Datas([r[0] for r in results])
+    rel.Contar("inseridos", totalInseridos)
+    rel.Contar("atualizados", totalAtualizados)
+    rel.Contar("cancelados", totalCancelados)
+    rel.Secao("Resultado por pregão", ["data", "inseridos", "atualizados", "cancelados"], results)
+
+    # Pregão que não trouxe negócio nenhum quase sempre é falha silenciosa (a B3 sempre
+    # tem negócio em dia útil) — foi assim que o bug do proxy no Playwright passou batido.
+    semDado = [r[0] for r in results if r[1] == 0 and r[2] == 0]
+    if semDado:
+        rel.Aviso(f"{len(semDado)} pregão(ões) sem nenhum negócio: {', '.join(semDado[:6])}. "
+                  f"Em dia útil isso quase sempre é falha de download, não ausência de dado.")
+
+    log.info(rel.Texto())
+    return rel
 
 
 # ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
 
-def Principal() -> str:
+def Principal() -> RelatorioExecucao:
     args = LerArgumentos()
     return asyncio.run(PrincipalAsync(args))
 
 
 if __name__ == "__main__":
-    resumo, ok, tb = "", True, None
     log = ObterLogger("scrape_b3_boletim")
+    rel, ok, tb = RelatorioExecucao("scrape_b3_boletim"), True, None
     try:
-        resumo = Principal()
+        rel = Principal()
     except Exception:
         ok = False
         tb = traceback.format_exc()
+        rel.Erro("A rodada abortou — ver traceback.")
         print(tb, file=sys.stderr)
         raise
     finally:
-        EnviarEmailConclusao("scrape_b3_boletim", ok, resumo or "", tb, logger=log)
+        EnviarEmailConclusao("scrape_b3_boletim", ok, rel, tb, logger=log)
