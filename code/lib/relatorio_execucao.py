@@ -140,9 +140,13 @@ class RelatorioExecucao:
         if self.args:
             linhas.append(f"Args     : {self.args}")
         linhas.append("")
-        for acao in ACOES:
-            if acao in self.contadores:
-                linhas.append(f"  {acao:<12} {FormatarNumero(self.contadores[acao])}")
+        # ACOES primeiro (a ordem canônica), depois os contadores livres que os scripts
+        # inventam (`PorData` cria um por coluna). Sem a segunda passada, um script que
+        # só usa contador livre logava um resumo em branco.
+        ordenados = [a for a in ACOES if a in self.contadores]
+        ordenados += [a for a in self.contadores if a not in ACOES]
+        for acao in ordenados:
+            linhas.append(f"  {acao:<14} {FormatarNumero(self.contadores[acao])}")
         for nome, valor in self.metricas:
             linhas.append(f"  {nome}: {valor}")
         for a in self.avisos:

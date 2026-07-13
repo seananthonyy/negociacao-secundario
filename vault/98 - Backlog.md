@@ -41,7 +41,19 @@ Depois de corrigir o aniversário por ativo e as três armadilhas do fluxo da B3
 
 Piores: `RED711` (7,0×), `CRA02300MJ8` (5,7×), `TPER11` (0,70), `RENTE2`, `24H0031235`, `ITSA17`.
 
-O `conferir_pu --desvalidar` tira a validação de quem erra acima de 1e-3 — eles caem na cascata de API e não são precificados pela calc. **Não está no pipeline por padrão**; decidir se entra.
+**Já testei três hipóteses e nenhuma explica o grupo** (13/07). Comparei a incidência nos 31 graves contra a base inteira (3.026 validados):
+
+| hipótese | nos graves | na base | enriquecimento |
+|---|---|---|---|
+| último evento **depois** do vencimento | 32,3% | **24,6%** | ~1,3× — irrelevante |
+| fluxo **sem nenhuma data de cupom** | 19,4% | 8,5% | 2,3× — fraco |
+| CDI+ com spread > 20% | 6,5% | 0,1% | 65× — mas são **2 ativos** |
+
+Ou seja: 745 dos 3.026 validados têm evento pós-vencimento **e batem o PU normalmente**. Não é isso. **Os 31 são heterogêneos** — é triagem caso a caso, não um bug único.
+
+Achados soltos que valem no caso a caso: o `RED711` tem `vrTaxaEmissao = 250.0` num CDI+ (spread de 250%?! — a B3 usa esse valor e chega a PU 131; a calc chega a 1.050). O `CRA02300MJ8` tem **um evento só** (bullet sem cupom) e a calc dá 9.274 contra 1.393 da B3 — 6,6× o VNE, o que cheira a acúmulo de DI errado quando não há data de cupom para ancorar o período.
+
+O `conferir_pu --desvalidar` tira a validação de quem erra acima de 1e-3 — eles caem na cascata de API e não são precificados pela calc. **Não está no pipeline por padrão**; decidir se entra (só faz sentido quando a calc for ligada).
 
 ---
 
