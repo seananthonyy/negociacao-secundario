@@ -21,7 +21,7 @@ import json
 import sys
 import traceback
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -52,6 +52,21 @@ def CarregarFeriados() -> set[date]:
                 except ValueError:
                     pass
     return feriados
+
+
+def CalcularDtCorte() -> str:
+    """Última data de liquidação publicável: o dia útil ANTERIOR a hoje (D-1).
+
+    O pregão de hoje não fechou — os negócios que já aparecem na base para a
+    liquidação de hoje são a perna D+1 do pregão anterior, um dia pela metade.
+    Publicá-los mostraria volume e spread de um dia incompleto como se fosse
+    fechado. O relatório sempre corta em D-1, salvo `--ate` explícito.
+    """
+    feriados = CarregarFeriados()
+    d = date.today() - timedelta(days=1)
+    while d.weekday() >= 5 or d in feriados:
+        d -= timedelta(days=1)
+    return d.isoformat()
 
 
 def MediaPonderada(valores: list[tuple[float | None, float]]) -> float | None:
@@ -132,6 +147,7 @@ SELECT
 FROM NegociosProcessados t
 LEFT JOIN InfoAtivos ia ON ia.cdTicker = t.cdTicker
 WHERE t.cdStatus = 'VALIDO'
+  AND t.dtLiquidacao <= ?
 GROUP BY t.dtLiquidacao
 ORDER BY t.dtLiquidacao
 """
@@ -148,6 +164,7 @@ SELECT
 FROM NegociosProcessados t
 LEFT JOIN InfoAtivos ia ON ia.cdTicker = t.cdTicker
 WHERE t.cdStatus = 'VALIDO'
+  AND t.dtLiquidacao <= ?
 GROUP BY t.dtLiquidacao, ia.cdIndexador
 ORDER BY t.dtLiquidacao
 """
@@ -166,6 +183,7 @@ SELECT
 FROM NegociosProcessados t
 LEFT JOIN InfoAtivos ia ON ia.cdTicker = t.cdTicker
 WHERE t.cdStatus = 'VALIDO'
+  AND t.dtLiquidacao <= ?
 GROUP BY t.dtLiquidacao, t.cdTicker, ia.cdEmissor, ia.cdIndexador
 ORDER BY t.dtLiquidacao, t.cdTicker
 """
@@ -185,6 +203,7 @@ SELECT
 FROM NegociosProcessados t
 LEFT JOIN InfoAtivos ia ON ia.cdTicker = t.cdTicker
 WHERE t.cdStatus = 'VALIDO'
+  AND t.dtLiquidacao <= ?
   AND ia.vrDuration IS NOT NULL
 GROUP BY t.dtLiquidacao, t.cdTicker, ia.cdEmissor, ia.cdIndexador, ia.vrDuration
 ORDER BY t.dtLiquidacao, vrVolumeM DESC
@@ -200,15 +219,34 @@ ORDER BY t.dtLiquidacao, vrVolumeM DESC
 # outstanding daquela data. Ativos sem outstanding (> 0) na data ficam fora
 # do cálculo (o JOIN interno já exclui).
 #
-# NOTA: enquanto `Outstanding` estiver vazia (ex.: PC pessoal, sem Bloomberg),
-# a Visão Anbima fica sem dados. As demais abas não usam este CTE.
-# (Histórico: até 28/06/2026 o peso era `InfoAtivos.vrQuantidadeEmissao`, um
-#  proxy CONSTANTE por data, sem casa de data no JOIN.)
-PESO_CTE = """
+# FONTE DO PESO — escolhida UMA vez por relatório, em EscolherFontePeso():
+#
+#   `Outstanding` populada  → outstanding real (PC do banco, via Bloomberg).
+#   `Outstanding` vazia     → `InfoAtivos.vrQuantidadeEmissao` como PROXY
+#                             (PC pessoal, sem terminal Bloomberg).
+#
+# A escolha é GLOBAL de propósito: outstanding e quantidade de emissão têm
+# escalas diferentes, e misturá-las na mesma média ponderada corromperia o
+# resultado em silêncio. Nunca há fallback por ativo — ou tudo é outstanding,
+# ou tudo é emissão, e o relatório diz qual foi (disclaimer na aba).
+#
+# Os dois CTEs expõem a MESMA forma (cdTicker, dtPeso, vrPeso), então os três
+# SQLs abaixo não mudam. A emissão é constante por ticker: o CROSS JOIN a
+# expande contra as datas da Anbima só para casar o `p.dtPeso = ai.dtReferencia`.
+PESO_CTE_OUTSTANDING = """
 Peso AS (
     SELECT cdTicker, dtOutstanding AS dtPeso, vrOutstanding AS vrPeso
     FROM Outstanding
     WHERE vrOutstanding IS NOT NULL AND vrOutstanding > 0
+)
+"""
+
+PESO_CTE_EMISSAO = """
+Peso AS (
+    SELECT ia.cdTicker, d.dtReferencia AS dtPeso, ia.vrQuantidadeEmissao AS vrPeso
+    FROM InfoAtivos ia
+    CROSS JOIN (SELECT DISTINCT dtReferencia FROM AnbimaIndicativos) d
+    WHERE ia.vrQuantidadeEmissao IS NOT NULL AND ia.vrQuantidadeEmissao > 0
 )
 """
 
@@ -217,8 +255,8 @@ Peso AS (
 # que o usuário deixar selecionados no filtro manual por indexador da Visão Anbima —
 # assim ele tira na mão os high-yield estressados sem filtro estatístico automático.
 # População: ativos com peso > 0 (JOIN Peso).
-SQL_ANBIMA_IDX = f"""
-WITH {PESO_CTE}
+SQL_ANBIMA_IDX = """
+WITH {peso}
 SELECT
     ai.dtReferencia,
     COALESCE(ia.cdIndexador, '?') AS cdIndexador,
@@ -231,6 +269,7 @@ FROM AnbimaIndicativos ai
 JOIN Peso       p  ON p.cdTicker  = ai.cdTicker AND p.dtPeso = ai.dtReferencia
 JOIN InfoAtivos ia ON ia.cdTicker = ai.cdTicker
 WHERE ai.vrSpreadAnbima IS NOT NULL
+  AND ai.dtReferencia <= ?
 ORDER BY ai.dtReferencia
 """
 
@@ -238,8 +277,8 @@ ORDER BY ai.dtReferencia
 # SEM vértice de referência (CDI+ e %CDI). Alimenta as "curvas por duration" da
 # Visão Anbima: x = duration do ativo, y = spread/nominal, uma curva por data.
 # Mesma população (Peso > 0); exige duration conhecida.
-SQL_ANBIMA_DUR = f"""
-WITH {PESO_CTE}
+SQL_ANBIMA_DUR = """
+WITH {peso}
 SELECT
     ai.dtReferencia,
     ia.cdIndexador,
@@ -252,6 +291,7 @@ FROM AnbimaIndicativos ai
 JOIN Peso       p  ON p.cdTicker  = ai.cdTicker AND p.dtPeso = ai.dtReferencia
 JOIN InfoAtivos ia ON ia.cdTicker = ai.cdTicker
 WHERE ai.vrSpreadAnbima IS NOT NULL
+  AND ai.dtReferencia <= ?
   AND ia.cdIndexador IN ('CDI+','%CDI')
   AND ia.vrDuration IS NOT NULL
 ORDER BY ai.dtReferencia, ia.vrDuration
@@ -260,8 +300,8 @@ ORDER BY ai.dtReferencia, ia.vrDuration
 # Linha POR TICKER (spread + taxa nominal Anbima + tipo de instrumento) por
 # (data, referência NTN-B / DI1). A mediana por vértice é feita no CLIENTE, filtrável
 # por tipo de instrumento (DEB/DEB 12.431/CRI/CRA). Mesma população do SQL_ANBIMA_IDX.
-SQL_ANBIMA_REF = f"""
-WITH {PESO_CTE}
+SQL_ANBIMA_REF = """
+WITH {peso}
 SELECT
     ai.dtReferencia,
     ia.cdReferencia,
@@ -274,6 +314,7 @@ FROM AnbimaIndicativos ai
 JOIN Peso       p  ON p.cdTicker  = ai.cdTicker AND p.dtPeso = ai.dtReferencia
 JOIN InfoAtivos ia ON ia.cdTicker = ai.cdTicker
 WHERE ai.vrSpreadAnbima IS NOT NULL
+  AND ai.dtReferencia <= ?
   AND (ia.cdReferencia LIKE 'NTN-B%' OR ia.cdReferencia LIKE 'DI1%')
 ORDER BY ai.dtReferencia, ia.cdReferencia
 """
@@ -286,6 +327,7 @@ SQL_DATAS_BOLETIM = """
 SELECT DISTINCT dtLiquidacao
 FROM NegociosProcessados
 WHERE cdStatus IN ('VALIDO', 'BROKER')
+  AND dtLiquidacao <= ?
 ORDER BY dtLiquidacao
 """
 
@@ -344,6 +386,7 @@ WITH UltTrade AS (
     SELECT cdTicker, MAX(dtLiquidacao) AS dtUltimo
     FROM NegociosProcessados
     WHERE cdStatus = 'VALIDO'
+      AND dtLiquidacao <= ?
     GROUP BY cdTicker
 ),
 TaxaTrade AS (
@@ -356,6 +399,7 @@ TaxaTrade AS (
     FROM NegociosProcessados tp
     JOIN UltTrade ut ON ut.cdTicker = tp.cdTicker AND tp.dtLiquidacao = ut.dtUltimo
     WHERE tp.cdStatus = 'VALIDO'
+      AND tp.dtLiquidacao <= ?
     GROUP BY tp.cdTicker, ut.dtUltimo
 ),
 TaxaAnb AS (
@@ -364,6 +408,7 @@ TaxaAnb AS (
                ROW_NUMBER() OVER (PARTITION BY cdTicker ORDER BY dtReferencia DESC) AS rn
         FROM AnbimaIndicativos
         WHERE vrTaxaAnbima IS NOT NULL
+          AND dtReferencia <= ?
     ) WHERE rn = 1
 )
 SELECT
@@ -386,8 +431,20 @@ ORDER BY tt.cdTicker
 # Data loading — Visão Geral / Por Ticker / Duration
 # ---------------------------------------------------------------------------
 
-def CarregarDiario(conn) -> list[dict]:
-    rows = conn.execute(SQL_DIARIO).fetchall()
+def EscolherFontePeso(conn) -> tuple[str, str]:
+    """Escolhe a fonte do peso da Visão Anbima: outstanding real quando a tabela
+    `Outstanding` está populada (PC do banco, via Bloomberg); senão a quantidade
+    de emissão como proxy. Escolha global — as escalas nunca se misturam."""
+    temOutstanding = conn.execute(
+        "SELECT EXISTS(SELECT 1 FROM Outstanding WHERE vrOutstanding > 0)"
+    ).fetchone()[0]
+    if temOutstanding:
+        return PESO_CTE_OUTSTANDING, "outstanding"
+    return PESO_CTE_EMISSAO, "emissao"
+
+
+def CarregarDiario(conn, dtCorte: str) -> list[dict]:
+    rows = conn.execute(SQL_DIARIO, (dtCorte,)).fetchall()
     return [
         {
             "dt":           r[0],
@@ -399,11 +456,11 @@ def CarregarDiario(conn) -> list[dict]:
     ]
 
 
-def CarregarDiarioIdx(conn) -> list[dict]:
+def CarregarDiarioIdx(conn, dtCorte: str) -> list[dict]:
     """Volume e spread ponderado por volume, quebrados por (dia, indexador).
     spreadRaw fica em % para CDI+/IPCA/PREFIXADO (multiplicar por 100 = bps no
     template) e já é o spread direto para %CDI."""
-    rows = conn.execute(SQL_DIARIO_IDX).fetchall()
+    rows = conn.execute(SQL_DIARIO_IDX, (dtCorte,)).fetchall()
     return [
         {
             "dt":        r[0],
@@ -415,9 +472,9 @@ def CarregarDiarioIdx(conn) -> list[dict]:
     ]
 
 
-def CarregarAnbimaIdx(conn) -> list[dict]:
+def CarregarAnbimaIdx(conn, ctePeso: str, dtCorte: str) -> list[dict]:
     """Linha por ticker (spread Anbima + peso) por (dia, indexador). A média ponderada
-    por emissão é feita no cliente, sobre os tickers selecionados no filtro manual.
+    pelo peso é feita no cliente, sobre os tickers selecionados no filtro manual.
     spreadRaw em % para os não-%CDI (×100 = bps no template); direto para %CDI."""
     return [
         {
@@ -429,11 +486,11 @@ def CarregarAnbimaIdx(conn) -> list[dict]:
             "spreadRaw": round(r[5], 6) if r[5] is not None else None,
             "peso":      r[6],
         }
-        for r in conn.execute(SQL_ANBIMA_IDX).fetchall()
+        for r in conn.execute(SQL_ANBIMA_IDX.format(peso=ctePeso), (dtCorte,)).fetchall()
     ]
 
 
-def CarregarAnbimaDur(conn) -> list[dict]:
+def CarregarAnbimaDur(conn, ctePeso: str, dtCorte: str) -> list[dict]:
     """Linha por ticker (duration + spread + taxa nominal Anbima) para CDI+ e %CDI.
     Alimenta as curvas por duration da Visão Anbima (x = duration, y = spread/nominal,
     uma curva por data). spreadRaw em % para CDI+ (×100 = bps no template); direto
@@ -448,11 +505,11 @@ def CarregarAnbimaDur(conn) -> list[dict]:
             "spreadRaw": round(r[5], 6) if r[5] is not None else None,
             "taxa":      round(r[6], 6) if r[6] is not None else None,
         }
-        for r in conn.execute(SQL_ANBIMA_DUR).fetchall()
+        for r in conn.execute(SQL_ANBIMA_DUR.format(peso=ctePeso), (dtCorte,)).fetchall()
     ]
 
 
-def CarregarAnbimaRef(conn) -> list[dict]:
+def CarregarAnbimaRef(conn, ctePeso: str, dtCorte: str) -> list[dict]:
     """Linha por ticker (spread + taxa nominal Anbima + tipo de instrumento) por
     (dia, ref NTN-B/DI1). A mediana por vértice é feita no cliente (robusta a outlier),
     filtrável por tipo de instrumento (DEB/DEB 12.431/CRI/CRA)."""
@@ -465,12 +522,12 @@ def CarregarAnbimaRef(conn) -> list[dict]:
             "spreadRaw": round(r[5], 6) if r[5] is not None else None,
             "taxa":      round(r[6], 6) if r[6] is not None else None,
         }
-        for r in conn.execute(SQL_ANBIMA_REF).fetchall()
+        for r in conn.execute(SQL_ANBIMA_REF.format(peso=ctePeso), (dtCorte,)).fetchall()
     ]
 
 
-def CarregarTicker(conn) -> list[dict]:
-    rows = conn.execute(SQL_TICKER).fetchall()
+def CarregarTicker(conn, dtCorte: str) -> list[dict]:
+    rows = conn.execute(SQL_TICKER, (dtCorte,)).fetchall()
     return [
         {
             "dt":        r[0],
@@ -484,8 +541,8 @@ def CarregarTicker(conn) -> list[dict]:
     ]
 
 
-def CarregarDuration(conn) -> list[dict]:
-    rows = conn.execute(SQL_DURATION).fetchall()
+def CarregarDuration(conn, dtCorte: str) -> list[dict]:
+    rows = conn.execute(SQL_DURATION, (dtCorte,)).fetchall()
     return [
         {
             "dt":        r[0],
@@ -500,9 +557,9 @@ def CarregarDuration(conn) -> list[dict]:
     ]
 
 
-def CarregarInfoAtivos(conn) -> list[dict]:
+def CarregarInfoAtivos(conn, dtCorte: str) -> list[dict]:
     """Uma linha por ticker negociado: cadastro + taxa Anbima e taxa de trade mais recentes."""
-    rows = conn.execute(SQL_INFO_ATIVOS).fetchall()
+    rows = conn.execute(SQL_INFO_ATIVOS, (dtCorte, dtCorte, dtCorte)).fetchall()
     return [
         {
             "ticker":     r["cdTicker"],
@@ -623,9 +680,9 @@ def AgregarTicker(cdTicker: str, grupo: list[LinhaNegocio]) -> dict:
     }
 
 
-def CarregarBoletim(conn, log) -> dict:
-    """Retorna {dtLiquidacao: {tickers, resumo, totais}} para todos os pregões."""
-    datas     = [r[0] for r in conn.execute(SQL_DATAS_BOLETIM).fetchall()]
+def CarregarBoletim(conn, log, dtCorte: str) -> dict:
+    """Retorna {dtLiquidacao: {tickers, resumo, totais}} para os pregões até dtCorte."""
+    datas     = [r[0] for r in conn.execute(SQL_DATAS_BOLETIM, (dtCorte,)).fetchall()]
     ordemInstr = {"DEB": 0, "DEB 12.431": 1, "CRI": 2, "CRA": 3}
     boletim: dict[str, dict] = {}
 
@@ -858,6 +915,7 @@ def RenderizarHtml(
     infoAtivos:  list[dict],
     dtStart:     str,
     dtEnd:       str,
+    pesoFonte:   str,
 ) -> str:
     tickers = TickersPorVolume(ticker)
     datas   = sorted({r["dt"] for r in ticker})
@@ -865,6 +923,7 @@ def RenderizarHtml(
     payload = {
         "dtStart":     dtStart,
         "dtEnd":       dtEnd,
+        "pesoFonte":   pesoFonte,
         "diario":      diario,
         "diarioIdx":   diarioIdx,
         "anbimaIdx":   anbimaIdx,
@@ -887,6 +946,7 @@ def RenderizarHtml(
         data_json=json.dumps(payload, ensure_ascii=False),
         dtStart=dtStart,
         dtEnd=dtEnd,
+        pesoFonte=pesoFonte,
     )
 
 
@@ -920,6 +980,14 @@ def LerArgumentos() -> argparse.Namespace:
         help="Envia email com o top 20 ativos por volume da data de LIQUIDAÇÃO informada "
              "(corpo HTML formatado) e o relatório completo em anexo.",
     )
+    parser.add_argument(
+        "--ate",
+        metavar="YYYY-MM-DD",
+        default=None,
+        dest="ate",
+        help="Última data de LIQUIDAÇÃO a publicar. Default: D-1 (o dia útil anterior a "
+             "hoje). O pregão de hoje não fechou — publicá-lo mostraria um dia pela metade.",
+    )
     return parser.parse_args()
 
 
@@ -934,20 +1002,29 @@ def Principal() -> None:
     try:
         log.info("%s: iniciando", NOME_SCRIPT)
 
+        dtCorte = args.ate or CalcularDtCorte()
+        log.info("%s: corte em dtLiquidacao <= %s%s", NOME_SCRIPT, dtCorte,
+                 "" if args.ate else " (D-1 — o pregão de hoje não fechou)")
+
         conn = ObterBanco()
         try:
-            diario    = CarregarDiario(conn)
-            diarioIdx = CarregarDiarioIdx(conn)
-            anbimaIdx = CarregarAnbimaIdx(conn)
-            anbimaRef = CarregarAnbimaRef(conn)
-            anbimaDur = CarregarAnbimaDur(conn)
-            ticker    = CarregarTicker(conn)
-            duration = CarregarDuration(conn)
+            ctePeso, pesoFonte = EscolherFontePeso(conn)
+            log.info("%s: peso da Visão Anbima = %s", NOME_SCRIPT,
+                     "outstanding real (tabela Outstanding)" if pesoFonte == "outstanding"
+                     else "quantidade de emissão (PROXY — Outstanding vazia)")
+
+            diario    = CarregarDiario(conn, dtCorte)
+            diarioIdx = CarregarDiarioIdx(conn, dtCorte)
+            anbimaIdx = CarregarAnbimaIdx(conn, ctePeso, dtCorte)
+            anbimaRef = CarregarAnbimaRef(conn, ctePeso, dtCorte)
+            anbimaDur = CarregarAnbimaDur(conn, ctePeso, dtCorte)
+            ticker    = CarregarTicker(conn, dtCorte)
+            duration = CarregarDuration(conn, dtCorte)
             log.info("%s: %d pregões | %d ticker-dias | %d duration-rows",
                      NOME_SCRIPT, len(diario), len(ticker), len(duration))
             log.info("%s: carregando boletim por pregão...", NOME_SCRIPT)
-            boletim  = CarregarBoletim(conn, log)
-            infoAtivos = CarregarInfoAtivos(conn)
+            boletim  = CarregarBoletim(conn, log, dtCorte)
+            infoAtivos = CarregarInfoAtivos(conn, dtCorte)
             log.info("%s: %d ativos em Info Ativos", NOME_SCRIPT, len(infoAtivos))
         finally:
             conn.close()
@@ -957,7 +1034,7 @@ def Principal() -> None:
         dtEnd   = diario[-1]["dt"] if diario else date.today().isoformat()
 
         html = RenderizarHtml(diario, diarioIdx, anbimaIdx, anbimaRef, anbimaDur, ticker, duration,
-                           boletim, diasBoletim, infoAtivos, dtStart, dtEnd)
+                           boletim, diasBoletim, infoAtivos, dtStart, dtEnd, pesoFonte)
 
         relDir = Path(cfg["paths"]["relatoriosDir"])
         relDir.mkdir(parents=True, exist_ok=True)

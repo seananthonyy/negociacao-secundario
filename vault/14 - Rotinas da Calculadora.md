@@ -118,6 +118,37 @@ Estado em 13/07/2026 (3.023 ativos validados, referência 10/07):
 
 Com o sarrafo em 1e-5, **2.543 (84,1%)** passam nos dois testes. Os 596 são ruído numérico da projeção DI, não bug.
 
+## Faxina de cadastro (14/07/2026) — 96,3% → 97,5%
+
+Rodando o gate contra a régua certa (o `calcYield`/`calcPU` da B3, não a taxa gravada na base — ver [[project_calc_taxa_nao_fecha]]), os erros >1e-3 caíram de **114 para 76** ativos corrigindo **só dado nosso** (nada na `calculadora_rf.py`). Três bugs de cadastro, todos com a **mesma raiz**: scrapers secundários **sobrescreviam** o que a B3 (fonte primária) já tinha gravado certo.
+
+1. **`vrTaxaEmissao` (cupom) errado — 20 ativos.** A planilha da **FI Analytics** sobrescrevia o `yield` da B3, às vezes em unidade diferente (RED711 gravado **250** em vez de 2,5 → PU errava **702%**; 24B0013203 como IPCA+1,4% em vez de 6,4%). Raiz: `scrape_fianalytics_planilha.py` fazia `vrTaxaEmissao = COALESCE(excluded, vrTaxaEmissao)` (FI vence) e roda **depois** da B3 no `RodarDia`. **Corrigido** para `COALESCE(vrTaxaEmissao, excluded)` (fill-only, igual a B3/Anbima).
+
+2. **`cdIndexador` errado — 4 ativos.** FI e o scraper CRI/CRA sobrescreviam o `method` da B3. **CRA02300MJ8** era **%CDI** marcado como CDI+ → PU errava **565%**; BHIAC0 (CDI+↔%CDI), HSEI11 e SRGI12 (PRE↔IPCA). **Corrigido**: `cdIndexador` virou fill-only em `scrape_fianalytics_planilha.py` e `scrape_anbima_cri_cra.py`.
+
+3. **`FluxoAtivos` defasado/espúrio — 19 ativos.** Dois padrões, ambos corrigidos regravando o fluxo a partir dos eventos **atuais** da B3: (a) **fluxo defasado** — datas de cupom desalinhadas do que a B3 emite hoje (ENEVA0 errava 3,2%; RENTE2/ITSA17/VERT13 ~10-15%); (b) **evento antes do `dtInicioRentabilidade`** — âncora de juros espúria em papéis que pagam juro no vencimento (RIOS21, IBIP11). **609 ativos** têm evento pré-início, mas ele só atrapalha nessas estruturas — a poda foi aplicada **só onde o gate melhora**, por ativo.
+   > ⚠️ Raiz não fechada: `scrape_b3_bond_details.py` só re-scrapeia quem tem **info faltando** (o gate `faltando`); um fluxo que já existe **nunca é atualizado**, então ele **deriva** com o tempo. Item de backlog: refresh periódico do fluxo da B3.
+
+**Gate depois da faxina (10/07, 3.047 validados): 76 ruins, 97,5% OK.**
+
+## Snap da amortização no aniversário (14/07/2026) — 97,5% → 97,8%, e mata os erros catastróficos
+
+O 5º bug da calc (autorizado). `CalcularVna` casava evento com aniversário por **data exata** (`if anivAtual in eventos`). Mas a B3 **fixa o montante da amortização no aniversário e liquida alguns DU depois** (lag de liquidação): 22D1226341 aniversaria dia 17 e paga dia 19; TPER11 aniversaria (segundo a B3) dia 15 mas amortiza em fim de mês. O evento não casava e era **silenciosamente descartado** → VNA ficava inteiro (TPER11 PU **653 vs 385**; 22D1226341 VNA **+30%**).
+
+**Fix:** ao montar o dict `eventos`, cada evento é **encostado no aniversário mais próximo** (por dias corridos) em vez de exigir data exata. Evento já no aniversário encosta em si (no-op), então os ~1.226 IPCA que já batiam **não mudam** — confirmado: gabaritos seguem **11 OK / 1 FAIL** (o FAIL do PALF38 é anterior) e nenhuma regressão no gate. Prova de que a B3 fixa no aniversário: o snap leva 22D1226341 a **5,9e-8** (precisão de máquina), não a um ~0,01% de aproximação.
+
+**Resultado: erros catastróficos zerados** (TPER11 70%→0,3%, 22D1226341 30%→0), IPCA de 65→57 ruins. Gate: **68 ruins, 97,8%** (CDI+ 99,5% · IPCA 95,6% · PREF 98,0% · %CDI 100%).
+
+### Os 68 que sobram — pequenos, e por quê
+
+| # | grupo | erro | causa |
+|---|---|---|---|
+| **57** | IPCA pro-rata/índice | 0,1-2,8% (quase tudo <1%) | **metodologia fina** — cadastro confere com a B3; o erro **oscila em torno de 1e-3 conforme a data** (SUZBC1 passa em 08/07 e 30/06, falha em 10/07 por um fio). É ruído da projeção/pró-rata do IPCA do mês corrente, não bug. **Corrigir `vrAniversario` por minimização num dia é SUPERAJUSTE** (testado: o "melhor aniversário" muda de dia pra dia) — não fazer. Poucos maiores (24G1674104 2,8%: fluxo com 121 eventos vs 151 da B3) são fluxo incompleto. |
+| **7** | CDI+ residual | até 3,8% | **batem no par** (MATD23 1e-9), erram **fora do par** → é o problema conhecido da [[#⚠️ O que ainda NÃO fecha a taxa fora do par\|taxa fora do par]], não novo |
+| **4** | PREFIXADO | — | a B3 devolve `getBondDetails` **vazio** hoje (TSSS15/VAMOA4/RDORE7/CEPEA5, `method=None`) — gap do lado da B3, não nosso |
+
+Ou seja: **não sobra bug catastrófico** — o resto é pró-rata fino do IPCA, a taxa-fora-do-par (já mapeada abaixo) e buracos pontuais da B3.
+
 ## ⚠️ O que ainda NÃO fecha: a taxa fora do par
 
 A calc reproduz o **PU par** das fontes com precisão (**86,4%** dos 2.861 ativos validados batem a 1e-6 — ver `scripts/conferir_pu.py`), mas **não reproduz a taxa implícita num PU fora do par**.

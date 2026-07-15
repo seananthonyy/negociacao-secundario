@@ -183,8 +183,14 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f4f5f7;color:#1a1a2e;fo
       <select id="a-start" class="fsel" onchange="renderAnbima()"></select>
       <span class="sep">→</span>
       <select id="a-end" class="fsel" onchange="renderAnbima()"></select>
-      <span style="margin-left:12px;font-size:11px;color:#737373">Por indexador: <b>média ponderada por outstanding</b> dos ativos <b>selecionados</b> (filtre na mão os estressados). Curvas NTN-B/DI: mediana por vértice. Ativos sem outstanding na data ficam fora.</span>
+      <span style="margin-left:12px;font-size:11px;color:#737373">Por indexador: <b>média ponderada por {% if pesoFonte == 'outstanding' %}outstanding{% else %}quantidade de emissão{% endif %}</b> dos ativos <b>selecionados</b> (filtre na mão os estressados). Curvas NTN-B/DI: mediana por vértice. Ativos sem {% if pesoFonte == 'outstanding' %}outstanding na data{% else %}quantidade de emissão{% endif %} ficam fora.</span>
     </div>
+    {% if pesoFonte != 'outstanding' %}
+    <div class="disclaimer">
+      ⚠ <b>Peso = quantidade de emissão (proxy), não outstanding.</b> A tabela <code>Outstanding</code> está vazia nesta base — ela é populada pela Bloomberg, disponível só no ambiente do banco. Enquanto isso, a média ponderada por indexador usa a <b>quantidade de emissão</b> de cada ativo no lugar do saldo em circulação.
+      <br>Consequência: ativos já amortizados pesam mais do que deveriam, porque a emissão não encolhe com o tempo. A <b>ordem de grandeza dos spreads se mantém</b>, mas o nível exato muda quando o outstanding real entrar. As <b>medianas</b> das curvas NTN-B/DI não usam peso e <b>não são afetadas</b>.
+    </div>
+    {% endif %}
     <div class="card-title" style="padding:2px 2px 4px">Spread Anbima · por Indexador (média pond. dos ativos selecionados, dia a dia)</div>
     <div class="dur-grid">
       <div class="card"><div class="card-title">CDI+</div>
@@ -725,7 +731,9 @@ function renderGeral() {
 }
 
 // ═══════════════════════════ VISÃO ANBIMA ════════════════════════════════════
-// Por indexador: média ponderada por outstanding dos tickers SELECIONADOS
+// Por indexador: média ponderada pelo peso (r.peso) dos tickers SELECIONADOS.
+// A FONTE do peso é escolhida no Python (outstanding real ou quantidade de emissão
+// como proxy) — ver EscolherFontePeso e o disclaimer no topo da aba.
 // no filtro manual (DATA.anbimaIdx vem por ticker). Curvas NTN-B/DI: mediana (Python).
 // Mesma config de unidade da Visão Mercado: ×100 = bps, exceto %CDI.
 const ANBIMA_IDX = [
@@ -812,7 +820,7 @@ function _anbDts(s, e) {
   return [...new Set(DATA.anbimaIdx.filter(r => r.dt >= s && r.dt <= e).map(r => r.dt))].sort();
 }
 
-// Um gráfico por indexador: média ponderada por outstanding (peso) dos tickers selecionados.
+// Um gráfico por indexador: média ponderada pelo peso dos tickers selecionados.
 function renderAnbimaIdxChart(g, s, e, dts) {
   const sel   = ANB_TK[g.sid] || new Set();
   const tipos = anbInstrActive(g.sid);   // instrumentos marcados (só esses entram)

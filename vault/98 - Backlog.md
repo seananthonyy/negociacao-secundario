@@ -50,25 +50,23 @@ Triangulando 4 negócios de 16/06/2026:
 
 ---
 
-## 31 ativos ainda erram o PU acima de 1%
+## 68 ativos ainda erram o PU acima de 1e-3 (era 114) — sem mais casos catastróficos
 
-**Origem:** 13/07/2026. Rodar `python scripts/conferir_pu.py --date <dia útil>` → `data/pu_divergencias.csv`.
+**Origem:** 13/07/2026, atualizado 14/07. Rodar `python scripts/conferir_pu.py --date <dia útil>` → `data/pu_divergencias.csv`. **Contra a régua certa** (calcYield/calcPU da B3), não a taxa gravada na base. Rodar **só em data com curva DI na base**.
 
-Depois de corrigir o aniversário por ativo e as três armadilhas do fluxo da B3 (ver [[15 - Cadastro dos Ativos]]), os graves caíram de **122 → 31** (de 2.861 comparados). Sem padrão único: 16 IPCA, 10 CDI+, 5 PREFIXADO.
+**14/07 — 114 → 68 (97,8% OK)** em duas frentes (detalhe em [[14 - Rotinas da Calculadora]]):
+1. **Faxina de cadastro** (só dado nosso): cupom errado 20 ativos (FI sobre B3; RED711 250 vs 2,5), indexador 4 (CRA02300MJ8 %CDI→CDI+ errava 565%), fluxo defasado/espúrio 19. Raízes corrigidas no código (scrapers viraram fill-only).
+2. **Snap no `CalcularVna`** (autorizado, mexeu na `calculadora_rf.py`): amortização passou a **encostar no aniversário mais próximo** em vez de exigir data exata → matou os erros catastróficos (TPER11 70%→0,3%, 22D1226341 30%→0). Gabaritos seguem 11 OK/1 FAIL, zero regressão.
 
-Piores: `RED711` (7,0×), `CRA02300MJ8` (5,7×), `TPER11` (0,70), `RENTE2`, `24H0031235`, `ITSA17`.
+**Restam 68, todos pequenos (pior 3,8%):**
 
-**Já testei três hipóteses e nenhuma explica o grupo** (13/07). Comparei a incidência nos 31 graves contra a base inteira (3.026 validados):
-
-| hipótese | nos graves | na base | enriquecimento |
+| # | grupo | erro | de quem é |
 |---|---|---|---|
-| último evento **depois** do vencimento | 32,3% | **24,6%** | ~1,3× — irrelevante |
-| fluxo **sem nenhuma data de cupom** | 19,4% | 8,5% | 2,3× — fraco |
-| CDI+ com spread > 20% | 6,5% | 0,1% | 65× — mas são **2 ativos** |
+| **57** | IPCA pro-rata/índice | 0,1-2,8% (quase tudo <1%) | metodologia fina — **oscila com a data** em torno de 1e-3 (projeção/pró-rata do IPCA corrente). NÃO corrigir `vrAniversario` por minimização: é superajuste (testado). Poucos maiores = fluxo incompleto (24G1674104: 121 vs 151 eventos) |
+| **7** | CDI+ | até 3,8% | batem no par, erram **fora do par** → é a [[#🔴 PRIORIDADE — a calc não reproduz a taxa fora do par (2 a 14 bps)\|taxa fora do par]], não novo |
+| **4** | PREFIXADO | — | B3 devolve `getBondDetails` vazio hoje (TSSS15/VAMOA4/RDORE7/CEPEA5) — gap da B3 |
 
-Ou seja: 745 dos 3.026 validados têm evento pós-vencimento **e batem o PU normalmente**. Não é isso. **Os 31 são heterogêneos** — é triagem caso a caso, não um bug único.
-
-Achados soltos que valem no caso a caso: o `RED711` tem `vrTaxaEmissao = 250.0` num CDI+ (spread de 250%?! — a B3 usa esse valor e chega a PU 131; a calc chega a 1.050). O `CRA02300MJ8` tem **um evento só** (bullet sem cupom) e a calc dá 9.274 contra 1.393 da B3 — 6,6× o VNE, o que cheira a acúmulo de DI errado quando não há data de cupom para ancorar o período.
+**Raiz de processo não fechada:** `scrape_b3_bond_details.py` só re-scrapeia quem tem info **faltando**; fluxo que já existe **nunca é atualizado** → deriva (foi o que causou os 19 fluxos defasados). Falta um refresh periódico do fluxo da B3.
 
 O `conferir_pu --desvalidar` tira a validação de quem erra acima de 1e-3 — eles caem na cascata de API e não são precificados pela calc. **Não está no pipeline por padrão**; decidir se entra (só faz sentido quando a calc for ligada).
 

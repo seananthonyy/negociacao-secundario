@@ -64,7 +64,7 @@ ON CONFLICT(cdTicker) DO UPDATE SET
     dtAtualizacaoDuration = CASE WHEN excluded.vrDuration IS NOT NULL
                             THEN excluded.dtAtualizacaoDuration
                             ELSE dtAtualizacaoDuration END,
-    cdIndexador      = COALESCE(excluded.cdIndexador,      cdIndexador),
+    cdIndexador      = COALESCE(cdIndexador,      excluded.cdIndexador),
     cdReferencia            = COALESCE(excluded.cdReferencia,            cdReferencia),
     cdFonteReferencia      = CASE WHEN excluded.cdReferencia IS NOT NULL THEN 'Anbima' ELSE cdFonteReferencia END,
     dtAtualizacao      = excluded.dtAtualizacao
