@@ -51,18 +51,23 @@ pfMinPctCdi             = 2.0    # %CDI: threshold em unidades %CDI (ex: 100 →
 timeoutSeconds  = 15
 
 # Usar a calculadora LOCAL como 1o degrau da cascata de taxa (calc_taxa_negocios),
-# nos ativos com stFluxoValidado = 1?
+# nos ativos com stFluxoValidado = 1 e indexador em `indexadores` (abaixo)?
 #
-# DESLIGADO por decisao tecnica, 13/07/2026. A calc reproduz o PU PAR das fontes com
-# precisao (86% dos ativos batem a 1e-6), mas NAO reproduz a taxa implicita num PU fora
-# do par. Triangulacao em 16/06/2026: FI Analytics e B3 concordam entre si (0 a 1,7
-# bps de diferenca) e a calc discorda das duas (+2,2 a +13,7 bps). Duas fontes
-# independentes batendo e a nossa divergindo significa que o erro e nosso — provavelmente
-# na convencao de DESCONTO, ja que os fluxos e o VNA estao corretos (o PU par fecha).
+# LIGADO em 15/07/2026, depois de:
+#  1. Faxina de cadastro (cupom/indexador/fluxo pela B3) + snap da amortizacao na calc
+#     (CalcularVna): erros grosseiros de PU zerados. Ver [[14 - Rotinas da Calculadora]].
+#  2. Validador reescrito em torno da B3 como oraculo (scripts/validar_calc_b3.py):
+#     `stFluxoValidado=1` passou a significar "a calc reproduz a calcPU/calcYield da B3
+#     em varias datas". Quem a calc nao reproduz foi DESVALIDADO.
+#  3. Verificacao em TRADES REAIS (15/07): calc vs B3 na taxa dos PUs negociados —
+#     CDI+/IPCA/PREFIXADO batem mediana 0,00 bps, max <0,4 bps.
 #
-# O gate de PU par nao basta: ele valida o fluxo, nao o desconto. Enquanto isso nao for
-# resolvido, a taxa continua vindo da cascata FI -> B3. Ver [[98 - Backlog]].
-usarCalcTaxa    = false
+# %CDI fica de FORA (ver `indexadores`): PU par perfeito, mas a taxa num PU de desconto
+# PROFUNDO ainda diverge da B3 ~15 bps (FI e B3 concordam, a calc nao). Cai na cascata.
+usarCalcTaxa    = true
+
+# Indexadores em que a calc precifica a TAXA (os demais validados caem na cascata FI->B3).
+indexadores     = ["CDI+", "IPCA", "PREFIXADO"]
 
 [alerta]
 volumeMinSemTaxa = 5_000_000

@@ -18,6 +18,7 @@ data/backups/
 data/divergencias_fluxo.csv
 data/carencia_conferir_pu.csv
 data/pu_divergencias.csv
+data/validar_calc_b3.csv
 
 # --- Python ---
 __pycache__/

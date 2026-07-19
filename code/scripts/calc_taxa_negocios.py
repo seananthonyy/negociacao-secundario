@@ -73,17 +73,31 @@ cacheCalc: dict[tuple, Optional[float]] = {}
 travaCache = threading.Lock()
 
 
+# Indexadores em que a calc é confiável para a TAXA de um trade (verificado 15/07/2026
+# em trades reais contra a B3: CDI+/IPCA/PREFIXADO batem a mediana 0,00 bps, máx <0,4 bps).
+# %CDI fica de FORA: o PU no par é perfeito, mas a taxa implícita num PU de DESCONTO
+# PROFUNDO diverge da B3 em até ~15 bps (FI e B3 concordam entre si, a calc não) — é o
+# problema aberto do desconto de %CDI. Enquanto não fecha, %CDI cai na cascata FI->B3.
+INDEXADORES_CALC = frozenset(cfg["calc"].get("indexadores", ["CDI+", "IPCA", "PREFIXADO"]))
+
+
 def CarregarAtivosValidados(conn, log) -> None:
     global ativosValidados
     tickers = [r["cdTicker"] for r in conn.execute(
         "SELECT cdTicker FROM InfoAtivos WHERE stFluxoValidado = 1")]
     ativosValidados = {}
+    pulados = 0
     for cdTicker in tickers:
         ativo = CarregarAtivo(conn, cdTicker)
-        if ativo:
-            ativosValidados[cdTicker] = ativo
-    log.info("calc_taxa: %d ativo(s) com fluxo validado, prontos para a calc local",
-             len(ativosValidados))
+        if not ativo:
+            continue
+        if ativo["cdIndexador"] not in INDEXADORES_CALC:
+            pulados += 1
+            continue
+        ativosValidados[cdTicker] = ativo
+    log.info("calc_taxa: %d ativo(s) prontos para a calc local (%s); %d validado(s) de "
+             "outro indexador ficam na cascata de API",
+             len(ativosValidados), ",".join(sorted(INDEXADORES_CALC)), pulados)
 
 
 def TaxaPelaCalc(trade: "NegocioBruto", log) -> Optional[float]:

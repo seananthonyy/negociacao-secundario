@@ -214,6 +214,15 @@ def ValidarFluxos(limite=None, tickers=None, resultados=None) -> bool:
         extra += ["--tickers", tickers]
     return RodarPasso("validar_fluxos", *extra, resultados=resultados)
 
+def ValidarCalcB3(negociadosDias=120, resultados=None) -> bool:
+    """Gate de CONFIANÇA: desvalida ativo cuja calc não reproduz a calcPU da B3 (em
+    várias datas), refrescando o fluxo pela B3 antes de desvalidar. É o que torna
+    stFluxoValidado confiável para a calc precificar no calc_taxa. Escopo: validados que
+    NEGOCIARAM nos últimos `negociadosDias` (o que aparece no relatório) — a base toda
+    levaria ~13 min. DEPOIS do validar_fluxos, ANTES do calc_taxa."""
+    return RodarPasso("validar_calc_b3", "--negociados-dias", str(negociadosDias),
+                      resultados=resultados)
+
 def Outstanding(inicio, fim=None, resultados=None) -> bool:
     """Outstanding via Bloomberg — SÓ NO BANCO. Data única ou intervalo."""
     return RodarPasso("scrape_outstanding_bloomberg", *ArgsData(inicio, fim), resultados=resultados)
@@ -281,6 +290,7 @@ def RodarDia(X: date | str, resultados: list | None = None,
     IpcaProjetado(resultados=res)
     DiBcb(resultados=res)
     ValidarFluxos(resultados=res)
+    ValidarCalcB3(resultados=res)   # gate de confiança: calc reproduz a B3? senão, desvalida
 
     CalcTaxa(X, resultados=res)
     Filtrar(X, resultados=res)
@@ -331,6 +341,7 @@ def RodarCadeiaDias(dias: list[date], rotulo: str) -> list:
     # Depois dos dois: eles atualizam InfoAtivos/FluxoAtivos e, quando o fluxo muda de
     # verdade, zeram a validação — o ativo volta pro topo da fila.
     ValidarFluxos(resultados=res)
+    ValidarCalcB3(resultados=res)   # gate de confiança: calc reproduz a B3? senão, desvalida
 
     for X in dias:
         CalcTaxa(X, resultados=res)
