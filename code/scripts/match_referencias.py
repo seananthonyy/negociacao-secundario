@@ -16,7 +16,8 @@ IPCA/PREFIXADO que NEGOCIARAM mas estao sem duration (a Anbima nao os cobre no
 indicativo, entao nunca teriam ref -> nunca teriam spread). A duration vem da mesma
 cascata de confianca do calc_taxa:
   - ativo VALIDADO (stFluxoValidado=1) → calc local (CalcularDuration)
-  - ativo NAO-validado                 → B3 (CalcularPuGov devolve duration junto do PU)
+  - ativo NAO-validado                 → FI (maculayDuration) e, se nao cobrir, B3
+                                         (CalcularPuGov devolve duration junto do PU)
 Descontada na vrTaxaEmissao, as-of a data da curva de benchmark mais recente (para o
 match casar). Grava vrDuration (anos) + dtAtualizacaoDuration; o match logo abaixo os pega.
 
@@ -38,6 +39,7 @@ from lib.email_outlook import EnviarEmailConclusao
 from lib.relatorio_execucao import RelatorioExecucao
 from lib.calc import CarregarAtivo, CalcularDuration
 from lib.b3_calc_api import CalcularPuGov
+from lib.fianalytics_api import ObterDuration
 
 NOME_SCRIPT = "match_referencias"
 
@@ -102,13 +104,48 @@ SQL_GRAVAR_DURATION = """
 """
 
 
-def PreencherDurationFaltante(conn, log) -> tuple[int, int, int, int]:
+def CalcularDurationAtivo(conn, a, dtRef: str, log):
+    """Duration (anos) de um ativo pela cascata de confiança. Validado -> calc local.
+    Nao-validado -> FI (maculayDuration) e, se a FI nao cobrir, B3 (CalcularPuGov).
+    Desconta na vrTaxaEmissao (as-of dtRef). Devolve (vrDuration, fonte) ou (None, None)."""
+    cdTicker = a["cdTicker"]
+    taxa = a["vrTaxaEmissao"]
+
+    if a["stFluxoValidado"] == 1:
+        ativoCalc = CarregarAtivo(conn, cdTicker)   # precisa de fluxo/cadastro completo
+        if ativoCalc:
+            try:
+                return CalcularDuration(ativoCalc, date.fromisoformat(dtRef), taxa), "calc"
+            except Exception as exc:
+                log.warning("match_ref: calc de duration falhou p/ %s: %s", cdTicker, exc)
+        return None, None
+
+    # nao-validado: FI primeiro (cobre mais corporates), B3 como fallback.
+    try:
+        durFi = ObterDuration(cdTicker, dtRef, taxa)
+    except Exception as exc:
+        log.warning("match_ref: FI duration falhou p/ %s: %s", cdTicker, exc)
+        durFi = None
+    if durFi and durFi > 0:
+        return durFi, "FI"
+    try:
+        _pu, durB3 = CalcularPuGov(cdTicker, dtRef, taxa)   # B3 devolve (pu, duration)
+    except Exception as exc:
+        log.warning("match_ref: B3 duration falhou p/ %s: %s", cdTicker, exc)
+        durB3 = None
+    if durB3 and durB3 > 0:
+        return durB3, "B3"
+    return None, None
+
+
+def PreencherDurationFaltante(conn, log) -> dict:
     """Calcula a vrDuration dos IPCA/PREFIXADO que negociaram mas estao sem ela, para
-    o match logo abaixo poder casa-los. Validado -> calc local; nao-validado -> B3.
-    Retorna (viaCalc, viaB3, semDados, semCurva)."""
+    o match logo abaixo poder casa-los. Cascata: validado -> calc; nao-validado -> FI -> B3.
+    Retorna dict com contagem por fonte + semDados/semCurva."""
     ativos = conn.execute(SQL_DURATION_FALTANTE).fetchall()
+    contagem = {"calc": 0, "FI": 0, "B3": 0, "semDados": 0, "semCurva": 0}
     if not ativos:
-        return (0, 0, 0, 0)
+        return contagem
 
     # data da curva de benchmark mais recente por indexador — a duration e gravada
     # as-of essa data (dtAtualizacaoDuration), que e onde o match vai procurar candidatos.
@@ -119,46 +156,26 @@ def PreencherDurationFaltante(conn, log) -> tuple[int, int, int, int]:
     log.info("match_ref: %d ativo(s) IPCA/PREFIXADO sem duration a calcular; datas de curva=%s",
              len(ativos), dataBenchmark)
 
-    viaCalc = viaB3 = semDados = semCurva = 0
     for a in ativos:
-        cdTicker, cdIndexador = a["cdTicker"], a["cdIndexador"]
-        taxa = a["vrTaxaEmissao"]
-        dtRef = dataBenchmark.get(cdIndexador)
+        dtRef = dataBenchmark.get(a["cdIndexador"])
         if not dtRef:
-            semCurva += 1
+            contagem["semCurva"] += 1
             continue
 
-        vrDuration = None
-        if a["stFluxoValidado"] == 1:
-            ativoCalc = CarregarAtivo(conn, cdTicker)   # precisa de fluxo/cadastro completo
-            if ativoCalc:
-                try:
-                    vrDuration = CalcularDuration(ativoCalc, date.fromisoformat(dtRef), taxa)
-                except Exception as exc:
-                    log.warning("match_ref: calc de duration falhou p/ %s: %s", cdTicker, exc)
-        else:
-            try:
-                _pu, vrDuration = CalcularPuGov(cdTicker, dtRef, taxa)   # B3 devolve (pu, duration)
-            except Exception as exc:
-                log.warning("match_ref: B3 duration falhou p/ %s: %s", cdTicker, exc)
-
+        vrDuration, fonte = CalcularDurationAtivo(conn, a, dtRef, log)
         if not vrDuration or vrDuration <= 0:
-            semDados += 1
+            contagem["semDados"] += 1
             continue
 
-        conn.execute(SQL_GRAVAR_DURATION, (vrDuration, dtRef, cdTicker))
-        if a["stFluxoValidado"] == 1:
-            viaCalc += 1
-        else:
-            viaB3 += 1
+        conn.execute(SQL_GRAVAR_DURATION, (vrDuration, dtRef, a["cdTicker"]))
+        contagem[fonte] += 1
         log.info("match_ref: duration %s (%s) = %.4f anos (%s, as-of %s)",
-                 cdTicker, cdIndexador, vrDuration,
-                 "calc" if a["stFluxoValidado"] == 1 else "B3", dtRef)
+                 a["cdTicker"], a["cdIndexador"], vrDuration, fonte, dtRef)
 
     conn.commit()
-    log.info("match_ref: duration preenchida — calc=%d B3=%d semDados=%d semCurva=%d",
-             viaCalc, viaB3, semDados, semCurva)
-    return (viaCalc, viaB3, semDados, semCurva)
+    log.info("match_ref: duration preenchida — calc=%d FI=%d B3=%d semDados=%d semCurva=%d",
+             contagem["calc"], contagem["FI"], contagem["B3"], contagem["semDados"], contagem["semCurva"])
+    return contagem
 
 
 def Principal() -> None:
@@ -174,7 +191,7 @@ def Principal() -> None:
         try:
             # PRE-PASSO: calcula a duration de quem negociou e esta sem ela, para o
             # match logo abaixo poder casa-los (senao ficariam sem ref -> sem spread).
-            durCalc, durB3, durSemDados, durSemCurva = PreencherDurationFaltante(conn, log)
+            durStats = PreencherDurationFaltante(conn, log)
 
             ativos = conn.execute(SQL_BUSCAR_ATIVOS).fetchall()
             log.info("match_ref: %d ativos IPCA/PREFIXADO sem cdReferencia com duration disponivel", len(ativos))
@@ -221,7 +238,7 @@ def Principal() -> None:
             conn.close()
 
         linhas = [
-            f"Duration calculada : calc={durCalc} B3={durB3} semDados={durSemDados} semCurva={durSemCurva}",
+            f"Duration calculada : calc={durStats['calc']} FI={durStats['FI']} B3={durStats['B3']} semDados={durStats['semDados']} semCurva={durStats['semCurva']}",
             f"Ativos processados : {len(ativos)}",
             f"Matches atribuidos : {nMatch}",
             f"Sem ref na data    : {nSemRef}",

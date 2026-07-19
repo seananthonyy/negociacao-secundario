@@ -148,6 +148,21 @@ def ChamarCompleto(cdTicker: str, dtIso: str, vrTaxa: float) -> dict | None:
     return None
 
 
+def ObterDuration(cdTicker: str, dtIso: str, vrTaxa: float) -> float | None:
+    """Duration de Macaulay (em ANOS) da FI Analytics, descontando na taxa `vrTaxa`
+    (% a.a. — mesma unidade da vrTaxaEmissao; a FI recebe a taxa em percent no modo
+    `rate`). Reusa ChamarCompleto (modo `rate`, tenta deb e cricra) e lê o campo
+    `maculayDuration`, que já vem em anos. None se a FI não cobre o papel."""
+    data = ChamarCompleto(cdTicker, dtIso, vrTaxa)
+    if not data:
+        return None
+    try:
+        dur = float(data.get("maculayDuration"))
+    except (TypeError, ValueError):
+        return None
+    return dur if dur > 0 else None
+
+
 def ObterBondsUsuario() -> list[dict] | None:
     """
     Retorna a lista de bonds do usuário, buscando da API na primeira chamada
