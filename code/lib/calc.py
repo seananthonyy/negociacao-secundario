@@ -231,3 +231,15 @@ def CalcularVnaAtivo(ativo: dict, dtCalc: date) -> float:
     return C.CalcularVna(
         dtCalc, ativo["dtInicioRentabilidade"], ativo["vrVNE"], ativo["fluxo"],
         cdIndexador, ativo["vrTaxaEmissao"], aniv if aniv is not None else C.DIA_ANIV)
+
+
+def CalcularDuration(ativo: dict, dtCalc: date, vrTaxaNegociacao: float) -> float:
+    """Duration de Macaulay do ativo em dtCalc, descontada por vrTaxaNegociacao.
+    A calc devolve em dias úteis (DU); dividimos por 252 para entregar em ANOS — a
+    unidade da `vrDuration` na base (Anbima/MtmAnbima). `CalcularDuration` da calc não
+    usa aniversário (usa o VNE como face, sem correção por IPCA)."""
+    C = ImportarCalc()
+    duDias = C.CalcularDuration(
+        dtCalc, ativo["dtInicioRentabilidade"], ativo["vrTaxaEmissao"], vrTaxaNegociacao,
+        ativo["fluxo"], ativo["vrVNE"], ativo["cdIndexador"])
+    return duDias / 252.0

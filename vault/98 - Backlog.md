@@ -128,9 +128,9 @@ Fecha metade do item "Auditar falha silenciosa nos demais scrapers" abaixo.
 
 ---
 
-## Calcular duration de corporates para fechar o gap do match_referencias
+## ✅ FEITO (19/07/2026) — Calcular duration de corporates para fechar o gap do match_referencias
 
-**Origem:** 06/07/2026. **Prioridade: vamos implementar.**
+**Implementado como pré-passo no `match_referencias.py`** (`PreencherDurationFaltante`): antes do match, calcula a `vrDuration` dos IPCA/PREFIXADO que negociaram mas estão sem ela, pela **mesma cascata de confiança do calc_taxa** — **validado → calc local** (`lib/calc.CalcularDuration`, DU/252 → anos); **não-validado → B3** (`CalcularPuGov` devolve `(pu, duration)`). Descontada na `vrTaxaEmissao` (escolha: simples e sempre disponível; market-yield seria refino), as-of a data da curva de benchmark mais recente. **Resultado:** IPCA/PREF negociados sem duration 520 → 85 (os 85 são não-validados que a B3 também não cobre); +424 ativos ganharam `cdReferencia`. **Caminho escolhido: nem A nem B do plano original — foi C-via-calc** (a calc local, agora confiável, calcula do fluxo). **Ressalvas abertas:** (1) a FI não expõe duration no lib → os 85 B3-uncovered ficam sem (estender FI resolveria); (2) sem `cdFonteDuration`, uma duration calculada bloqueia (COALESCE) uma futura da Anbima — raro nesses ativos fora do indicativo, mas é um refino possível. Texto original abaixo (contexto).
 
 **O problema:** hoje a `vrDuration` de deb/CRI/CRA é **lida direto do XLS da Anbima** — nunca calculada. Ativo que negocia mas **não aparece no indicativo Anbima** fica sem duration → sem `cdReferencia` no `match_referencias` → sem spread. É um buraco permanente na `InfoAtivos`.
 
