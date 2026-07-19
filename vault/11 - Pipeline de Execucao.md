@@ -12,7 +12,7 @@ O relatório **agrupa por `dtLiquidacao`** (não `dtNegocio`). Para uma data de 
   - **`X`** → liquidam em X por **D+0** (mesmo dia);
   - ocasionalmente datas anteriores (trades *forward*), cujo MtM já costuma estar na base.
 
-## Os 18 passos
+## Os 19 passos
 
 | # | Script | Parâmetro | Data(s) | Rede? | Por quê |
 |---|---|---|---|---|---|
@@ -28,14 +28,15 @@ O relatório **agrupa por `dtLiquidacao`** (não `dtNegocio`). Para uma data de 
 | 10 | `scrape_ipca_projetado_anbima` | *(sem data)* | janela da fonte | ✅ Playwright | projeção de IPCA (Anbima) → `ipca.db/IPCAProjetado` — **rodar antes das 17h30** |
 | 11 | `scrape_di_bcb` | *(sem data)* | incremental | ✅ httpx | DI realizado (BCB) → `di.db/DiHistorico` — insumo da calculadora |
 | 12 | `validar_fluxos` | *(sem args)* | fila c/ throttle | ✅ API FI | valida o fluxo da **Anbima** pela FI + **tripwire de saldo** em tudo que está validado |
-| 13 | `calc_taxa_negocios` | `--date X` | X | ✅ APIs FI/B3 | taxa por trade (cascata FI → B3; a **calc local** é o 1º degrau mas está **desligada** — ver [[98 - Backlog]]) |
-| 14 | `filtrar_trades` | `--date X` | X | ❌ local | classifica VALIDO / FUNDO / BROKER / PF |
-| 15 | `calc_spread_anbima` | `--date X-1u` | X-1u | ❌ local | spread Anbima das indicativas (mesma data que o relatório exibe) |
-| 16 | `match_referencias` | *(sem data)* | — | ❌ local | preenche `cdReferencia` faltante via duration vs MtmAnbima |
-| 17 | `calc_spread_over` | `--date X` | X | ❌ local | spread dos trades — **casa MtM por `dtNegocio`** |
-| 18 | `gerar_relatorio_credito` | *(sem args)* | — | ❌ local | regenera `data/relatorios/relatorio_secundario.html` (toda a base) |
+| 13 | `validar_calc_b3` | `--negociados-dias N` | 3 datas c/ curva + D+1 | ✅ B3/FI | **gate de confiança:** a calc reproduz a B3 (ou FI) em PU (par+fora, ≤1e-5)? Promove/rebaixa `stFluxoValidado`; não-confirmável → inválido. Revalida a cada 15d. Ver [[16 - Confianca nos Validados (WIP)]] |
+| 14 | `calc_taxa_negocios` | `--date X` | X | ✅ APIs FI/B3 | taxa por trade. Cascata: direta → **calc local (LIGADA p/ CDI+/IPCA/PREFIXADO validados)** → FI → B3. %CDI e não-validados seguem em FI/B3 |
+| 15 | `filtrar_trades` | `--date X` | X | ❌ local | classifica VALIDO / FUNDO / BROKER / PF |
+| 16 | `calc_spread_anbima` | `--date X-1u` | X-1u | ❌ local | spread Anbima das indicativas (mesma data que o relatório exibe) |
+| 17 | `match_referencias` | *(sem data)* | — | ❌ local | preenche `cdReferencia` faltante via duration vs MtmAnbima |
+| 18 | `calc_spread_over` | `--date X` | X | ❌ local | spread dos trades — **casa MtM por `dtNegocio`** |
+| 19 | `gerar_relatorio_credito` | *(sem args)* | — | ❌ local | regenera `data/relatorios/relatorio_secundario.html` (toda a base) |
 
-> **Ordem do passo 5:** `scrape_anbima_data_ativos` roda **depois** de boletim (1) e Anbima deb/cri (2-3) — porque monta a fila de tickers a partir da união `NegociosBrutos.dtNegocio` + `AnbimaIndicativos.dtReferencia` — e **antes** de `match_referencias` (15), que usa `InfoAtivos.vrDuration` que este passo pode preencher. Rodar o FI Analytics (4) antes reduz o trabalho dele (menos tickers "incompletos").
+> **Ordem do passo 5:** `scrape_anbima_data_ativos` roda **depois** de boletim (1) e Anbima deb/cri (2-3) — porque monta a fila de tickers a partir da união `NegociosBrutos.dtNegocio` + `AnbimaIndicativos.dtReferencia` — e **antes** de `match_referencias` (17), que usa `InfoAtivos.vrDuration` que este passo pode preencher. Rodar o FI Analytics (4) antes reduz o trabalho dele (menos tickers "incompletos").
 
 > **Passo 2 (cadastro pela B3, adotado em 13/07/2026):** roda logo depois do boletim e **antes** do `scrape_anbima_data_ativos` — a B3 é a fonte **primária** do cadastro e do fluxo; a Anbima só preenche o que ela não cobriu. O fluxo da B3 **nasce validado**. Tem gate próprio (só chama a API para ticker com campo faltante): sem ele seriam ~2.900 chamadas por rodada. Ver [[15 - Cadastro dos Ativos]].
 
@@ -58,17 +59,17 @@ Ou seja: por ticker, mostra a indicativa **mais recente com `dtReferencia ≤ X-
 1. **Disponibilidade:** a Anbima publica a indicativa do dia D só na manhã de D+1. No dia da liquidação X, a mais recente disponível é a de X-1u.
 2. **Comparação correta:** X-1u é a **data de negócio** do fluxo dominante (D+1). Comparar a taxa do trade contra a Anbima do dia em que foi negociado é o apples-to-apples certo.
 
-Por isso `scrape_anbima_debentures`/`cri_cra` (2-3) e `calc_spread_anbima` (10) rodam em **X-1u** — é a data das indicativas que o relatório vai exibir.
+Por isso `scrape_anbima_debentures`/`cri_cra` (3-4) e `calc_spread_anbima` (16) rodam em **X-1u** — é a data das indicativas que o relatório vai exibir.
 
-**Cuidado:** isso vale só para deb/CRI/CRA (`AnbimaIndicativos`). NTN-B e curva DI (`MtmAnbima`, passos 6-7) **não são D-1** — são MtM casado por `dtNegocio`, logo precisam de X-1u **E** X (ver Regra 1).
+**Cuidado:** isso vale só para deb/CRI/CRA (`AnbimaIndicativos`). NTN-B e curva DI (`MtmAnbima`, passos 7-8) **não são D-1** — são MtM casado por `dtNegocio`, logo precisam de X-1u **E** X (ver Regra 1).
 
 ## Regras que NÃO podem ser esquecidas
 
-1. **MtM precisa de X-1u E X** (passos 6-7). `calc_spread_over` (passo 16) busca a taxa de referência em `MtmAnbima WHERE dtReferencia = dtNegocio` — não pela liquidação. Como os negócios de X liquidam tanto pela ponta X-1u quanto X, ambas as datas de MtM têm de existir. **Sintoma de erro:** `nullSemMtm > 0` no resumo do passo 16.
-2. **AnbimaIndicativos só precisa de X-1u** (passos 2-3) para ESTE relatório — ver §"Por que D-1". Numa cadência diária, a Anbima de X que você raspar hoje vira o D-1 do relatório de amanhã (liq X+1u).
-3. **Pular o que já está na base.** Se `X-1u` já foi processado num dia anterior, boletim/MtM/Anbima de `X-1u` já existem — não re-scrapar. Só rode os passos cujos dados faltam + a cadeia de cálculo (12-17).
-4. **Ordem obrigatória:** `calc_taxa_negocios` (12) **antes** de `filtrar_trades` (13) — o filtro só atualiza `cdStatus` em linhas já existentes em `NegociosProcessados`. E `match_referencias` (15) **antes** de `calc_spread_over` (16) — o spread depende de `cdReferencia`. E `scrape_anbima_data_ativos` (5) **antes** de `validar_fluxos` (11) — quem valida um fluxo que o ingestor vai mudar em seguida perde a validação.
-5. **Relatório usa o geral** (`gerar_relatorio_credito`, passo 17) — cobre toda a base e tem aba/filtro por data. O relatório diário (`gerar_relatorio_html --date X`) existe mas não é o caminho padrão de validação.
+1. **MtM precisa de X-1u E X** (passos 7-8). `calc_spread_over` (passo 18) busca a taxa de referência em `MtmAnbima WHERE dtReferencia = dtNegocio` — não pela liquidação. Como os negócios de X liquidam tanto pela ponta X-1u quanto X, ambas as datas de MtM têm de existir. **Sintoma de erro:** `nullSemMtm > 0` no resumo do passo 18.
+2. **AnbimaIndicativos só precisa de X-1u** (passos 3-4) para ESTE relatório — ver §"Por que D-1". Numa cadência diária, a Anbima de X que você raspar hoje vira o D-1 do relatório de amanhã (liq X+1u).
+3. **Pular o que já está na base.** Se `X-1u` já foi processado num dia anterior, boletim/MtM/Anbima de `X-1u` já existem — não re-scrapar. Só rode os passos cujos dados faltam + a cadeia de cálculo (13-19).
+4. **Ordem obrigatória:** `calc_taxa_negocios` (14) **antes** de `filtrar_trades` (15) — o filtro só atualiza `cdStatus` em linhas já existentes em `NegociosProcessados`. E `match_referencias` (17) **antes** de `calc_spread_over` (18) — o spread depende de `cdReferencia`. E `scrape_anbima_data_ativos` (6) **antes** de `validar_fluxos` (12) — quem valida um fluxo que o ingestor vai mudar em seguida perde a validação. E `validar_calc_b3` (13) **depois** de `validar_fluxos` e **antes** de `calc_taxa_negocios` (14) — o gate decide quais ativos a calc local pode precificar.
+5. **Relatório usa o geral** (`gerar_relatorio_credito`, passo 19) — cobre toda a base e tem aba/filtro por data. O relatório diário (`gerar_relatorio_html --date X`) existe mas não é o caminho padrão de validação.
 6. **Projeção de IPCA antes das 17h30** (passo 9). A Anbima republica as projeções por volta desse horário nos dias de divulgação do IPCA/IPCA-15 — rodar depois pega o valor certo, mas o ciclo diário costuma rodar de manhã.
 
 ## Exemplos concretos (validados em 30/06/2026)

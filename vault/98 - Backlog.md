@@ -23,6 +23,8 @@ Triangulando 4 negócios de 16/06/2026:
 
 **FI e B3 concordam entre si; a calc discorda das duas.** O erro é nosso.
 
+**⚠️ Ressalva de escala (18/07):** os "bps" da tabela acima estão **inflados ~10× no %CDI**. Os valores são pontos de %CDI (multiplicador do CDI), não taxa a.a. — o `−13,74 bps` do CRA02300MJ7 é `0,1374` ponto de %CDI, que vale **~1,4-2 bps** de yield (convenção do `filtrar_trades`: 1 ponto %CDI ≈ 10 bps; conversão exata com CDI ~14,9% dá ~2 bps). Ou seja, a **divergência de %CDI existe mas é ~7-10× menor** do que parecia. O `validar_calc_b3` já foi corrigido (`DiffTaxaEmBps`); **falta re-medir o %CDI com a métrica certa e decidir se ele volta pra calc local** (hoje está fora por causa desse número inflado). O bug de desconto do IPCA/CDI+ fora do par continua real e não é afetado por essa ressalva (aqueles são taxa a.a.).
+
 **O detalhe que aponta a causa:** o TRGP13 **bate o PU par a 1e-6** e mesmo assim erra a taxa em 2,18 bps. Se os fluxos e o VNA estão certos (e estão — o PU par fecha), a diferença só pode estar no **desconto**. Candidatos: o truncamento de 6 casas em cada VP (`Trunca(FV_i / fatorDesc, 6)`), a contagem de DU do fator de desconto, ou a convenção do %CDI (onde a taxa muda o fluxo **e** o desconto).
 
 **Estado:** a calc está implementada como 1º degrau da cascata do `calc_taxa_negocios`, porém **desligada** (`config.toml [calc] usarCalcTaxa = false`). Ligar é uma linha.
@@ -184,6 +186,8 @@ O `validar_fluxos.py` **veio para cá** (`code/scripts/validar_fluxos.py`, passo
 ---
 
 ## Trocar a precificação (`calc_taxa_negocios`) pela calculadora local
+
+**✅ FEITO (15-19/07/2026) para CDI+/IPCA/PREFIXADO.** A calc está **LIGADA** (`config.toml [calc] usarCalcTaxa = true`, `indexadores = ["CDI+","IPCA","PREFIXADO"]`) como degrau 2 da cascata, só em `stFluxoValidado=1`. A confiança é garantida pelo gate **`validar_calc_b3`** (ver [[16 - Confianca nos Validados (WIP)]] e [[11 - Pipeline de Execucao]] passo 13): a calc só precifica ativo cuja calc reproduz a B3/FI em PU a ≤1e-5. **%CDI segue de fora** (a calc não reproduz o desconto fora-do-par — ver item do topo). O texto abaixo é o registro da investigação que levou a isso.
 
 **Origem:** 12/07/2026 — é o **item 5** do `MIGRACAO.md` da calculadora, deixado fora da migração das rotinas por decisão do usuário.
 
