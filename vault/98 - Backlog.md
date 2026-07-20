@@ -111,7 +111,9 @@ Fecha metade do item "Auditar falha silenciosa nos demais scrapers" abaixo.
 
 ---
 
-## Auditar falha silenciosa nos demais scrapers (exit 0 gravando 0 linhas)
+## ✅ RESOLVIDO em grande parte (20/07/2026) — falha silenciosa (exit 0 na falha)
+
+**Corrigido o cerne (20/07):** **10 scripts** capturavam a exceção, logavam, mandavam email, mas **não faziam `sys.exit(1)`** → saíam exit 0 e o `pipeline_core` reportava `[OK]` falso. Adicionado `if not success: sys.exit(1)` no fim do `Principal` de: `calc_taxa_negocios`, `calc_spread_over`, `calc_spread_anbima`, `filtrar_trades`, `match_referencias`, `scrape_anbima_debentures`, `scrape_anbima_ntnb`, `gerar_relatorio_credito`, `gerar_relatorio_html`, `scrape_outstanding_bloomberg`. (Os demais já usavam `raise`/`sys.exit`: `scrape_b3_boletim`, `scrape_b3_bond_details`, `scrape_b3_curva_di`, `scrape_di_bcb`, `scrape_ipca_*`, `scrape_anbima_cri_cra`, `validar_fluxos`, `validar_calc_b3`, `conferir_pu`.) **Também:** `MontarIntervaloDatas` retornava `[args.date]` sem validar (data inválida → 0 linhas → exit 0 mudo) — agora valida com `date.fromisoformat`. E o `scrape_fianalytics_planilha` (19/07) passou a exit 1 se gravar 0 tickers. **Falta** (subitem): o "0 linha numa fonte específica → WARNING + lista do que a fonte tem" (distinguir "quebrou" de "não tem dado") ainda pode ser refinado nos scrapers Anbima. Texto original abaixo.
 
 **Origem:** 08/07/2026, depois do bug do `scrape_anbima_cri_cra` (ver [[09 - Progresso]]).
 
