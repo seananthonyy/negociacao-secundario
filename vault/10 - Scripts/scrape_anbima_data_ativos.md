@@ -14,6 +14,8 @@
 >
 > **Por quê:** `vrVNE` + `dtInicioRentabilidade` + `FluxoAtivos` são um **pacote indivisível**. A B3 pré-capitaliza a carência dentro do VNE; a Anbima traz o VNE cru mais a incorporação como evento. Reescrever só o fluxo por cima deixaria o VNE capitalizado órfão, e a carência passaria a contar **duas vezes** — sem erro, sem exceção, só um PU errado.
 
+> ✅ **Grava cadastro mesmo sem agenda (20/07/2026).** Antes, se a Anbima não tinha agenda para o ativo (ex.: RAIZ12 — sem fluxo na fonte mesmo), o worker dava `continue` e **descartava tudo, inclusive o emissor já capturado** → o ativo aparecia "pelado" no relatório. Agora, quando `agenda is None`, grava os **escalares de exibição** (emissor, indexador, VNE…) via `UpsertInfoAtivos` e só **pula o `FluxoAtivos`** (`linhasFluxo=None`, igual ao `'evento_desconhecido'`). Sem fluxo, o ativo não é precificado pela calc (cai na API), mas o emissor aparece. O `skip_reason = 'sem_agenda'` entra no guard `TickersSkipTerminal` (antes `TickersIndexadorInvalido`) para não re-raspar eternamente.
+
 ---
 
 ## O que faz

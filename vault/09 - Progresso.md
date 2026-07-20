@@ -212,6 +212,14 @@ gerar_relatorio_credito       ← análise histórica (todos os pregões, sem ar
 
 ## Última atualização
 
+2026-07-20 (madrugada) — **Preparação para o banco: repos, bundles, auditoria do vault.** (Sessão autônoma pré-migração.)
+- **Calc virou repo git PRIVADO** (`github.com/seananthonyy/calculadora-renda-fixa`) com **`bundle_calc.py`** auto-extraível (`make_bundle.py`) — o banco não clona, abre o repo na web, baixa o bundle e roda. Testado (extrai 18 arquivos, calc compila). `.gitignore` exclui `.db`/`files/`/`.claude`.
+- **`bundle_banco.py` do negociacao regenerado** (98 arquivos — inclui `validar_calc_b3`, fix do FI Analytics, etc.) e pushado. Sem regen, o banco pegaria código velho.
+- **`INSTALACAO_BANCO.md` atualizado:** Passo 0 com **2 bundles** (negociacao público + calc privado, layout irmão), calc ligada, 19 passos, `validar_calc_b3`. Comando de verificação da calc testado (resolve + importa OK).
+- **Paths:** confirmado que tudo é relativo ao `code/` (migra sozinho); o único externo é `calculadoraDir` (default `"../../calculadora-renda-fixa"`, irmão) ou env `CALCULADORA_DIR`. `CALCRF_FILES_DIR` (onde a calc lê ipca.db/di.db) é auto-setado pro `code/data/`.
+- **Auditoria do vault:** corrigido "18→19 passos" (00/02/03), "calc desligada→ligada" (14/16/98/10-calc_taxa/CLAUDE.md), FI Analytics layout novo (05/99/10-fianalytics), nova nota **`10 - Scripts/validar_calc_b3.md`**, pré-passo de duration no match_ref, `sem_agenda` no anbima_data, validar_calc_b3 como 2º validador no `04`. README da calc atualizado.
+- **A calc É auto-contida** (só `calculadora_rf.py`, stdlib) — os outros arquivos do repo dela são tooling que o negociacao não usa (tem os próprios).
+
 2026-07-19 (noite) — **Otimização da calc (~100×) + relatório até 17/07 + 2 fixes de scraper.**
 - **Calc ~80-116× mais rápida (memoização do Newton em `calculadora_rf.py`):** o Newton recomputava a parte rate-independent (VNA, fluxos futuros, `ContarDu` O(dias)) ~100× por taxa. Novos helpers `_FluxosDescontaveis`/`_DescontarPu` (IPCA/PREF) e `_FluxosDescontaveisDi`/`_DescontarPuDi` (CDI+) fazem o walk **1×**; o Newton só redesconta. **Bit-idêntico ao backup (diff 0,00), gabaritos 11 OK.** IPCA 3,4s→34ms, CDI+ 2,8s→28ms. %CDI fora (não é precificado pela calc). A calc **não é repo git** — o backup era o registro e foi apagado a pedido do usuário após validação.
 - **Relatório gerado até liquidação 17/07:** 27 pregões (09/06→17/07), 2.451 ativos, R$ 24.223,54 MM. **calc_taxa com a calc ligada: 60% dos trades não-diretos vieram da calc local** (21.215 de 35.141), 40% de API. Rodada de cálculo dos 5 dias em ~15 min (era horas antes da otimização).
