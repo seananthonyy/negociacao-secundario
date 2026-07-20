@@ -645,6 +645,9 @@ def Principal() -> None:
             log,
         )
 
+    if not success:
+        sys.exit(1)
+
 
 if __name__ == "__main__":
     Principal()
