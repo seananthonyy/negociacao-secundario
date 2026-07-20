@@ -7,21 +7,39 @@ Este projeto gera o relatório diário de negociação secundária de crédito p
 
 ---
 
-## Passo 0 — Transferir os arquivos (rápido, 1 download)
+## Passo 0 — Transferir os arquivos (2 downloads, 1 por repo)
 
-No banco não dá `git pull` nem baixar `.zip`. Use o **bundle auto-extraível**:
+No banco não dá `git clone`/`git pull` nem baixar `.zip`. Cada repo tem um **bundle
+auto-extraível** (`.py` único) que você abre pela **web do GitHub**, baixa e roda.
+São **dois repos** (o projeto + a calculadora que ele importa) — monte-os como **irmãos**:
 
-1. No GitHub (web), abra **`bundle_banco.py`** na raiz do repo → botão **"Download raw file"** (é 1 arquivo, ~1 MB).
-2. Salve na pasta que será a raiz do projeto (ex.: `Z:\AntonioOliveira\NegociacaoSecundario\`).
-3. Abra um terminal nessa pasta e rode:
+```
+<pasta-pai>\
+├── negociacao-secundario\    ← extraia o bundle_banco.py AQUI DENTRO
+│   └── code\ ...
+└── calculadora-renda-fixa\   ← extraia o bundle_calc.py AQUI DENTRO
+    └── calculadora_rf.py ...
+```
+
+**0a — Projeto (`negociacao-secundario`, repo público):**
+1. No GitHub, repo `seananthonyy/negociacao-secundario` → abra **`bundle_banco.py`** na raiz → **"Download raw file"** (~1,5 MB).
+2. Crie a pasta `negociacao-secundario\`, salve o bundle nela, e rode:
    ```powershell
    python bundle_banco.py
    ```
-   Ele recria a árvore inteira (`code/`, `vault/`, docs) — os ~79 arquivos de uma vez. **Não** traz `.env`, `destinatarios.py` nem `trades.db` (esses você configura/monta nos passos seguintes).
+   Recria a árvore (`code/`, `vault/`, docs) — ~98 arquivos. **Não** traz `.env`, `destinatarios.py` nem `*.db`.
 
-*(Se `bundle_banco.py` estiver desatualizado após mudanças de código, regenere no PC pessoal com `python make_bundle.py` e suba de novo.)*
+**0b — Calculadora (`calculadora-renda-fixa`, repo PRIVADO — precisa estar logado no GitHub):**
+1. No GitHub, repo `seananthonyy/calculadora-renda-fixa` → abra **`bundle_calc.py`** na raiz → **"Download raw file"** (~0,3 MB).
+2. Crie a pasta `calculadora-renda-fixa\` **irmã** da anterior, salve o bundle nela, e rode:
+   ```powershell
+   python bundle_calc.py
+   ```
+   Recria a calculadora (`calculadora_rf.py` + tooling + docs). **Não** traz `*.db` (os insumos vivem no `code/data/` do projeto — ver seção da calc abaixo).
 
-Alternativa (lenta): baixar cada arquivo 1-a-1 espelhando os caminhos do repo.
+Com o layout irmão acima, o `config.toml` acha a calc sozinho (`calculadoraDir = "../../calculadora-renda-fixa"`). Se puser em outro lugar, use `CALCULADORA_DIR` (seção da calc).
+
+*(Se um bundle ficar desatualizado após mudanças, regenere no PC pessoal com `python make_bundle.py` no repo correspondente e suba de novo.)*
 
 ---
 
@@ -35,8 +53,9 @@ O código resolve caminhos relativos à pasta `code/` — a **raiz pode ter qual
 │   setup_teste.ipynb, setup_inicial.ipynb, run_secundario.ipynb
 ├── lib\        (__init__.py, config.py, db.py, logger.py, email_outlook.py, relatorio_execucao.py,
 │                b3_calc_api.py, fianalytics_api.py, calc.py)
-├── scripts\    (scrape_*.py, calc_*.py, conferir_pu.py, validar_fluxos.py, filtrar_trades.py,
-│                gerar_*.py, match_referencias.py, pipeline_core.py, run_diario.py, check_no_secrets.py)
+├── scripts\    (scrape_*.py, calc_*.py, conferir_pu.py, validar_fluxos.py, validar_calc_b3.py,
+│                filtrar_trades.py, gerar_*.py, match_referencias.py, pipeline_core.py,
+│                run_diario.py, check_no_secrets.py)
 ├── templates\  (relatorio.html.j2, relatorio_secundario.html)
 └── data\       (feriados_anbima.csv  ← OBRIGATÓRIO; as subpastas logs/ relatorios/ etc. são criadas sozinhas)
 ```
@@ -144,6 +163,8 @@ Para agendar no Task Scheduler (o Agendador não roda `.ipynb`), o equivalente �
 
 ## Notas para o Claude do banco
 - **Sempre rode o notebook/scripts a partir da pasta `code\`** (os caminhos de `data/` são relativos ao cwd; o `pipeline_core` já força isso nos subprocessos).
+- **A calc local está LIGADA** (`config.toml [calc] usarCalcTaxa=true`, indexadores CDI+/IPCA/PREFIXADO): o `calc_taxa_negocios` a usa como 1º degrau nos ativos `stFluxoValidado=1`. O gate `validar_calc_b3` (passo 13 do pipeline) garante a confiança. No banco, com o proxy, a calc local **evita ~70% das chamadas de API** do `calc_taxa`. Se algo der errado com a calc, desligar é 1 linha (`usarCalcTaxa=false`) — cai na cascata FI→B3.
+- **Pipeline tem 19 passos** (o `validar_calc_b3` entrou entre `validar_fluxos` e `calc_taxa`). Ver `vault/11 - Pipeline de Execucao.md`.
 - **Janelas das fontes** (limitam o histórico): Anbima Data = tudo; deb/NTN-B ~4 meses; curva DI ~20 pregões; CRI/CRA ~5 pregões. Ver `vault/13` §5.
 - **Ordem obrigatória** do pipeline e o "por que" de cada data: `vault/11 - Pipeline de Execucao.md`.
 - **Pequenos ajustes de código:** o CLI de cada script está centralizado nas funções de fluxo do `scripts/pipeline_core.py`; a orquestração (ordem/datas) também. Convenções em `CLAUDE.md`.
