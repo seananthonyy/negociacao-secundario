@@ -14,6 +14,17 @@ O match é feito por proximidade de duration contra os candidatos disponíveis e
 
 ---
 
+## Pré-passo: calcula a duration faltante (19/07/2026)
+
+Antes do match, `PreencherDurationFaltante`/`CalcularDurationAtivo` calculam a `vrDuration` dos IPCA/PREFIXADO que **negociaram mas estão sem duration** — senão ficariam sem `cdReferencia` → sem spread (a duration só vinha do XLS da Anbima; ativo fora do indicativo ficava eternamente sem). Cascata igual à do `calc_taxa`:
+
+- **validado** (`stFluxoValidado=1`) → **calc local** (`lib.calc.CalcularDuration`, DU → /252 = anos)
+- **não-validado** → **FI** (`lib.fianalytics_api.ObterDuration`, campo `maculayDuration` já em anos, modo `rate` com a taxa em percent) e, se a FI não cobrir, **B3** (`CalcularPuGov` devolve `(pu, duration)`)
+
+Desconto na `vrTaxaEmissao`, as-of a data da curva de benchmark mais recente (grava `dtAtualizacaoDuration=dtRef` p/ o match data-exato casar). **Resultado 1ª rodada:** IPCA/PREF negociados sem duration **520 → 41** (389 calc + 46 B3 + 44 FI; 41 = nenhuma fonte cobre); cdReferencia sem ref 1147 → 679.
+
+---
+
 ## Regras de match
 
 | Indexador | Prefixo buscado em `MtmAnbima` |
@@ -81,11 +92,11 @@ Ver [[04 - Banco de Dados]] para descrição completa da coluna `cdFonteReferenc
 Posição no pipeline:
 
 ```
-...
-6. calc_spread_anbima
-7. match_referencias     ← aqui
-8. calc_spread_over      ← usa cdReferencia gerado aqui
-9. gerar_relatorio_html
+... (pipeline de 19 passos — ver [[11 - Pipeline de Execucao]])
+16. calc_spread_anbima
+17. match_referencias     ← aqui (com o pré-passo de duration)
+18. calc_spread_over      ← usa cdReferencia gerado aqui
+19. gerar_relatorio_credito
 ```
 
 ---

@@ -191,7 +191,7 @@ A calculadora de renda fixa precifica lendo `InfoAtivos` + `FluxoAtivos`, mas es
 | `cdFonteValidacaoFluxo` | escreve **só `NULL`** | grava `B3`/`FiAnalytics`/`Manual` |
 | `dtUltimaTentativa` | escreve **só `NULL`** (na invalidação) | grava em toda tentativa |
 
-> **Atualizado em 12/07/2026:** o `validar_fluxos.py` **migrou para cá** (`code/scripts/validar_fluxos.py`) e virou o passo 11 do pipeline. A divisão de papéis acima continua idêntica — o script de validação escreve as 4 colunas, os scrapers mantêm `stTemFluxo` e zeram a validação. Ver [[14 - Rotinas da Calculadora]].
+> **Atualizado em 19/07/2026:** há **dois** validadores que escrevem as 4 colunas de validação: `validar_fluxos.py` (passo 12 — tripwire de saldo vs FI) e o novo **`validar_calc_b3.py`** (passo 13 — o gate de confiança que verifica se a **calc reproduz a B3/FI em PU**; promove/rebaixa `stFluxoValidado`; `cdFonteValidacaoFluxo` = `'B3'`/`'FiAnalytics'`). O `validar_calc_b3` é o que dá fé para a calc precificar no `calc_taxa` — ver [[10 - Scripts/validar_calc_b3]] e [[16 - Confianca nos Validados (WIP)]]. A divisão de papéis (validadores escrevem, scrapers mantêm `stTemFluxo` e zeram) continua. Ver também [[14 - Rotinas da Calculadora]].
 
 **Invalidação — só em mudança REAL de valor.** Cinco coisas invalidam o fluxo de um ativo:
 
