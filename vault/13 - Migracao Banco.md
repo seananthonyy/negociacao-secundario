@@ -8,6 +8,12 @@ Início do planejamento: 01/07/2026.
 
 **Repositório:** `https://github.com/seananthonyy/negociacao-secundario` — **PÚBLICO** (desde 02/07/2026). Segurança verificada em todo o histórico: 0 segredos, 0 emails internos, 0 arquivos proibidos (`.env`/`destinatarios.py`/`*.db` nunca commitados). Antes de **cada** push futuro: rodar `python code/scripts/check_no_secrets.py` (trava anti-vazamento).
 
+> ### ⚠️ Atualização 20/07/2026 — leia antes de migrar (o runbook acionável é [`INSTALACAO_BANCO.md`](../INSTALACAO_BANCO.md))
+> - **Transferência é por BUNDLE, não 1-a-1.** Cada repo tem um `.py` auto-extraível: `bundle_banco.py` (na raiz do negociacao) e `bundle_calc.py` (na raiz da calc). Abre o repo na web, baixa 1 arquivo, roda. Ver [`INSTALACAO_BANCO.md`](../INSTALACAO_BANCO.md) Passo 0.
+> - **São DOIS repos, montados como irmãos:** `negociacao-secundario` (público) + **`calculadora-renda-fixa` (PRIVADO** — `github.com/seananthonyy/calculadora-renda-fixa`; precisa estar logado no GitHub pra abrir). A calc acha-se por `calculadoraDir`/`CALCULADORA_DIR`.
+> - **Pipeline tem 19 passos** (entrou o `validar_calc_b3`) e a **calc local está LIGADA** (CDI+/IPCA/PREFIXADO) — no banco, com proxy, evita ~70% das chamadas de API do `calc_taxa`.
+> - **Falha silenciosa corrigida:** os scripts agora saem **exit 1** de verdade quando falham (antes saíam exit 0 e o pipeline reportava `[OK]` falso).
+
 ---
 
 ## 1. Objetivo e restrições (dadas pelo usuário)
