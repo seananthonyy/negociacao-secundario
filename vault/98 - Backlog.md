@@ -84,7 +84,9 @@ O `conferir_pu --desvalidar` tira a validação de quem erra acima de 1e-3 — e
 
 ---
 
-## 🔴 BUG ABERTO — `scrape_fianalytics_planilha` quebrado (seletor do botão de download)
+## ✅ RESOLVIDO (19/07/2026) — `scrape_fianalytics_planilha` quebrado (layout novo do site)
+
+**Consertado em 19/07** com base no tutorial do usuário (`instrucoes.txt`). O site refez o layout: (1) o download não é mais por URL `?type=deb`/`cri_cra` — agora é botão **"Exportar"** na lista (login cai na lista de debêntures); (2) CRI/CRA se acessa pelo item de menu **"Lista"** (há dois; o de CRI/CRA é o **último**, ~640; o 1º é debêntures ~1.5k); (3) o formato mudou de **xlsx → CSV** (separador `;`, decimal vírgula, UTF-8 BOM) e a coluna do emissor virou **`Emissor`** (era `issuer`). Seletores agora por **texto/role** (`get_by_role("button", name="Exportar")`, `button:has-text("Lista").last`), nunca por classe CSS. Adicionado **exit 1 se nenhuma planilha gravar tickers** (mata a falha silenciosa). **Validado ao vivo: 1.507 deb + 640 CRI/CRA = 2.147 tickers.** Texto original abaixo (contexto).
 
 **Origem:** 11/07/2026, descoberto por acaso (o scraper entrou numa medição de churn de invalidação).
 

@@ -212,6 +212,13 @@ gerar_relatorio_credito       ← análise histórica (todos os pregões, sem ar
 
 ## Última atualização
 
+2026-07-19 (noite) — **Otimização da calc (~100×) + relatório até 17/07 + 2 fixes de scraper.**
+- **Calc ~80-116× mais rápida (memoização do Newton em `calculadora_rf.py`):** o Newton recomputava a parte rate-independent (VNA, fluxos futuros, `ContarDu` O(dias)) ~100× por taxa. Novos helpers `_FluxosDescontaveis`/`_DescontarPu` (IPCA/PREF) e `_FluxosDescontaveisDi`/`_DescontarPuDi` (CDI+) fazem o walk **1×**; o Newton só redesconta. **Bit-idêntico ao backup (diff 0,00), gabaritos 11 OK.** IPCA 3,4s→34ms, CDI+ 2,8s→28ms. %CDI fora (não é precificado pela calc). A calc **não é repo git** — o backup era o registro e foi apagado a pedido do usuário após validação.
+- **Relatório gerado até liquidação 17/07:** 27 pregões (09/06→17/07), 2.451 ativos, R$ 24.223,54 MM. **calc_taxa com a calc ligada: 60% dos trades não-diretos vieram da calc local** (21.215 de 35.141), 40% de API. Rodada de cálculo dos 5 dias em ~15 min (era horas antes da otimização).
+- **`scrape_anbima_data_ativos`: grava cadastro mesmo sem agenda** (ex.: RAIZ12 → "RAIZEN S.A."). Ver [[98 - Backlog]].
+- **`scrape_fianalytics_planilha` CONSERTADO** (layout novo: CSV, botão "Exportar", menu "Lista", coluna "Emissor"). 2.147 tickers validados ao vivo. Ver [[98 - Backlog]].
+- **`config.toml [scrape.fianalytics] signinUrl` etc. inalterados**; login segue por `name=email/password`.
+
 2026-07-19 (tarde) — **`match_referencias` ganhou pré-passo que calcula a duration faltante (fecha o gap de spread).** `PreencherDurationFaltante`/`CalcularDurationAtivo`: antes do match, calcula a `vrDuration` dos IPCA/PREFIXADO que negociaram mas estão sem ela, pela cascata de confiança — **validado → calc local** (`lib/calc.CalcularDuration`, DU/252 = anos), **não-validado → FI → B3** (FI: `maculayDuration`, já em anos, via `lib/fianalytics_api.ObterDuration`/`ChamarCompleto` modo `rate`; B3: `CalcularPuGov`). Desconto na `vrTaxaEmissao`, as-of a curva de benchmark mais recente. **Resultado:** IPCA/PREF negociados sem duration **520 → 41** (389 calc + 46 B3 + 44 FI; 41 = nenhuma fonte cobre); **sem cdReferencia 1147 → 679** → esses ativos ganham spread. Fecha o item de backlog "calcular duration de corporates". Novos wrappers `lib/calc.CalcularDuration` e `lib/fianalytics_api.ObterDuration`. Ver [[10 - Scripts/match_referencias]] e [[98 - Backlog]].
 
 2026-07-19 — **Desenho final do gate `validar_calc_b3` (com o usuário) + pipeline agora tem 19 passos.** Detalhe vivo em [[16 - Confianca nos Validados (WIP)]]; pipeline canônico em [[11 - Pipeline de Execucao]].

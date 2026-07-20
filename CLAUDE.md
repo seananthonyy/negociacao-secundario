@@ -55,7 +55,7 @@ Use `/agents` no Claude Code pra ver/invocar.
 - **Cada script é independente**, idempotente, com CLI próprio (`--date` ou `--start --end`)
 - **Email no fim de cada script** via Outlook (`pywin32`), sucesso ou erro
 - **Filtro de duplicados**: union-find, status só `PRIMARY` ou `DUPLICATE`
-- **Cascata de taxa**: FI Analytics → B3 → NULL (só Deb/CRI/CRA). A **calculadora local** está implementada como 1º degrau (`[calc].usarCalcTaxa`) mas vem **desligada** — ela reproduz o PU par das fontes, não a taxa fora do par. Ver [[14 - Rotinas da Calculadora]].
+- **Cascata de taxa** (19/07/2026): taxa direta do boletim → **calc local** (`[calc].usarCalcTaxa=true`, só `stFluxoValidado=1` e indexador em `["CDI+","IPCA","PREFIXADO"]`) → FI Analytics → B3 → NULL (só Deb/CRI/CRA). A confiança da calc é garantida pelo gate **`validar_calc_b3`** (passo 13 do pipeline). **%CDI e não-validados seguem em FI→B3** (a calc não reproduz o desconto de %CDI fora do par). Ver [[16 - Confianca nos Validados (WIP)]] e [[14 - Rotinas da Calculadora]].
 - **Cadastro dos ativos**: a **B3** (`getBondDetails`) é a fonte **primária**; a Anbima Data é fallback, só para o que negociou e a B3 não cobriu. `vrVNE` + `dtInicioRentabilidade` + `FluxoAtivos` são um **pacote indivisível** por ativo — a coluna `cdFonteCadastro` diz de quem é, e misturar as duas fontes conta a carência duas vezes, em silêncio.
 - **Match de referência** (`IPCA→NTN-B`, `PREFIXADO→DI1`): script separado (`match_referencias.py`), sem args — roda idempotente sobre a base toda a cada ciclo do pipeline. Duration-match data-exata contra `MtmAnbima`; não sobrescreve refs da Anbima (`cdFonteReferencia='Anbima'`)
 - **Relatório agrupa por `dtLiquidacao`**, não `dtNegocio`
