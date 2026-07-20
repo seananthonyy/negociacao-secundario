@@ -3,23 +3,23 @@
 Arquivo: `code/scripts/calc_taxa_negocios.py`
 Dependências de lib: [[10 - Scripts/libs#lib/db.py|db]], [[10 - Scripts/libs#lib/config.py|config]], [[10 - Scripts/libs#lib/logger.py|logger]], [[10 - Scripts/libs#lib/email_outlook.py|email_outlook]], [[10 - Scripts/libs#lib/fianalytics_api.py|fianalytics_api]], [[10 - Scripts/libs#lib/b3_calc_api.py|b3_calc_api]]
 
-> ⚠️ **Mudou em 13/07/2026.** A **calculadora local** entrou como 1º degrau da cascata — mas vem **DESLIGADA** (`config.toml [calc] usarCalcTaxa = false`). Leia a seção "A calc local" abaixo antes de ligar.
+> ✅ **LIGADA em 15/07/2026.** A **calculadora local** é o degrau 2 da cascata (depois da taxa direta do boletim), **ON** (`config.toml [calc] usarCalcTaxa = true`) para **CDI+/IPCA/PREFIXADO** validados. %CDI e não-validados seguem em FI→B3. Confiança garantida pelo gate [[10 - Scripts/validar_calc_b3|validar_calc_b3]]. Ver seção "A calc local" abaixo.
 
 ## O que faz
 
 Para cada trade ativo em `NegociosBrutos` com `dtLiquidacao` na janela informada, calcula `vrTaxaCalculada` e grava o resultado em `NegociosProcessados` via UPSERT. Trades com `cdSituacao = 'Cancelado'` são ignorados.
 
-## A calc local (1º degrau, desligada)
+## A calc local (degrau 2, LIGADA)
 
 **Cascata atual:** `vrTaxaNegocio` (direto do boletim) → **Calc local** → FI Analytics → B3 → NULL.
 
-A calc só entra em ativo com `stFluxoValidado = 1`, e **só se `[calc].usarCalcTaxa = true`**.
+A calc entra em ativo com `stFluxoValidado = 1` **e** `cdIndexador` em `[calc].indexadores` (`["CDI+","IPCA","PREFIXADO"]`), **quando `[calc].usarCalcTaxa = true`** (ON desde 15/07).
 
-**Por que está desligada:** a calc reproduz o **PU par** das fontes (86% dos ativos batem a 1e-6) mas **não a taxa implícita num PU fora do par**. Triangulando em 16/06: FI e B3 **concordam entre si** (0 a 1,7 bps) e a calc **discorda das duas** (+2,2 a +13,7 bps). Duas fontes independentes batendo e a nossa divergindo significa que **o erro é nosso**. Ver [[../98 - Backlog]] (item no topo) e [[../14 - Rotinas da Calculadora]].
+**Confiança (gate `validar_calc_b3`):** `stFluxoValidado=1` só vale quando a calc **reproduz a B3 (ou FI)** em PU — o gate desvalida quem não bate (ver [[10 - Scripts/validar_calc_b3]]). Por isso ligar é seguro por construção: a calc só precifica o que confiamos.
 
-**Performance (se ligar):** no pregão mais cheio da base (16/06, 8.065 negócios validados) há só **598 pares (cdTicker, vrPU) distintos** — o cache corta **93%** do trabalho. A ~0,7s por par dá **~7 min/dia num core**, contra os ~25 min/dia da cascata de API no banco. A calc é **CPU-bound**, então o `ThreadPoolExecutor` **não a paraleliza** (GIL) — quem faz o serviço é o cache (`cacheCalc`, chaveado por `(cdTicker, dtLiquidacao, vrPU)`).
+**Por que %CDI ficou de fora:** a calc reproduz o **PU par** mas erra a **taxa fora do par** no %CDI (o desconto do multiplicador de CDI). CDI+/IPCA/PREFIXADO reproduzem a B3 quase perfeitamente (medido em trades reais); só o %CDI tem cauda (~2 bps em yield, mas o número medido em pontos de %CDI enganava). Ver [[../98 - Backlog]] e [[../14 - Rotinas da Calculadora]].
 
-**Flags:** `--sem-calc` força só a API; `--com-calc` força a calc. As duas ignoram o config.
+**Performance:** a calc é **CPU-bound** (GIL → `ThreadPoolExecutor` não paraleliza), mas foi **otimizada ~100× em 19/07** (memoização do Newton em `calculadora_rf.py`: IPCA 3,4s→34ms, CDI+ 2,8s→28ms, bit-idêntico). Com o cache por `(cdTicker, dtLiquidacao, vrPU)`, o passo fecha em poucos minutos. **Impacto medido:** ~60% dos trades não-diretos vêm da calc local (vs API) → ~70% menos chamada de API no `calc_taxa`.
 
 ## A cascata original (API)
 

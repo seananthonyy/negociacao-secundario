@@ -165,7 +165,7 @@ Triangulação em 4 negócios de 16/06/2026 (`--date` do `conferir_pu` não pega
 
 **Lição de método:** o gate de PU par **não basta**. Ele valida o fluxo, não o desconto. O teste que falta é o **round-trip da taxa**: dado o PU que a fonte devolve para uma taxa **fora do par**, a calc tem que reproduzir aquela taxa.
 
-Por isso o `calc_taxa_negocios` tem a calc implementada como 1º degrau da cascata mas **desligada** (`config.toml [calc] usarCalcTaxa = false`). Ligar é uma linha — mas só depois de fechar o round-trip. Ver [[98 - Backlog]].
+**ATUALIZAÇÃO 15-19/07:** a calc foi **LIGADA** (`config.toml [calc] usarCalcTaxa = true`) para **CDI+/IPCA/PREFIXADO** validados, depois que o gate `validar_calc_b3` passou a garantir que a calc reproduz a B3/FI (ver [[16 - Confianca nos Validados (WIP)]]). **%CDI ficou de fora** — nele a calc erra o desconto fora do par (o "round-trip" que faltava). E a calc foi **otimizada (~100×)** com a memoização do Newton (19/07). Então o texto abaixo sobre "desligada" é histórico.
 
 ## O que ficou de fora (fase seguinte)
 

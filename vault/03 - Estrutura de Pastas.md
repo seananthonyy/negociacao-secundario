@@ -48,7 +48,7 @@ negociacao-secundario/
 │   │   │   ─── RELATÓRIO E ORQUESTRAÇÃO ───
 │   │   ├── gerar_relatorio_html.py          Relatório diário
 │   │   ├── gerar_relatorio_credito.py       Relatório histórico (6 abas)
-│   │   ├── pipeline_core.py                 A cadeia dos 18 passos (importado, não executado)
+│   │   ├── pipeline_core.py                 A cadeia dos 19 passos (importado, não executado)
 │   │   ├── run_diario.py                    Entrypoint da rotina (Task Scheduler)
 │   │   └── check_no_secrets.py              Gate pré-publicação no GitHub
 │   │

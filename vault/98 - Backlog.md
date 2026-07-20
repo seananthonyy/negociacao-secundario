@@ -27,7 +27,7 @@ Triangulando 4 negócios de 16/06/2026:
 
 **O detalhe que aponta a causa:** o TRGP13 **bate o PU par a 1e-6** e mesmo assim erra a taxa em 2,18 bps. Se os fluxos e o VNA estão certos (e estão — o PU par fecha), a diferença só pode estar no **desconto**. Candidatos: o truncamento de 6 casas em cada VP (`Trunca(FV_i / fatorDesc, 6)`), a contagem de DU do fator de desconto, ou a convenção do %CDI (onde a taxa muda o fluxo **e** o desconto).
 
-**Estado:** a calc está implementada como 1º degrau da cascata do `calc_taxa_negocios`, porém **desligada** (`config.toml [calc] usarCalcTaxa = false`). Ligar é uma linha.
+**Estado (19/07):** a calc foi **LIGADA** (`config.toml [calc] usarCalcTaxa = true`) para **CDI+/IPCA/PREFIXADO** — mas o **%CDI ficou de fora exatamente por este bug** (erra o desconto fora do par). Ou seja: este item passou a ser **só sobre o %CDI** (os demais indexadores a calc reproduz a B3/FI e já precificam local). Ver [[16 - Confianca nos Validados (WIP)]].
 
 **O gate foi consertado (13/07) e a medição mudou tudo.** O `conferir_pu` agora testa em **duas** taxas: no par (valida o fluxo e o VNA) e a **100 bps do par** (valida o desconto). Rodando nos 3.023 validados:
 

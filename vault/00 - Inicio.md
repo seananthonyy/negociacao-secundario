@@ -17,7 +17,7 @@ Sistema Python local que gera relatórios HTML diários consolidando negócios s
 - [[04 - Banco de Dados]]
 - [[07 - Filtro de Duplicados]]
 - [[08 - Match de Referencia]]
-- [[11 - Pipeline de Execucao]] — os 18 passos e a ordem entre eles
+- [[11 - Pipeline de Execucao]] — os 19 passos e a ordem entre eles
 
 ### Precificação (leia estas antes de mexer em cadastro, fluxo ou calc)
 - [[15 - Cadastro dos Ativos]] — **a B3 é a fonte primária**; o pacote indivisível; as 3 armadilhas do fluxo da B3

@@ -29,7 +29,7 @@ O modelo de confiança de hoje **não garante** que a calc precifica certo:
 
 ## Como a calc entra no relatório (`calc_taxa_negocios.py`)
 
-Cascata por trade: **(1) taxa direta do boletim** → **(2) calc local (só `stFluxoValidado=1`)** → (3) FI Analytics → (4) B3. A calc é o **degrau 2**: só roda quando o boletim **não** trouxe taxa, e **apenas em ativo validado** (`ativosValidados` = `WHERE stFluxoValidado=1`). Hoje está desligada (`[calc].usarCalcTaxa=false`).
+Cascata por trade: **(1) taxa direta do boletim** → **(2) calc local (só `stFluxoValidado=1`)** → (3) FI Analytics → (4) B3. A calc é o **degrau 2**: só roda quando o boletim **não** trouxe taxa, e **apenas em ativo validado** (`ativosValidados` = `WHERE stFluxoValidado=1`) e indexador em `["CDI+","IPCA","PREFIXADO"]`. **LIGADA em 15/07** (`[calc].usarCalcTaxa=true`).
 
 **Por isso o plano fecha:** se `stFluxoValidado=1` significar "confiável", ligar a calc é **seguro por construção** — ela só precifica o que confiamos; ativo não confiável cai na cascata de API.
 

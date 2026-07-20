@@ -42,7 +42,7 @@ Segredos são resolvidos por `lib.config.ObterSegredo()` via bloco `[env]` do `c
 
 ## Rotina de fechamento diário
 
-> **Não se roda script por script à mão.** O pipeline tem **18 passos** com dependências entre si — ver [[11 - Pipeline de Execucao]]. Use uma das duas portas:
+> **Não se roda script por script à mão.** O pipeline tem **19 passos** com dependências entre si — ver [[11 - Pipeline de Execucao]]. Use uma das duas portas:
 
 ### Notebook (o jeito normal)
 
