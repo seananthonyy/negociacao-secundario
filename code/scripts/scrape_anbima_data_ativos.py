@@ -323,11 +323,17 @@ def TickersCompletos(conn: sqlite3.Connection, tickers: list[str]) -> set[str]:
     return completos
 
 
-def TickersIndexadorInvalido(dirJson: Path, tickers: list[str]) -> set[str]:
-    """Set de tickers cujo JSON de checkpoint já marca 'indexador_invalido' em
-    skip_reasons. Esses nunca são persistidos no DB (descartados de propósito),
-    então sempre apareceriam como 'faltando' — guarda contra re-scrape infinito."""
-    invalidos: set[str] = set()
+# skip_reasons TERMINAIS: o ticker ja foi resolvido o quanto a Anbima permite e nao deve
+# voltar a fila. 'indexador_invalido' (descartado do DB) e 'sem_agenda' (cadastro gravado,
+# mas a fonte nao tem fluxo — ficaria eternamente "incompleto" por falta de FluxoAtivos).
+SKIP_REASONS_TERMINAIS = frozenset({'indexador_invalido', 'sem_agenda'})
+
+
+def TickersSkipTerminal(dirJson: Path, tickers: list[str]) -> set[str]:
+    """Set de tickers cujo checkpoint JSON marca um skip_reason TERMINAL
+    (SKIP_REASONS_TERMINAIS). Guarda contra re-scrape infinito: sem isto eles sempre
+    apareceriam como 'faltando' (sem FluxoAtivos / descartados do DB)."""
+    terminais: set[str] = set()
     for tk in tickers:
         jp = dirJson / f'{tk}.json'
         if not jp.exists():
@@ -336,9 +342,9 @@ def TickersIndexadorInvalido(dirJson: Path, tickers: list[str]) -> set[str]:
             payload = json.loads(jp.read_text(encoding='utf-8'))
         except Exception:
             continue
-        if 'indexador_invalido' in (payload.get('skip_reasons') or []):
-            invalidos.add(tk)
-    return invalidos
+        if SKIP_REASONS_TERMINAIS & set(payload.get('skip_reasons') or []):
+            terminais.add(tk)
+    return terminais
 
 
 # ── playwright: listagem ──────────────────────────────────────────────────────
@@ -565,12 +571,20 @@ async def Trabalhador(wid: int, queue: asyncio.Queue, browser, dirJson: Path,
                 else:
                     agenda = await RasparAgenda(page, ticker, cdInstrumento, log)
                     if agenda is None:
-                        log.warning(f'{ticker}: agenda não capturada')
-                        stats['erros'] += 1
-                        continue
-                    linhasFluxo = ProcessarAgenda(ticker, agenda, log)
-                    if linhasFluxo is None:
-                        motivosSkip = ['evento_desconhecido']
+                        # A Anbima nao tem agenda para este ativo (ex.: RAIZ12 — confirmado
+                        # sem fluxo na fonte). Persistimos mesmo assim o cadastro capturado
+                        # (emissor, indexador, etc.) — so nao grava FluxoAtivos. Sem fluxo o
+                        # ativo nao e precificado pela calc (cai na cascata de API), mas o
+                        # emissor passa a aparecer no relatorio. Mesmo tratamento de
+                        # 'evento_desconhecido' (linhasFluxo=None); 'sem_agenda' exclui da
+                        # fila para nao re-raspar eternamente.
+                        log.warning(f'{ticker}: agenda não capturada — grava só o cadastro')
+                        motivosSkip = ['sem_agenda']
+                        linhasFluxo = None
+                    else:
+                        linhasFluxo = ProcessarAgenda(ticker, agenda, log)
+                        if linhasFluxo is None:
+                            motivosSkip = ['evento_desconhecido']
 
                 caminhoJson.write_text(
                     json.dumps({'ticker': ticker, 'cdInstrumento': cdInstrumento,
@@ -698,12 +712,12 @@ async def PrincipalAsync():
             candidatos = [(tk, inst or InferirTipo(tk)) for tk, inst in merged.items()]
             log.info(f'Candidatos após dedup por ticker: {len(candidatos)}')
 
-            # ── 2. guarda contra re-scrape infinito: indexador_invalido ───────
-            invalidos = TickersIndexadorInvalido(dirJson, [tk for tk, _ in candidatos])
-            if invalidos:
-                candidatos = [(tk, inst) for tk, inst in candidatos if tk not in invalidos]
-                log.info(f'Excluídos por indexador_invalido (cache JSON): '
-                         f'{len(invalidos)} — restam {len(candidatos)}')
+            # ── 2. guarda contra re-scrape infinito: skip_reasons terminais ───
+            terminais = TickersSkipTerminal(dirJson, [tk for tk, _ in candidatos])
+            if terminais:
+                candidatos = [(tk, inst) for tk, inst in candidatos if tk not in terminais]
+                log.info(f'Excluídos por skip_reason terminal (indexador_invalido/sem_agenda): '
+                         f'{len(terminais)} — restam {len(candidatos)}')
 
             # ── 3. filtro de completude (a menos que --force) ─────────────────
             if args.force:

@@ -1,30 +1,33 @@
 """
 scrape_fianalytics_planilha.py
 ==============================
-Login via Playwright no FI Analytics, baixa as planilhas Excel de debêntures e
-de CRI/CRA, e faz UPSERT em InfoAtivos.
+Login via Playwright no FI Analytics, baixa os CSVs de debêntures e de CRI/CRA, e
+faz UPSERT em InfoAtivos.
 
-Planilhas têm as colunas:
-    Ticker | Indexador | issuer | Vencimento | Duration |
-    Preço | % Pu Par | Taxa FIA (%) | Taxa Emissão (%) | Prêmio de Risco (%)
+Layout NOVO do site (jul/2026): login (name=email/password, botão 'Entrar') cai na
+lista de debêntures → botão 'Exportar' baixa o CSV; para CRI/CRA, clica no item de
+menu 'Lista' (o de CRI/CRA é o ÚLTIMO dos dois) e no mesmo 'Exportar'. Seletores por
+TEXTO/role — nunca por classe CSS (Tailwind com hash muda a cada build e já quebrou).
 
-Colunas usadas: Ticker, Indexador, issuer, Vencimento, Duration, Taxa Emissão (%).
+CSV: UTF-8 com BOM, separador ';', decimal vírgula. Colunas:
+    Ticker | Indexador | Emissor | Vencimento | Duration | Preço | % PU Par |
+    Taxa FIA (%) | Taxa Emissão (%) | Prêmio de Risco (%) | ...
+Colunas usadas: Ticker, Indexador, Emissor, Vencimento, Duration, Taxa Emissão (%).
 Duration já vem em anos (não dividir por 252).
 
 CLI:
     python scripts/scrape_fianalytics_planilha.py
-    python scripts/scrape_fianalytics_planilha.py --headless
+    python scripts/scrape_fianalytics_planilha.py --no-headless   # debug visual
 """
 
 import argparse
 import asyncio
+import csv
+import io
 import sys
-import tempfile
 import traceback
 from datetime import date
 from pathlib import Path
-
-import openpyxl
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -41,13 +44,6 @@ from lib.relatorio_execucao import RelatorioExecucao
 # ---------------------------------------------------------------------------
 
 NOME_SCRIPT = "scrape_fianalytics_planilha"
-
-# Planilhas a baixar: (tipo, URL, cdInstrumento padrão ou None para inferir)
-# cdInstrumento None indica que deve ser inferido do ticker (CRI/CRA)
-PLANILHAS = [
-    ("deb",     "https://fi-analytics.com.br/analytics-hub/hub?type=deb",     "DEB"),
-    ("cri_cra", "https://fi-analytics.com.br/analytics-hub/hub?type=cri_cra", None),
-]
 
 SQL_UPSERT_INFO = """
 INSERT INTO InfoAtivos (
@@ -112,24 +108,25 @@ def AnalisarVencimento(raw) -> str | None:
     return None
 
 
+def AnalisarFloat(raw) -> float | None:
+    """Float tolerante ao formato BR (decimal vírgula, milhar ponto) do CSV da FIA."""
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s or s in ('--', 'N/D', 'N/A', 'None', ''):
+        return None
+    if ',' in s:
+        s = s.replace('.', '').replace(',', '.')   # BR: '.' milhar, ',' decimal
+    try:
+        return float(s)
+    except (ValueError, TypeError):
+        return None
+
+
 def AnalisarDuration(raw) -> float | None:
     """Converte valor de duração para float (já em anos)."""
-    if raw is None:
-        return None
-    try:
-        v = float(raw)
-        return v if v > 0 else None
-    except (ValueError, TypeError):
-        return None
-
-
-def AnalisarFloat(raw) -> float | None:
-    if raw is None:
-        return None
-    try:
-        return float(raw)
-    except (ValueError, TypeError):
-        return None
+    v = AnalisarFloat(raw)
+    return v if (v is not None and v > 0) else None
 
 
 def InferirInstrumento(cdTicker: str, defaultInstrumento: str | None) -> str | None:
@@ -187,107 +184,88 @@ async def Autenticar(page, log) -> None:
 # ---------------------------------------------------------------------------
 # Playwright: download da planilha
 # ---------------------------------------------------------------------------
+#
+# Layout novo do site (jul/2026): não há mais URLs `?type=deb`. Após o login a
+# página cai na LISTA DE DEBÊNTURES; um botão "Exportar" (SVG lucide-download)
+# baixa o xlsx. Para CRI/CRA, primeiro clica no item de menu "Lista" e depois no
+# mesmo "Exportar". Selecionamos por TEXTO/role (estável), nunca por classe CSS
+# (as classes Tailwind com hash mudam a cada build — foi o que quebrou antes).
 
-async def BaixarPlanilha(page, tipo: str, url: str, log) -> bytes | None:
-    """Navega para URL e baixa a planilha Excel via botão de download."""
-    log.info("fia_planilha: navegando para %s (%s)", url, tipo)
-    await page.goto(url, wait_until="networkidle", timeout=45_000)
-    await page.wait_for_timeout(2500)
-
-    # Localiza o botão de download Excel — SVG com classe hover:text-fia-500
-    # O botão pai é um <button> ou <a> que contém o SVG com essa classe
-    dlLocator = page.locator('svg.hover\\:text-fia-500').first
+async def BaixarViaExportar(page, tipo: str, log) -> bytes | None:
+    """Clica no botão 'Exportar' visível e captura o download do xlsx."""
+    exportBtn = page.get_by_role("button", name="Exportar").first
     try:
-        # Confirma visibilidade
-        await dlLocator.wait_for(state="visible", timeout=15_000)
+        await exportBtn.wait_for(state="visible", timeout=20_000)
     except Exception as exc:
-        log.warning("fia_planilha: botão de download não encontrado para %s: %s", tipo, exc)
-        # Tenta seletor alternativo: qualquer link/botão com título relacionado a download
-        dlLocator = page.locator('[title*="download" i], [aria-label*="download" i]').first
-        try:
-            await dlLocator.wait_for(state="visible", timeout=10_000)
-        except Exception:
-            log.error("fia_planilha: nenhum botão de download encontrado para %s", tipo)
-            return None
+        log.error("fia_planilha: botão 'Exportar' não encontrado para %s: %s", tipo, exc)
+        return None
 
     log.debug("fia_planilha: interceptando download de %s", tipo)
     try:
         async with page.expect_download(timeout=60_000) as dlInfo:
-            await dlLocator.click()
+            await exportBtn.click()
         dl     = await dlInfo.value
         dlPath = await dl.path()
         if dlPath is None:
             log.error("fia_planilha: download retornou path None para %s", tipo)
             return None
-        with open(dlPath, 'rb') as fh:
-            content = fh.read()
-        log.info("fia_planilha: %s — xlsx baixado (%d bytes)", tipo, len(content))
+        content = Path(dlPath).read_bytes()
+        log.info("fia_planilha: %s — download '%s' (%d bytes)", tipo, dl.suggested_filename, len(content))
         return content
     except Exception as exc:
         log.error("fia_planilha: erro ao baixar planilha de %s: %s", tipo, exc)
         return None
 
 
+async def IrParaCriCra(page, log) -> bool:
+    """Navega da lista de debêntures para a de CRI/CRA pelo item de menu 'Lista'.
+    Há dois itens 'Lista' na sidebar (Debêntures ~1.5k e CRI/CRA ~640); o de CRI/CRA
+    é o ÚLTIMO (a sidebar lista Debêntures antes)."""
+    listaBtn = page.locator('button:has-text("Lista")').last
+    try:
+        await listaBtn.wait_for(state="visible", timeout=15_000)
+        await listaBtn.click()
+        await page.wait_for_timeout(2_500)   # aguarda a lista de CRI/CRA carregar
+        log.info("fia_planilha: navegou para a lista de CRI/CRA (menu 'Lista')")
+        return True
+    except Exception as exc:
+        log.error("fia_planilha: não consegui abrir a lista de CRI/CRA ('Lista'): %s", exc)
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Parsing do XLSX
 # ---------------------------------------------------------------------------
 
-def AnalisarXlsx(
+def AnalisarCsv(
     content: bytes,
     tipo: str,
     defaultInstrumento: str | None,
     log,
 ) -> list[tuple]:
     """
-    Lê o conteúdo xlsx e retorna lista de tuplas para UPSERT em InfoAtivos:
-        (cdTicker, cdInstrumento, cdEmissor, dtVencimento,
-         vrDuration, dtAtualizacaoDuration, cdIndexador, cdReferencia)
+    Lê o CSV da FIA (UTF-8 com BOM, separador ';', decimal vírgula) e retorna as tuplas
+    para UPSERT em InfoAtivos. Colunas usadas: Ticker, Indexador, Emissor, Vencimento,
+    Duration, Taxa Emissão (%). (O layout novo trocou xlsx→CSV e 'issuer'→'Emissor'.)
     """
     dtToday = date.today().isoformat()
 
-    tmpPath = None
-    try:
-        # Salva em arquivo temporário pois openpyxl não lê de BytesIO com read_only=True
-        # de forma confiável em todos os ambientes
-        with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp:
-            tmp.write(content)
-            tmpPath = tmp.name
-
-        wb = openpyxl.load_workbook(tmpPath, read_only=True, data_only=True)
-        ws = wb.active
-    except Exception as exc:
-        log.error("fia_planilha: erro ao abrir xlsx de %s: %s", tipo, exc)
-        return []
-    finally:
-        if tmpPath:
-            try:
-                Path(tmpPath).unlink(missing_ok=True)
-            except Exception:
-                pass
-
-    rows      = list(ws.iter_rows(values_only=True))
-    wb.close()
-
+    txt  = content.decode('utf-8-sig', errors='replace')   # utf-8-sig remove o BOM
+    rows = list(csv.reader(io.StringIO(txt), delimiter=';'))
     if not rows:
-        log.warning("fia_planilha: planilha de %s está vazia", tipo)
+        log.warning("fia_planilha: CSV de %s está vazio", tipo)
         return []
 
-    # Localiza a linha de cabeçalho (primeira linha com valor "Ticker")
-    headerRowIdx = None
-    for i, row in enumerate(rows):
-        rowStripped = [str(c).strip() if c is not None else '' for c in row]
-        if 'Ticker' in rowStripped:
-            headerRowIdx = i
-            break
-
+    # Linha de cabeçalho = primeira linha que contém 'Ticker'
+    headerRowIdx = next(
+        (i for i, row in enumerate(rows) if 'Ticker' in [c.strip() for c in row]), None)
     if headerRowIdx is None:
         log.error("fia_planilha: cabeçalho 'Ticker' não encontrado em %s", tipo)
         return []
 
-    headers = [str(c).strip() if c is not None else '' for c in rows[headerRowIdx]]
+    headers = [c.strip() for c in rows[headerRowIdx]]
     log.debug("fia_planilha: %s — headers: %s", tipo, headers)
 
-    # Índices das colunas necessárias
     def ColIdx(name: str) -> int | None:
         try:
             return headers.index(name)
@@ -296,7 +274,7 @@ def AnalisarXlsx(
 
     idxTicker      = ColIdx('Ticker')
     idxIndexador   = ColIdx('Indexador')
-    idxIssuer      = ColIdx('issuer')
+    idxEmissor     = ColIdx('Emissor')            # era 'issuer' no xlsx antigo
     idxVenc        = ColIdx('Vencimento')
     idxDuration    = ColIdx('Duration')
     idxTaxaEmissao = ColIdx('Taxa Emissão (%)')
@@ -305,29 +283,25 @@ def AnalisarXlsx(
         log.error("fia_planilha: coluna 'Ticker' ausente em %s", tipo)
         return []
 
-    infoRows: list[tuple] = []
+    def Cell(row, idx):
+        return row[idx] if (idx is not None and idx < len(row)) else None
 
+    infoRows: list[tuple] = []
     for row in rows[headerRowIdx + 1:]:
-        if not row or all(c is None for c in row):
+        if not row or all((c or '').strip() == '' for c in row):
             continue
 
-        cdTicker = str(row[idxTicker]).strip() if idxTicker is not None and row[idxTicker] is not None else ''
+        cdTicker = (Cell(row, idxTicker) or '').strip()
         if not cdTicker or cdTicker in ('None', '--'):
             continue
 
-        cdEmissor    = str(row[idxIssuer]).strip()    if idxIssuer    is not None and row[idxIssuer]    is not None else None
-        rawVenc      = row[idxVenc]                   if idxVenc      is not None else None
-        rawDuration  = row[idxDuration]               if idxDuration  is not None else None
-        rawIndexador = row[idxIndexador]               if idxIndexador is not None else None
-        rawTaxaEm    = row[idxTaxaEmissao]             if idxTaxaEmissao is not None else None
-
-        cdEmissor     = cdEmissor or None
-        dtVencimento  = AnalisarVencimento(rawVenc)
-        vrDuration    = AnalisarDuration(rawDuration)
+        cdEmissor     = (Cell(row, idxEmissor) or '').strip() or None
+        dtVencimento  = AnalisarVencimento(Cell(row, idxVenc))
+        vrDuration    = AnalisarDuration(Cell(row, idxDuration))
         dtUpsertDur   = dtToday if vrDuration is not None else None
-        cdIndexador   = NormalizarIndexador(rawIndexador)
+        cdIndexador   = NormalizarIndexador(Cell(row, idxIndexador))
         cdInstrumento = InferirInstrumento(cdTicker, defaultInstrumento)
-        vrTaxaEmissao = AnalisarFloat(rawTaxaEm) if rawTaxaEm is not None else None
+        vrTaxaEmissao = AnalisarFloat(Cell(row, idxTaxaEmissao))
 
         # cdReferencia = None — FI Analytics não fornece esta informação
         infoRows.append((
@@ -381,7 +355,8 @@ def MontarResumo(results: list[tuple[str, int]]) -> str:
 # ---------------------------------------------------------------------------
 
 async def PrincipalAsync(args: argparse.Namespace, log) -> list[tuple[str, int]]:
-    """Orquestra login, downloads e UPSERTs. Retorna lista (planilha, nTickers)."""
+    """Orquestra login, downloads e UPSERTs. Retorna lista (planilha, nTickers).
+    Fluxo novo: login → lista de debêntures (Exportar) → menu 'Lista' → CRI/CRA (Exportar)."""
     conn    = ObterBanco()
     results: list[tuple[str, int]] = []
 
@@ -394,18 +369,27 @@ async def PrincipalAsync(args: argparse.Namespace, log) -> list[tuple[str, int]]
             )
             page = await context.new_page()
 
-            # Login único — sessão reutilizada para ambas as planilhas
-            await Autenticar(page, log)
+            await Autenticar(page, log)          # o login cai na lista de debêntures
+            await page.wait_for_timeout(2_500)
 
-            for tipo, url, defaultInstrumento in PLANILHAS:
-                content = await BaixarPlanilha(page, tipo, url, log)
-                if content is None:
-                    results.append((tipo, 0))
-                    continue
+            # 1) DEBÊNTURES — exporta direto da lista onde o login caiu.
+            content = await BaixarViaExportar(page, "deb", log)
+            if content:
+                infoRows = AnalisarCsv(content, "deb", "DEB", log)
+                results.append(("deb", GravarNoBanco(conn, infoRows, "deb", log)))
+            else:
+                results.append(("deb", 0))
 
-                infoRows = AnalisarXlsx(content, tipo, defaultInstrumento, log)
-                nSaved   = GravarNoBanco(conn, infoRows, tipo, log)
-                results.append((tipo, nSaved))
+            # 2) CRI/CRA — abre a lista pelo menu 'Lista' e exporta.
+            if await IrParaCriCra(page, log):
+                content = await BaixarViaExportar(page, "cri_cra", log)
+                if content:
+                    infoRows = AnalisarCsv(content, "cri_cra", None, log)
+                    results.append(("cri_cra", GravarNoBanco(conn, infoRows, "cri_cra", log)))
+                else:
+                    results.append(("cri_cra", 0))
+            else:
+                results.append(("cri_cra", 0))
 
             await browser.close()
 
@@ -452,6 +436,14 @@ def Principal() -> None:
         summary = MontarResumo(results)
         log.info("fia_planilha: concluído.\n%s", summary)
 
+        # Falha EXPLÍCITA se nenhuma planilha gravou tickers — o scraper quebrou
+        # (não é "sem dado"). Antes saía exit 0 gravando 0 = falha silenciosa.
+        if sum(n for _, n in results) == 0:
+            success = False
+            rel.Erro("Nenhuma planilha gravou tickers — o download provavelmente quebrou "
+                     "(seletor 'Exportar'/'Lista' mudou?). Ver logs.")
+            log.error("fia_planilha: 0 tickers em TODAS as planilhas — falha (exit 1).")
+
     except Exception:
         success = False
         erro = traceback.format_exc()
@@ -462,6 +454,9 @@ def Principal() -> None:
         if summary:
             rel.Secao("Resumo", ["saida"], [[l] for l in summary.splitlines() if l.strip()])
         EnviarEmailConclusao(NOME_SCRIPT, success, rel, tracebackErro=erro, logger=log)
+
+    if not success:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
