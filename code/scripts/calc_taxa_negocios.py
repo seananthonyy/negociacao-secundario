@@ -461,6 +461,7 @@ def LerArgumentos() -> argparse.Namespace:
 def MontarIntervaloDatas(args: argparse.Namespace) -> list[str]:
     """Retorna lista de datas YYYY-MM-DD a processar."""
     if args.date:
+        date.fromisoformat(args.date)   # valida: data inválida aborta em vez de sair mudo (0 linhas, exit 0)
         return [args.date]
 
     startDate = date.fromisoformat(args.start)
@@ -558,6 +559,9 @@ def Principal() -> None:
     finally:
         conn.close()
         EnviarEmailConclusao("calc_taxa_negocios", success, rel, tracebackErro=erro, logger=log)
+
+    if not success:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

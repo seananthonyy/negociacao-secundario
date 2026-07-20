@@ -432,6 +432,9 @@ def Principal() -> None:
         conn.close()
         EnviarEmailConclusao(NOME_SCRIPT, success, rel, tracebackErro=erro, logger=log)
 
+    if not success:
+        sys.exit(1)
+
 
 if __name__ == "__main__":
     Principal()

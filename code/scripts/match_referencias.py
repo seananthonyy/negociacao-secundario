@@ -260,6 +260,9 @@ def Principal() -> None:
             rel.Secao("Resumo", ["saida"], [[l] for l in summary.splitlines() if l.strip()])
         EnviarEmailConclusao(NOME_SCRIPT, success, rel, tracebackErro=erro, logger=log)
 
+    if not success:
+        sys.exit(1)
+
 
 if __name__ == "__main__":
     Principal()

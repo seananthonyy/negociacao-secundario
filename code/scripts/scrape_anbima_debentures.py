@@ -308,6 +308,9 @@ def Principal() -> None:
         conn.close()
         EnviarEmailConclusao("scrape_anbima_debentures", success, rel, tracebackErro=erro, logger=log)
 
+    if not success:
+        sys.exit(1)
+
 
 if __name__ == "__main__":
     Principal()
