@@ -17,43 +17,41 @@ O FI Analytics é uma plataforma de dados de renda fixa brasileira. Além da API
 | Finalidade | URL |
 |---|---|
 | Login (signin) | `https://fi-analytics.com.br/signin` |
-| Download da planilha | `https://fi-analytics.com.br/analytics-hub/hub?type=deb` |
+| (o login cai na) lista de debêntures | `https://fi-analytics.com.br/analytics-hub/debentures/list` |
 
-As credenciais de acesso são lidas das variáveis de ambiente `FIANALYTICS_USER` e `FIANALYTICS_PASS`. Ver [[../99 - Credenciais e Links]].
+> ⚠️ **Layout novo (jul/2026):** NÃO há mais URL de download `?type=deb`/`cri_cra`. O download é por **botão "Exportar"** na própria lista, e o formato virou **CSV** (não xlsx). Ver [[../10 - Scripts/scrape_fianalytics_planilha]].
+
+Credenciais lidas dos segredos `fianalyticsUser` / `fianalyticsPass` (via `[env]`). Ver [[../99 - Credenciais e Links]].
 
 ---
 
-## Fluxo Playwright
+## Fluxo Playwright (layout novo)
 
-O download requer autenticação prévia. O fluxo é:
+1. Navega até `signin`, preenche email/senha (`input[name="email"]`/`[name="password"]`) e clica **"Entrar"**.
+2. O login cai na **lista de debêntures**.
+3. Clica no botão **"Exportar"** (`get_by_role("button", name="Exportar")`) → baixa o CSV de debêntures.
+4. Para CRI/CRA: clica no item de menu **"Lista"** (há dois; o de CRI/CRA é o **último/`.last`**, ~640; o 1º é debêntures ~1.5k) → clica **"Exportar"** de novo.
+5. Parseia os CSVs e faz UPSERT em `InfoAtivos`.
 
-1. Navegar até a URL de signin.
-2. Preencher email e senha com as credenciais do `.env`.
-3. Aguardar o login ser concluído (redirecionamento ou elemento pós-login).
-4. Navegar até a URL de download da planilha.
-5. Acionar o download (botão ou link direto).
-6. Aguardar o arquivo aparecer na pasta de downloads.
-7. Processar a planilha e fazer UPSERT em `InfoAtivos`.
-
-O script aceita `--headless` / `--no-headless` para controlar se o browser abre de forma visível (útil para debug de login). O padrão em `config.toml` é `headless = true`.
+**Seletores por texto/role, nunca por classe CSS** (o Tailwind com hash muda a cada build e quebrou antes). O script sai com **exit 1 se nenhuma planilha gravar tickers** (mata a falha silenciosa). `--headless` (padrão) / `--no-headless` para debug.
 
 ---
 
 ## O que é carregado em `InfoAtivos`
 
-A planilha traz uma linha por ativo. Colunas mapeadas:
+O CSV (UTF-8 com BOM, separador `;`, decimal vírgula) traz uma linha por ativo. Colunas mapeadas:
 
-| Campo na planilha | Coluna em `InfoAtivos` | Observação |
+| Campo no CSV | Coluna em `InfoAtivos` | Observação |
 |---|---|---|
 | `Ticker` | `cdTicker` (PK) | |
 | — | `cdInstrumento` | Inferido: planilha `deb` → `'DEB'`; `cri_cra` → ticker começa com `CRA` → `'CRA'`, senão `'CRI'` |
-| `issuer` | `cdEmissor` | |
+| `Emissor` | `cdEmissor` | (era `issuer` no xlsx antigo) |
 | `Vencimento` | `dtVencimento` | |
 | `Duration` | `vrDuration` | Já em anos (não dividir por 252) |
 | `Indexador` | `cdIndexador` | Normalizado para `CDI+` / `%CDI` / `IPCA` / `PREFIXADO` |
 | `Taxa Emissão (%)` | `vrTaxaEmissao` | Taxa de emissão em % a.a. |
 
-Campos da planilha **não mapeados** atualmente: `Preço`, `% Pu Par`, `Taxa FIA (%)`, `Prêmio de Risco (%)`.
+Parser: `AnalisarCsv`; floats via `AnalisarFloat` (tolera decimal-vírgula BR). Campos **não mapeados**: `Preço`, `% PU Par`, `Taxa FIA (%)`, `Prêmio de Risco (%)`, DAP+, etc.
 
 ---
 

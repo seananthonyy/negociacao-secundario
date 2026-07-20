@@ -40,7 +40,7 @@ Destinatários **não** ficam no código. `lib.config.get_email_list("destinatar
 |---|---|
 | B3 Boletim Diário | `https://www.b3.com.br/pt_br/market-data-e-indices/servicos-de-dados/market-data/consultas/boletim-diario/boletim-diario-do-mercado/` |
 | FI Analytics login | `https://fi-analytics.com.br/signin` |
-| FI Analytics planilha | `https://fi-analytics.com.br/analytics-hub/hub?type=deb` |
+| FI Analytics (login cai na lista) | `https://fi-analytics.com.br/analytics-hub/debentures/list` — download por botão "Exportar" (CSV), CRI/CRA via menu "Lista" (layout novo jul/2026) |
 | Anbima debêntures | `https://www.anbima.com.br/pt_br/informar/taxas-de-debentures.htm` |
 | Anbima CRI/CRA | `https://www.anbima.com.br/pt_br/informar/precos-e-indices/precos/taxas-de-cri-e-cra/taxas-de-cri-e-cra.htm` |
 

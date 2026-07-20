@@ -8,18 +8,20 @@
 
 ## O que faz
 
-Faz login no FI Analytics via Playwright, baixa as planilhas Excel de debêntures e de CRI/CRA e faz UPSERT em `InfoAtivos`. É a fonte principal para `vrTaxaEmissao`, `cdEmissor`, `dtVencimento`, `vrDuration` e `cdIndexador`.
+Faz login no FI Analytics via Playwright, baixa os **CSVs** de debêntures e de CRI/CRA e faz UPSERT em `InfoAtivos`. É a fonte principal para `vrTaxaEmissao`, `cdEmissor`, `dtVencimento`, `vrDuration` e `cdIndexador`.
 
 Não tem `--date` — a planilha sempre reflete o estado atual de todos os ativos cadastrados na plataforma.
 
+> ⚠️ **Layout novo (jul/2026) — consertado 19/07:** o site refez o front. Não há mais URL `?type=deb`. O download é por botão **"Exportar"** na lista; CRI/CRA via menu **"Lista"**; formato **xlsx→CSV**; coluna `issuer`→`Emissor`. Seletores por texto/role, exit 1 se gravar 0. Base do fix: tutorial do usuário.
+
 ---
 
-## Planilhas baixadas
+## Como baixa (não é mais por URL)
 
-| Tipo | URL | `cdInstrumento` padrão |
+| Planilha | Como | `cdInstrumento` padrão |
 |---|---|---|
-| Debêntures | `https://fi-analytics.com.br/analytics-hub/hub?type=deb` | `'DEB'` |
-| CRI/CRA | `https://fi-analytics.com.br/analytics-hub/hub?type=cri_cra` | inferido do ticker |
+| Debêntures | login cai na lista de deb → botão **"Exportar"** | `'DEB'` |
+| CRI/CRA | menu **"Lista"** (o **último** dos 2, ~640) → botão **"Exportar"** | inferido do ticker |
 
 Para CRI/CRA: ticker começa com `'CRA'` → `'CRA'`; senão → `'CRI'`.
 
@@ -30,7 +32,7 @@ Para CRI/CRA: ticker começa com `'CRA'` → `'CRA'`; senão → `'CRI'`.
 | Campo na planilha | Variável Python | Coluna em `InfoAtivos` |
 |---|---|---|
 | `Ticker` | `cdTicker` | `cdTicker` (PK) |
-| `issuer` | `cdEmissor` | `cdEmissor` |
+| `Emissor` | `cdEmissor` | `cdEmissor` (era `issuer` no xlsx antigo) |
 | `Vencimento` | `dtVencimento` | `dtVencimento` |
 | `Duration` | `vrDuration` | `vrDuration` (já em anos) |
 | `Indexador` | `cdIndexador` | `cdIndexador` (normalizado) |
@@ -40,20 +42,20 @@ Campos disponíveis mas **não mapeados**: `Preço`, `% Pu Par`, `Taxa FIA (%)`,
 
 ---
 
-## Fluxo Playwright
+## Fluxo Playwright (layout novo)
 
-1. Navegar até `https://fi-analytics.com.br/signin`
-2. Preencher credenciais (`FIANALYTICS_USER`, `FIANALYTICS_PASS` do `.env`)
-3. Aguardar login (redirecionamento)
-4. Para cada planilha: navegar até URL → acionar download → aguardar arquivo
-5. Processar XLSX com `openpyxl` (salvo em temp file pois `BytesIO` é instável)
-6. UPSERT em `InfoAtivos`
+1. Navega até `signin`, preenche email/senha (`input[name="email"]`/`[name="password"]`), clica **"Entrar"** (`Autenticar`)
+2. Login cai na **lista de debêntures** → clica **"Exportar"** (`BaixarViaExportar`) → CSV deb
+3. Clica no menu **"Lista"** (`IrParaCriCra`, `.last`) → **"Exportar"** → CSV CRI/CRA
+4. `AnalisarCsv` parseia (UTF-8 BOM, sep `;`, decimal vírgula) e faz UPSERT em `InfoAtivos`
+
+Seletores por **texto/role** (`get_by_role("button", name="Exportar")`, `button:has-text("Lista").last`), nunca classe CSS.
 
 ---
 
-## Localização do cabeçalho no XLSX
+## Parsing do CSV
 
-O XLSX pode ter linhas de intro antes do header real. O parser procura a primeira linha que contenha a string `'Ticker'` e usa essa como cabeçalho. Colunas são acessadas por nome (via `_colIdx(name)`), não por índice — tolerante a colunas extras ou reordenação.
+CSV UTF-8 com BOM, separador `;`, decimal vírgula (`AnalisarCsv` + `csv.reader`). O parser acha a primeira linha com `'Ticker'` como cabeçalho e acessa colunas por nome (`ColIdx`) — tolerante a colunas extras/reordenação. Floats por `AnalisarFloat` (converte `1.234,56` BR → `1234.56`).
 
 ---
 
