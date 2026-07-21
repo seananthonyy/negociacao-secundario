@@ -72,6 +72,11 @@ ativosValidados: dict[str, dict] = {}
 cacheCalc: dict[tuple, Optional[float]] = {}
 travaCache = threading.Lock()
 
+# Falhas do calc local por ticker -> nº de negocios afetados. O ativo cai na
+# cascata FI->B3, mas a falha (cadastro/fluxo inconsistente, PU nao-bracketavel)
+# nao pode sumir num log DEBUG: e contada aqui para o relatorio/email (#8 do audit).
+calcFalhas: dict[str, int] = {}
+
 
 # Indexadores em que a calc é confiável para a TAXA de um trade (verificado 15/07/2026
 # em trades reais contra a B3: CDI+/IPCA/PREFIXADO batem a mediana 0,00 bps, máx <0,4 bps).
@@ -113,7 +118,14 @@ def TaxaPelaCalc(trade: "NegocioBruto", log) -> Optional[float]:
     try:
         taxa = CalcularTaxaLocal(ativo, date.fromisoformat(trade.dtLiquidacao), trade.vrPU)
     except Exception as exc:
-        log.debug("calc_taxa: calc local falhou para %s: %s", trade.cdTicker, exc)
+        with travaCache:
+            primeira = trade.cdTicker not in calcFalhas
+            calcFalhas[trade.cdTicker] = calcFalhas.get(trade.cdTicker, 0) + 1
+        # WARNING uma vez por ticker (evita spam quando o mesmo ativo tem varios
+        # negocios); a contagem total vai para o relatorio.
+        if primeira:
+            log.warning("calc_taxa: calc local falhou para %s (%s) — caindo p/ FI/B3",
+                        trade.cdTicker, exc)
         taxa = None
     with travaCache:
         cacheCalc[chave] = taxa
@@ -506,6 +518,15 @@ def MontarRelatorio(statsList: list[EstatisticasData], args, rel) -> None:
     rel.Metrica("Sem taxa", totais["sem"])
     if totais["calc"]:
         rel.Metrica("Calculos distintos em cache (ticker, data, PU)", len(cacheCalc))
+    if calcFalhas:
+        afetados = sum(calcFalhas.values())
+        rel.Metrica("Ativos c/ falha no calc local (cairam na cascata)", len(calcFalhas))
+        piores = sorted(calcFalhas.items(), key=lambda kv: -kv[1])[:20]
+        rel.Secao("Falha no calc local -> fallback FI/B3",
+                  ["ticker", "negocios afetados"], [[tk, n] for tk, n in piores])
+        rel.Aviso(f"{len(calcFalhas)} ativo(s) validado(s) falharam no calc local "
+                  f"({afetados} negocio(s)) e cairam na cascata de API — investigar "
+                  f"cadastro/fluxo (ver validar_calc_b3).")
     if args.semCalc:
         rel.Aviso("--sem-calc: a calculadora local foi desligada; so a cascata de API rodou.")
     if totais["sem"]:

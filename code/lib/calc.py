@@ -243,12 +243,29 @@ def CalcularVnaAtivo(ativo: dict, dtCalc: date) -> float:
 
 
 def CalcularDuration(ativo: dict, dtCalc: date, vrTaxaNegociacao: float) -> float:
-    """Duration de Macaulay do ativo em dtCalc, descontada por vrTaxaNegociacao.
-    A calc devolve em dias úteis (DU); dividimos por 252 para entregar em ANOS — a
-    unidade da `vrDuration` na base (Anbima/MtmAnbima). `CalcularDuration` da calc não
-    usa aniversário (usa o VNE como face, sem correção por IPCA)."""
+    """Duration de Macaulay do ativo em dtCalc (em ANOS, base 252), descontada por
+    vrTaxaNegociacao — mesma unidade da `vrDuration` na base (Anbima/MtmAnbima).
+    Desde a FASE 2 a calc ja devolve em anos; nao dividimos mais por 252. A calc
+    usa o VNE como face (sem correcao por IPCA) no calculo de duration."""
     C = ImportarCalc()
-    duDias = C.CalcularDuration(
+    return C.CalcularDuration(
         dtCalc, ativo["dtInicioRentabilidade"], ativo["vrTaxaEmissao"], vrTaxaNegociacao,
         ativo["fluxo"], ativo["vrVNE"], ativo["cdIndexador"], ativo["cdTipoAmortizacao"])
-    return duDias / 252.0
+
+
+def CalcularDurationModificada(ativo: dict, dtCalc: date, vrTaxaNegociacao: float) -> float:
+    """Duration modificada (anos) do ativo em dtCalc = D_macaulay / (1 + y)."""
+    C = ImportarCalc()
+    return C.CalcularDurationModificada(
+        dtCalc, ativo["dtInicioRentabilidade"], ativo["vrTaxaEmissao"], vrTaxaNegociacao,
+        ativo["fluxo"], ativo["vrVNE"], ativo["cdIndexador"], ativo["cdTipoAmortizacao"])
+
+
+def CalcularDv01(ativo: dict, dtCalc: date, vrTaxaNegociacao: float) -> float:
+    """DV01 (R$/face por +1 bp) do ativo em dtCalc, por bump-and-reprice."""
+    C = ImportarCalc()
+    aniv = ativo["vrAniversario"]
+    return C.CalcularDv01(
+        dtCalc, ativo["dtInicioRentabilidade"], ativo["vrTaxaEmissao"], vrTaxaNegociacao,
+        ativo["fluxo"], ativo["vrVNE"], ativo["cdIndexador"],
+        aniv if aniv is not None else C.DIA_ANIV, ativo["cdTipoAmortizacao"])

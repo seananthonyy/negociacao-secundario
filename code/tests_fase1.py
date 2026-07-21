@@ -161,11 +161,27 @@ def TestIntegracao() -> None:
         conn.close()
 
 
+def TestRisco() -> None:
+    print("\n== #6 Metricas de risco (Duration anos, Modificada, DV01) ==")
+    inicio = date(2024, 1, 15)
+    fluxo = [(date(2029, 1, 15), 100.0, 0.0)]   # bullet ~4.6a PREFIXADO
+    dataCalc = date(2024, 6, 17)
+    dMac = C.CalcularDuration(dataCalc, inicio, 10.0, 12.0, fluxo, 1000.0, 'PREFIXADO')
+    Checar("Duration sai em ANOS (bullet ~4-5a, nao ~1150 DU)",
+           3.0 < dMac < 6.0, f"dMac={dMac}")
+    dMod = C.CalcularDurationModificada(dataCalc, inicio, 10.0, 12.0, fluxo, 1000.0, 'PREFIXADO')
+    Checar("Modificada = Mac/(1+y) e menor que a Macaulay",
+           dMod < dMac and abs(dMod - dMac / 1.12) < 1e-9, f"dMod={dMod} dMac={dMac}")
+    dv01 = C.CalcularDv01(dataCalc, inicio, 10.0, 12.0, fluxo, 1000.0, 'PREFIXADO')
+    Checar("DV01 positivo (PU cai com +1bp)", dv01 > 0, f"dv01={dv01}")
+
+
 if __name__ == "__main__":
     TestAccProj()
     TestResolverTipoAmort()
     TestNewton()
     TestMercado()
+    TestRisco()
     TestIntegracao()
     print("\n" + "=" * 50)
     if falhas:

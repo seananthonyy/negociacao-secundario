@@ -133,11 +133,11 @@ def ProximoDu(d: date) -> date:
 def SemearCurvaCarryForward(dHoje: str, dMais1: str) -> bool:
     """Deixa a calc precificar o D+1 (data futura, sem curva própria) projetando com a
     curva mais recente — é o que a B3/FI também fazem. A calc lê a curva de projeção por
-    `_ObterAccProjDi(dataCalc)` (chave = data exata); então semeamos o cache dela com a
-    curva de `dHoje` sob a chave de `dMais1`. Em memória, sem escrever no di.db, sem
-    tocar na calculadora_rf.py. Devolve True se semeou. É válido porque `dMais1` é o DU
-    seguinte ao dado mais recente: a série realizada de DI já cobre até `dHoje`, e só o
-    trecho >= dMais1 é projetado."""
+    `MERCADO.accProj(dataCalc)` (chave = data exata); então semeamos o cache dela com a
+    curva de `dHoje` sob a chave de `dMais1` via `MERCADO.SemearAccProj`. Em memória, sem
+    escrever no di.db, sem tocar na calculadora_rf.py. Devolve True se semeou. É válido
+    porque `dMais1` é o DU seguinte ao dado mais recente: a série realizada de DI já cobre
+    até `dHoje`, e só o trecho >= dMais1 é projetado."""
     import sqlite3
     di = sqlite3.connect("data/di.db")
     try:
@@ -147,7 +147,7 @@ def SemearCurvaCarryForward(dHoje: str, dMais1: str) -> bool:
         di.close()
     if not vertices:
         return False
-    C._ACCPROJ_CACHE[dMais1] = C._MontarAccProjDi(vertices)
+    C.MERCADO.SemearAccProj(dMais1, vertices)
     return True
 
 
@@ -466,6 +466,39 @@ def Principal() -> None:
             promovidos = [r for r in confirmados if r["tk"] not in estavaValidado]
             rebaixados = [r for r in invalidos if r["tk"] in estavaValidado]
             porIdx = Counter(r["idx"] for r in reprovados)
+
+            # ── ACURACIA PU calc vs B3, por indexador (so onde a B3 respondeu) ──
+            # Metrica-chave do gate: distribuicao do pior erro RELATIVO de PU por
+            # faixa. Expoe o "fora do par" (bate no par, erra o desconto) — que se
+            # concentra em IPCA e %CDI — em vez de so um placar de aprovados.
+            from collections import defaultdict
+            comB3 = [r for r in resultados if r["nConfB3"] > 0]
+
+            def Faixa(e: float) -> str:
+                if e <= 1e-6: return "<=1e-6"
+                if e <= TOL_PU: return "<=1e-5"
+                if e <= 1e-4: return "<=1e-4"
+                if e <= 1e-3: return "<=1e-3"
+                return ">1e-3"
+
+            FAIXAS = ["<=1e-6", "<=1e-5", "<=1e-4", "<=1e-3", ">1e-3"]
+            distr = defaultdict(Counter)
+            for r in comB3:
+                distr[r["idx"]][Faixa(r["piorPU"])] += 1
+            linhasAcc = []
+            for idx in sorted(distr):
+                c = distr[idx]
+                n = sum(c.values())
+                dentro = c["<=1e-6"] + c["<=1e-5"]
+                linhasAcc.append([idx, n, f"{100 * dentro / n:.1f}%"] + [c[f] for f in FAIXAS])
+            if linhasAcc:
+                rel.Secao("Acuracia PU calc vs B3 (por indexador; so onde a B3 respondeu)",
+                          ["indexador", "n", "%<=1e-5"] + FAIXAS, linhasAcc)
+                totN = len(comB3)
+                totDentro = sum(1 for r in comB3 if r["piorPU"] <= TOL_PU)
+                rel.Metrica("Acuracia PU<=1e-5 (R$0,01/1000) global",
+                            f"{100 * totDentro / totN:.1f}% ({totDentro}/{totN})" if totN else "n/a")
+
             rel.Metrica("Candidatos testados", len(ativos))
             rel.Metrica("Confiáveis (calc reproduz um oráculo)", len(confirmados))
             rel.Metrica("- por oráculo (B3 / FI)", dict(porFonte))
