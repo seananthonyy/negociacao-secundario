@@ -62,6 +62,10 @@ CREATE TABLE IF NOT EXISTS InfoAtivos (
     vrDuration         REAL NULL,
     dtAtualizacaoDuration TEXT NULL,
     cdIndexador        TEXT NULL,
+    -- Convencao de amortizacao ('saldo_original' | 'saldo_restante'), vinda do
+    -- cadastro (B3/Anbima). NULL -> a calc cai na heuristica de inferencia (soma
+    -- dos %amort ~ 100%), que e AMBIGUA. Ver ResolverTipoAmort na calculadora_rf.
+    cdTipoAmortizacao  TEXT NULL,
     cdReferencia       TEXT NULL,
     cdFonteReferencia  TEXT NULL,    -- 'Anbima' | 'MatchRef' | 'FiAnalytics'
     vrTaxaEmissao        REAL NULL,
@@ -150,6 +154,9 @@ COLS_INVALIDAM_FLUXO = (
     "vrTaxaEmissao",
     "cdIndexador",
     "vrVNE",
+    # A convencao de amortizacao muda a base da amortizacao (logo o VNA/PU), entao
+    # muda o ConferirSaldo da validacao — invalida.
+    "cdTipoAmortizacao",
     # Nao define o fluxo, mas define como a calc o LE: com o aniversario errado, os
     # eventos nao caem no aniversario e sao ignorados. Muda o VNA, logo muda o
     # ConferirSaldo — que faz parte da validacao. Entao invalida.
@@ -276,6 +283,7 @@ def Bootstrap(conn: sqlite3.Connection) -> None:
         ("dtUltimaTentativa",     "ALTER TABLE InfoAtivos ADD COLUMN dtUltimaTentativa     TEXT NULL"),
         ("vrAniversario",         "ALTER TABLE InfoAtivos ADD COLUMN vrAniversario   INTEGER NULL"),
         ("cdFonteCadastro",       "ALTER TABLE InfoAtivos ADD COLUMN cdFonteCadastro TEXT NULL"),
+        ("cdTipoAmortizacao",     "ALTER TABLE InfoAtivos ADD COLUMN cdTipoAmortizacao TEXT NULL"),
     ]:
         try:
             conn.execute(sql)
@@ -294,6 +302,10 @@ def Bootstrap(conn: sqlite3.Connection) -> None:
         """)
 
     # Trigger de invalidacao: DEPOIS dos ALTERs (o corpo referencia as colunas novas).
+    # DROP antes do CREATE para que COLS_INVALIDAM_FLUXO seja sempre autoritativa
+    # mesmo em base ja existente (CREATE IF NOT EXISTS sozinho nao atualizaria o
+    # trigger ao adicionar uma coluna nova, ex.: cdTipoAmortizacao).
+    conn.execute("DROP TRIGGER IF EXISTS trgInfoAtivosInvalidaFluxo")
     conn.executescript(DDL_TRIGGERS)
     conn.execute("CREATE INDEX IF NOT EXISTS idxInfoAtivosStFluxoValidado "
                  "ON InfoAtivos(stFluxoValidado)")

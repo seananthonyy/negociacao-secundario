@@ -142,6 +142,13 @@ def ImportarCalc():
     return calcImportada
 
 
+def RecarregarMercado() -> None:
+    """Descarta o cache de dados de mercado da calc (feriados, IPCA, projecao, DI).
+    Chame apos rodar os scrapers de IPCA/DI no MESMO processo, para a proxima
+    precificacao ler os dados frescos em vez do snapshot carregado antes."""
+    ImportarCalc().MERCADO.Recarregar()
+
+
 # ---------------------------------------------------------------------------
 # Precificação — a ponte entre o trades.db e a calculadora
 # ---------------------------------------------------------------------------
@@ -159,7 +166,7 @@ def CarregarAtivo(conn, cdTicker: str) -> dict | None:
     precificar (falta taxa de emissão, início de rentabilidade, fluxo ou indexador)."""
     info = conn.execute(
         "SELECT cdIndexador, vrTaxaEmissao, vrVNE, dtInicioRentabilidade, dtVencimento, "
-        "       vrAniversario, stFluxoValidado "
+        "       vrAniversario, cdTipoAmortizacao, stFluxoValidado "
         "FROM InfoAtivos WHERE cdTicker = ?", (cdTicker,)).fetchone()
     if info is None:
         return None
@@ -191,6 +198,7 @@ def CarregarAtivo(conn, cdTicker: str) -> dict | None:
         "dtInicioRentabilidade": date.fromisoformat(info["dtInicioRentabilidade"]),
         "dtVencimento": info["dtVencimento"],
         "vrAniversario": int(aniversario) if aniversario is not None else None,
+        "cdTipoAmortizacao": info["cdTipoAmortizacao"],
         "stFluxoValidado": info["stFluxoValidado"],
         "fluxo": fluxo,
     }
@@ -202,7 +210,7 @@ def ArgumentosCalc(ativo: dict) -> tuple:
     C = ImportarCalc()
     aniv = ativo["vrAniversario"]
     return (ativo["fluxo"], ativo["vrVNE"], ativo["cdIndexador"],
-            aniv if aniv is not None else C.DIA_ANIV)
+            aniv if aniv is not None else C.DIA_ANIV, ativo["cdTipoAmortizacao"])
 
 
 def CalcularPu(ativo: dict, dtCalc: date, vrTaxa: float) -> float:
@@ -230,7 +238,8 @@ def CalcularVnaAtivo(ativo: dict, dtCalc: date) -> float:
     cdIndexador = "IPCA" if ativo["cdIndexador"] == "IPCA" else "PREFIXADO"
     return C.CalcularVna(
         dtCalc, ativo["dtInicioRentabilidade"], ativo["vrVNE"], ativo["fluxo"],
-        cdIndexador, ativo["vrTaxaEmissao"], aniv if aniv is not None else C.DIA_ANIV)
+        cdIndexador, ativo["vrTaxaEmissao"], aniv if aniv is not None else C.DIA_ANIV,
+        ativo["cdTipoAmortizacao"])
 
 
 def CalcularDuration(ativo: dict, dtCalc: date, vrTaxaNegociacao: float) -> float:
@@ -241,5 +250,5 @@ def CalcularDuration(ativo: dict, dtCalc: date, vrTaxaNegociacao: float) -> floa
     C = ImportarCalc()
     duDias = C.CalcularDuration(
         dtCalc, ativo["dtInicioRentabilidade"], ativo["vrTaxaEmissao"], vrTaxaNegociacao,
-        ativo["fluxo"], ativo["vrVNE"], ativo["cdIndexador"])
+        ativo["fluxo"], ativo["vrVNE"], ativo["cdIndexador"], ativo["cdTipoAmortizacao"])
     return duDias / 252.0
