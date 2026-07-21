@@ -152,6 +152,7 @@ def DurationViaFia(dtVenc: date, dtRef: date, vrTaxa: float, log) -> float | Non
             json={"instrument_type": "NTN-B", "maturity_date": dtVencStr},
             headers=headers,
             timeout=timeout,
+            verify=False,
         )
     except (httpx.TimeoutException, httpx.RequestError) as exc:
         log.warning("ntnb: FIA getgovbondisin erro de rede para %s: %s", dtVencStr, exc)
@@ -179,6 +180,7 @@ def DurationViaFia(dtVenc: date, dtRef: date, vrTaxa: float, log) -> float | Non
             json={"isin": isin, "date": dtRefStr, "rate": vrTaxa},
             headers=headers,
             timeout=timeout,
+            verify=False,
         )
     except (httpx.TimeoutException, httpx.RequestError) as exc:
         log.warning("ntnb: FIA govbondcalculator erro de rede para %s: %s", isin, exc)
@@ -253,7 +255,7 @@ def BaixarXls(d: date, log) -> bytes | None:
     url = MontarUrl(d)
     log.debug("ntnb: GET %s", url)
     try:
-        resp = httpx.get(url, follow_redirects=True, timeout=30)
+        resp = httpx.get(url, follow_redirects=True, timeout=30, verify=False)
     except Exception as exc:
         log.warning("ntnb: erro de rede para %s: %s", d, exc)
         return None

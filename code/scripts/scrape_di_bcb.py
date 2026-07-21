@@ -163,7 +163,7 @@ def Principal() -> None:
             inicio, fim = ResolverJanela(args, conn, log)
             log.info("di_bcb: buscando DI realizado de %s a %s", inicio, fim)
 
-            with httpx.Client(trust_env=True) as client:
+            with httpx.Client(trust_env=True, verify=False) as client:
                 registros = BuscarDiRealizado(client, inicio, fim, log)
 
             # Zero dia devolvido = fonte quebrada (a SGS sempre cobre a janela,

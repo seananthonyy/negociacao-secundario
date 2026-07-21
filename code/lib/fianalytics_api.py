@@ -25,7 +25,7 @@ def ObterCliente() -> httpx.Client:
     with clientLock:
         if clienteHttp is None:
             limits = httpx.Limits(max_connections=64, max_keepalive_connections=64, keepalive_expiry=30.0)
-            clienteHttp = httpx.Client(limits=limits, trust_env=True)
+            clienteHttp = httpx.Client(limits=limits, trust_env=True, verify=False)
     return clienteHttp
 
 

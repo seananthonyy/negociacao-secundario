@@ -903,6 +903,7 @@ async def PrincipalAsync(args: argparse.Namespace) -> RelatorioExecucao:
                 context = await browser.new_context(
                     accept_downloads=True,
                     viewport={"width": 1400, "height": 900},
+                    ignore_https_errors=True,
                 )
                 page = await context.new_page()
 

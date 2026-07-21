@@ -256,7 +256,7 @@ def Principal() -> None:
         feriados = CarregarFeriados()
         log.info("curva_di: %d feriados carregados", len(feriados))
 
-        with httpx.Client() as client:
+        with httpx.Client(verify=False) as client:
             # Verifica disponibilidade
             datasDisponiveis = DatasDisponiveis(client)
             log.info("curva_di: %d datas disponiveis, mais recente: %s", len(datasDisponiveis), datasDisponiveis[0] if datasDisponiveis else "?")

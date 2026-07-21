@@ -200,7 +200,7 @@ def Principal() -> None:
     success = True
 
     try:
-        with httpx.Client(trust_env=True) as client:
+        with httpx.Client(trust_env=True, verify=False) as client:
             indices = BuscarIndices(client, log)
             divulgacoes = BuscarDivulgacoes(client, log)
 

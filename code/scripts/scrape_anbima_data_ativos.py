@@ -351,7 +351,7 @@ def TickersSkipTerminal(dirJson: Path, tickers: list[str]) -> set[str]:
 
 async def PasseListagem(browser, apiKey: str, uiBase: str, order: str, log) -> tuple[dict, int]:
     """Um passe de listagem com a ordem dada. Retorna (collected, total_elements)."""
-    ctx  = await browser.new_context()
+    ctx  = await browser.new_context(ignore_https_errors=True)
     page = await ctx.new_page()
 
     collected: dict[str, dict] = {}
@@ -526,7 +526,7 @@ async def RasparAgenda(page, ticker: str, cdInstrumento: str, log) -> list | Non
 
 async def Trabalhador(wid: int, queue: asyncio.Queue, browser, dirJson: Path,
                   conn: sqlite3.Connection, lock: asyncio.Lock, stats: dict, args, log):
-    ctx  = await browser.new_context()
+    ctx  = await browser.new_context(ignore_https_errors=True)
     page = await ctx.new_page()
 
     while True:

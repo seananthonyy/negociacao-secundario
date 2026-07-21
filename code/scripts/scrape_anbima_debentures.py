@@ -188,7 +188,7 @@ def BaixarXls(d: date, log) -> bytes | None:
     url = MontarUrl(d)
     log.debug("anbima_deb: GET %s", url)
     try:
-        resp = httpx.get(url, follow_redirects=True, timeout=30)
+        resp = httpx.get(url, follow_redirects=True, timeout=30, verify=False)
     except Exception as exc:
         log.warning("anbima_deb: erro de rede para %s: %s", d, exc)
         return None

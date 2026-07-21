@@ -81,7 +81,7 @@ def ObterHtml(log) -> str:
         # Sem isso o script funciona no PC pessoal e volta vazio no banco.
         navegador = p.chromium.launch(headless=True, proxy=ObterProxyPlaywright())
         try:
-            pagina = navegador.new_page()
+            pagina = navegador.new_page(ignore_https_errors=True)
             log.info("projecao: abrindo %s", URL_ANBIMA)
             pagina.goto(URL_ANBIMA, wait_until="networkidle", timeout=60_000)
             # #profile é uma aba Bootstrap oculta — 'attached', não 'visible'.
