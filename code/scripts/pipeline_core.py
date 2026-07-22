@@ -199,8 +199,9 @@ def IpcaProjetado(resultados=None) -> bool:
 
 def DiBcb(inicio=None, fim=None, resultados=None) -> bool:
     """DI realizado (BCB/SGS) → di.db/DiHistorico. Sem args: incremental desde o
-    último dia gravado. Com intervalo: força a janela (backfill)."""
-    args = ArgsData(inicio, fim) if inicio else ()
+    último dia gravado. Com intervalo: força a janela (backfill).
+    O script só aceita --start/--end (não tem --date): data única vira janela de 1 dia."""
+    args = ("--start", inicio, "--end", fim or inicio) if inicio else ()
     return RodarPasso("scrape_di_bcb", *args, resultados=resultados)
 
 def ValidarFluxos(limite=None, tickers=None, resultados=None) -> bool:
@@ -416,6 +417,10 @@ def RodarSetup(inicioBoletim: date | str,
     # Validação: o fluxo da B3 já nasce validado, então a fila aqui é só o que veio da
     # Anbima, mais o tripwire de saldo sobre tudo que está validado.
     ValidarFluxos(resultados=res)
+    # Gate de CONFIANÇA: a calc está LIGADA no calc_taxa, então a base montada pelo
+    # setup precisa passar pelo mesmo gate do diário — senão precifica com fluxo
+    # validado contra B3/FI mas não confirmado contra a calcPU da B3.
+    ValidarCalcB3(resultados=res)
 
     dias = DiasUteisEntre(inicioBoletim, hoje)
     for X in dias:
