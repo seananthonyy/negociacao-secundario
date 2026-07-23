@@ -1,25 +1,150 @@
-<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Cheat Sheet · Negociação Secundária</title><style>*{box-sizing:border-box;margin:0;padding:0}:root{--bg:#0f172a;--pan:#1e293b;--pan2:#243244;--line:#334155;--line2:#3f5069;--tx:#e2e8f0;--tx2:#94a3b8;--dim:#64748b;--g:#34d399;--y:#fbbf24;--r:#f87171;--ac:#7dd3fc;--mono:ui-monospace,Consolas,"SF Mono",Menlo,monospace}body{background:var(--bg);color:var(--tx);font:14px/1.45 Arial,Helvetica,sans-serif;padding-bottom:50px}h2{font-size:14px;letter-spacing:.02em}header{position:sticky;top:0;z-index:9;background:rgba(15,23,42,.97);border-bottom:1px solid var(--line);padding:11px 20px;display:flex;gap:16px;align-items:center;flex-wrap:wrap}header b{font-size:13px;letter-spacing:-.01em;white-space:nowrap}header span{color:var(--dim);font-weight:400}#q{flex:1;min-width:200px;background:var(--pan);border:1px solid var(--line2);border-radius:6px;color:var(--tx);font:13px var(--mono);padding:7px 11px}#q:focus{outline:none;border-color:var(--ac)}#q::placeholder{color:var(--dim)}#hits{font:11px var(--mono);color:var(--dim);white-space:nowrap}main{padding:20px}section{margin-bottom:26px}.h{display:flex;align-items:center;gap:9px;margin-bottom:9px}.h i{width:9px;height:9px;border-radius:50%;flex:0 0 auto}.h small{font:10px var(--mono);color:var(--dim);text-transform:uppercase}.s1 i{background:var(--g)}.s2 i{background:var(--y)}.s3 i{background:var(--r)}.tw{overflow-x:auto;border:1px solid var(--line);border-radius:8px;background:var(--pan)}table{border-collapse:collapse;width:100%;font-size:12.5px;min-width:760px}th{background:var(--pan2);text-align:left;padding:8px 12px;font:10px/1.3 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--tx2);border-bottom:1px solid var(--line2);white-space:nowrap}td{padding:7px 12px;border-bottom:1px solid #2b3a4f;vertical-align:top;color:var(--tx2)}tr:last-child td{border-bottom:none}td:first-child{color:var(--tx);font-weight:700}code{font:11.5px var(--mono);background:#16233b;border:1px solid var(--line);border-radius:4px;padding:1px 5px;color:var(--ac);white-space:nowrap;display:inline-block}.b{display:inline-block;font:10px var(--mono);font-weight:700;padding:2px 7px;border-radius:4px;white-space:nowrap}.b3{background:#1e3a5f;color:#7cc4f8}.an{background:#4a3410;color:#f5c265}.bc{background:#14402c;color:#5fd39d}.fi{background:#3b2352;color:#c4a2f0}.bl{background:#4d2418;color:#f5a48a}.ca{background:#2b3a4f;color:#a5b6cb}.pipe{display:grid;grid-template-columns:repeat(auto-fill,minmax(196px,1fr));gap:8px}.st{background:var(--pan);border:1px solid var(--line);border-left:2px solid var(--y);border-radius:6px;padding:9px 11px}.st u{display:block;font:10px var(--mono);color:var(--y);text-decoration:none;margin-bottom:3px}.st b{display:block;font-size:12.5px;margin-bottom:4px;line-height:1.25}.st code{font-size:10.5px;margin-bottom:3px}.st em{display:block;font-style:normal;font-size:11px;color:var(--dim);margin-top:3px}.no{display:none;padding:14px;color:var(--dim);font:12px var(--mono);text-align:center}.hide{display:none!important}footer{padding:0 20px;font:11px var(--mono);color:var(--dim)}@media(max-width:640px){header{padding:9px 12px}main{padding:12px}}</style></head><body><header><b>CHEAT SHEET <span>· Negociação Secundária de Crédito Privado</span></b><input id="q" type="search" placeholder="filtrar…  ex: VNA · IPCA · B3 · duration · spread · TRGP13" autocomplete="off" autofocus><span id="hits"></span></header><main><section id="sec1"><div class="h s1"><i></i><h2>Matriz mestre de fontes</h2><small>de onde vem cada dado</small></div><div class="tw"><table><thead><tr><th>Dado / métrica</th><th>Fonte</th><th>Script</th><th>Salva em</th><th>Gatilho</th></tr></thead><tbody><tr data-k="trades pu volume secundario deb cri"><td>Negócios do secundário</td><td><span class="b b3">B3</span> Boletim</td><td><code>scrape_b3_boletim.py</code></td><td><code>NegociosBrutos</code></td><td>Pipeline · X e X−1</td></tr><tr data-k="vne aniversario cupom taxa emissao amortizacao"><td>Cadastro + agenda de eventos</td><td><span class="b b3">B3</span> getBondDetails <b>(primária)</b></td><td><code>scrape_b3_bond_details.py</code></td><td><code>InfoAtivos</code> · <code>FluxoAtivos</code></td><td>Pipeline · só quem negociou</td></tr><tr><td>Cadastro + agenda <i>(fallback)</i></td><td><span class="b an">ANBIMA</span> Data</td><td><code>scrape_anbima_data_ativos.py</code></td><td><code>InfoAtivos</code> · <code>FluxoAtivos</code></td><td>Pipeline · só o que a B3 não cobriu</td></tr><tr data-k="spread debenture cri cra portal xls"><td>Taxa indicativa</td><td><span class="b an">ANBIMA</span> XLS <i>(deb)</i> · portal <i>(CRI/CRA)</i></td><td><code>scrape_anbima_debentures.py</code> · <code>_cri_cra.py</code></td><td><code>AnbimaIndicativos.vrTaxaAnbima</code></td><td>Pipeline · CRI/CRA <b>janela ~5 pregões</b></td></tr><tr data-k="referencia vertice"><td>Curva NTN-B <i>(ref. IPCA)</i></td><td><span class="b an">ANBIMA</span> merc. secundário</td><td><code>scrape_anbima_ntnb.py</code></td><td><code>MtmAnbima</code> · <code>NTN-B *</code></td><td>Pipeline diário</td></tr><tr data-k="referencia vertice projecao"><td>Curva DI futuro <i>(ref. PREFIXADO)</i></td><td><span class="b b3">B3</span> API derivativos</td><td><code>scrape_b3_curva_di.py</code></td><td><code>MtmAnbima</code> · <code>DI1F*</code> + <code>di.db/CurvaDi</code></td><td>Pipeline · <b>janela ~20 pregões</b></td></tr><tr data-k="cdi serie diario"><td>DI realizado <i>(série 12)</i></td><td><span class="b bc">BCB</span></td><td><code>scrape_di_bcb.py</code></td><td><code>di.db/DiHistorico</code></td><td>Pipeline · 1×/ciclo</td></tr><tr data-k="numero indice realizado vna"><td>IPCA número-índice</td><td><span class="b bc">IBGE</span></td><td><code>scrape_ipca_ibge.py</code></td><td><code>ipca.db/IPCA</code></td><td>Mensal</td></tr><tr data-k="projecao vna mes corrente"><td>Projeção de IPCA</td><td><span class="b an">ANBIMA</span></td><td><code>scrape_ipca_projetado_anbima.py</code></td><td><code>ipca.db/IPCAProjetado</code></td><td>Pipeline · 1×/ciclo</td></tr><tr data-k="login"><td>Cadastro / duration complementar</td><td><span class="b fi">FI</span> CSV</td><td><code>scrape_fianalytics_planilha.py</code></td><td><code>InfoAtivos</code></td><td>Pipeline · 1×/ciclo</td></tr><tr data-k="calcyield"><td>Taxa / PU <i>(fallback da cascata)</i></td><td><span class="b fi">FI</span> + <span class="b b3">B3</span> calcPU</td><td><code>lib/fianalytics_api.py</code> · <code>lib/b3_calc_api.py</code></td><td>— <i>(usado na cascata)</i></td><td>Sob demanda</td></tr><tr data-k="saldo circulacao peso visao anbima"><td>Outstanding</td><td><span class="b bl">BLOOMBERG</span></td><td><code>scrape_outstanding_bloomberg.py</code></td><td><code>Outstanding</code></td><td>Manual · <b>só no banco</b></td></tr><tr data-k="calendario dias uteis 252"><td>Feriados <i>(base de todo DU)</i></td><td><span class="b ca">ARQUIVO</span> versionado</td><td>— <i>(editado à mão)</i></td><td><code>data/feriados_anbima.csv</code></td><td>Estático</td></tr><tr data-k="pupar motor trgp13 sabp13 plac23 ralm11 baru11 mnau18"><td>VNA · PU Par · PU Operação</td><td><span class="b ca">CALC</span> local</td><td><code>calculadora_rf.py</code> via <code>lib/calc.py</code></td><td>— <i>(em memória)</i></td><td>Sob demanda</td></tr><tr data-k="negociada cascata newton yield trgp13"><td>Taxa do negócio</td><td><span class="b ca">CALC</span> → <span class="b fi">FI</span> → <span class="b b3">B3</span></td><td><code>calc_taxa_negocios.py</code></td><td><code>NegociosProcessados.vrTaxaCalculada</code> + <code>.cdFonteTaxa</code></td><td>Pipeline diário</td></tr><tr data-k="macaulay modificada risco"><td>Duration · DV01</td><td><span class="b ca">CALC</span> local</td><td><code>match_referencias.py</code><i>(pré-passo)</i></td><td><code>InfoAtivos.vrDuration</code><i>(anos, base 252)</i></td><td>Pipeline · <b>só se NULL</b></td></tr><tr data-k="vertice ntnb di1"><td>Referência do papel</td><td><span class="b ca">CALC</span> duration-match</td><td><code>match_referencias.py</code></td><td><code>InfoAtivos.cdReferencia</code> + <code>.cdFonteReferencia</code></td><td>Pipeline · idempotente</td></tr><tr data-k="bps"><td>Spread over <i>(entrega final)</i></td><td><span class="b ca">CALC</span></td><td><code>calc_spread_over.py</code></td><td><code>NegociosProcessados.vrSpreadOver</code></td><td>Pipeline diário</td></tr></tbody></table></div></section><section id="sec2"><div class="h s2"><i></i><h2>Pipeline em 1 tela</h2><small>ordem real · pipeline_core.py</small></div><div class="pipe"><div class="st"><u>01</u><b>Boletim B3</b><code>scrape_b3_boletim.py</code><em>→ NegociosBrutos (X e X−1)</em></div><div class="st" data-k="bonddetails primaria"><u>02</u><b>Cadastro + fluxo</b><code>scrape_b3_bond_details.py</code><em>→ InfoAtivos · FluxoAtivos</em></div><div class="st"><u>03</u><b>Indicativas ANBIMA</b><code>scrape_anbima_debentures / _cri_cra</code><em>→ AnbimaIndicativos</em></div><div class="st" data-k="cadastro"><u>04</u><b>Planilha FI</b><code>scrape_fianalytics_planilha.py</code><em>→ InfoAtivos</em></div><div class="st" data-k="cadastro"><u>05</u><b>ANBIMA Data <i>(fallback)</i></b><code>scrape_anbima_data_ativos.py</code><em>→ só o que a B3 não cobriu</em></div><div class="st" data-k="referencia"><u>06</u><b>Curvas de referência</b><code>scrape_anbima_ntnb / _b3_curva_di</code><em>→ MtmAnbima · di.db</em></div><div class="st" data-k="calculadora"><u>07</u><b>Insumos do motor</b><code>scrape_ipca_ibge / _projetado / _di_bcb</code><em>→ ipca.db · di.db</em></div><div class="st"><u>08</u><b>Validar fluxos</b><code>validar_fluxos.py</code><em>→ confere a agenda</em></div><div class="st" data-k="confianca"><u>09</u><b>GATE de confiança</b><code>validar_calc_b3.py</code><em>→ stFluxoValidado · régua 1e−5</em></div><div class="st" data-k="fi b3 null"><u>10</u><b>Cascata de taxa</b><code>calc_taxa_negocios.py</code><em>→ vrTaxaCalculada · cdFonteTaxa</em></div><div class="st" data-k="union find"><u>11</u><b>Filtro de duplicados</b><code>filtrar_trades.py</code><em>→ VALIDO · BROKER · FUNDO · PF</em></div><div class="st"><u>12</u><b>Spread da indicativa</b><code>calc_spread_anbima.py</code><em>→ vrSpreadAnbima</em></div><div class="st" data-k="duration ntnb di1"><u>13</u><b>Match de referência</b><code>match_referencias.py</code><em>→ cdReferencia</em></div><div class="st" data-k="final bps"><u>14</u><b>Spread over</b><code>calc_spread_over.py</code><em>→ vrSpreadOver</em></div><div class="st" data-k="jinja publicacao"><u>15</u><b>Relatório HTML</b><code>gerar_relatorio_credito.py</code><em>→ data/relatorios/</em></div></div></section><section id="sec3"><div class="h s3"><i></i><h2>Deu problema? O que rodar</h2><small>tudo idempotente · rode de code/</small></div><div class="tw"><table><thead><tr><th>Sintoma</th><th>Verificar</th><th>Rodar</th></tr></thead><tbody><tr data-k="estranha errada cadastro"><td>Taxa IPCA divergindo</td><td><code>InfoAtivos</code>: <code>vrAniversario</code>, <code>vrTaxaEmissao</code>, <code>dtInicioRentabilidade</code></td><td><code>python scripts/scrape_b3_bond_details.py --ticker X</code> → <code>validar_calc_b3.py</code> → <code>calc_taxa_negocios.py</code></td></tr><tr data-k="descartado"><td>PU explode / VNA inteiro demais</td><td><code>InfoAtivos.vrAniversario</code> × datas de <code>FluxoAtivos</code><b>(se não casa, evento some em silêncio)</b></td><td><code>python scripts/scrape_b3_bond_details.py --ticker X</code></td></tr><tr data-k="faltando"><td>Papel sem spread</td><td><code>InfoAtivos.cdReferencia</code> e <code>.vrDuration</code><i>(match exige duration)</i></td><td><code>python scripts/match_referencias.py</code> → <code>calc_spread_over.py --date X</code></td></tr><tr data-k="grafico prefixado visao anbima"><td>Curva DI1 vazia no relatório</td><td><code>SELECT COUNT(*) FROM InfoAtivos WHERE cdReferencia LIKE 'DI1%'</code></td><td><code>python scripts/scrape_b3_curva_di.py --date X</code> → <code>match_referencias.py</code></td></tr><tr data-k="grafico ipca"><td>Curva NTN-B vazia</td><td><code>MtmAnbima</code> onde <code>cdTicker LIKE 'NTN-B%'</code></td><td><code>python scripts/scrape_anbima_ntnb.py --date X</code></td></tr><tr data-k="desvalidado invalido gate rebaixado"><td>Ativo caiu de validado p/ inválido</td><td><code>data/diagnosticos/validar_calc_b3.csv</code> · coluna <code>veredito</code></td><td><code>python scripts/validar_calc_b3.py --dry-run --tickers X</code></td></tr><tr data-k="sem cascata falhou"><td>Muitos negócios com taxa NULL</td><td><code>NegociosProcessados.cdFonteTaxa</code> · contador <code>calcFalhas</code> no email</td><td><code>python scripts/calc_taxa_negocios.py --date X --force</code></td></tr><tr data-k="negociacao hoje faltando"><td>Sem dados de negociação / volume baixo</td><td><code>SELECT dtNegocio,COUNT(*) FROM NegociosBrutos GROUP BY 1</code><b>(liq. X exige X e X−1)</b></td><td><code>python scripts/scrape_b3_boletim.py --date X</code><i>(pregão a pregão)</i></td></tr><tr data-k="visao"><td>Peso estranho na Visão ANBIMA</td><td><code>Outstanding</code> vazia → cai no proxy <code>vrQuantidadeEmissao</code></td><td><code>python scripts/scrape_outstanding_bloomberg.py</code><i>(só no banco)</i></td></tr><tr data-k="nao congelada corrigido"><td>Duration não muda após corrigir o motor</td><td><code>InfoAtivos.vrDuration</code> — pré-passo só preenche se <b>NULL</b></td><td>— <i>sem caminho automático · item <code>--forcar-duration</code> no backlog</i></td></tr><tr data-k="errada conferir precisao"><td>Suspeita do motor de cálculo</td><td>Régua: PU ~1e−8 vs B3 · gate 1e−5</td><td><code>python tests_fase1.py</code> · <code>scripts/comparar_calcpu_b3.py --batch TRGP13,SABP13</code></td></tr><tr data-k="tudo range"><td>Rodar o pipeline inteiro</td><td>—</td><td><code>python run_diario.py --start AAAA-MM-DD --end AAAA-MM-DD</code></td></tr></tbody></table></div></section><div class="no" id="no">nenhum resultado</div><footer>Verificado contra código e banco em 23/07/2026 · detalhe técnico em <code>CONTEXTO_PROJETO.md</code></footer></main><script>(function(){
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cheat Sheet · Negociação Secundária</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#f1f5f9;--pan:#fff;--pan2:#eef2f6;--line:#dde4ea;--line2:#c6d0da;--tx:#0f172a;--tx2:#42505f;--dim:#7c8b99;--g:#0f9d63;--y:#c07c0a;--r:#d64545;--ac:#0b6a94;--mono:ui-monospace,Consolas,"SF Mono",Menlo,monospace}
+body{background:var(--bg);color:var(--tx);font:14px/1.45 Arial,Helvetica,sans-serif;padding-bottom:44px}
+h2{font-size:14px}
+header{position:sticky;top:0;z-index:9;background:rgba(241,245,249,.97);border-bottom:1px solid var(--line2);padding:11px 20px;display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+header b{font-size:13px;white-space:nowrap}
+header span.t{color:var(--dim);font-weight:400}
+#q{flex:1;min-width:200px;background:var(--pan);border:1px solid var(--line2);border-radius:6px;color:var(--tx);font:13px var(--mono);padding:7px 11px}
+#q:focus{outline:none;border-color:var(--ac);box-shadow:0 0 0 3px rgba(11,106,148,.13)}
+#q::placeholder{color:var(--dim)}
+#hits{font:11px var(--mono);color:var(--dim);white-space:nowrap}
+main{padding:20px}
+section{margin-bottom:26px}
+.h{display:flex;align-items:center;gap:9px;margin-bottom:9px}
+.h i{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
+.h small{font:10px var(--mono);color:var(--dim);text-transform:uppercase}
+.s1 i{background:var(--g)}.s2 i{background:var(--y)}.s3 i{background:var(--r)}
+.tw{overflow-x:auto;border:1px solid var(--line2);border-radius:8px;background:var(--pan);box-shadow:0 1px 2px rgba(15,23,42,.05)}
+table{border-collapse:collapse;width:100%;font-size:12.5px;min-width:900px}
+th{background:var(--pan2);text-align:left;padding:8px 12px;font:10px/1.3 var(--mono);letter-spacing:.07em;text-transform:uppercase;color:var(--dim);border-bottom:1px solid var(--line2);white-space:nowrap}
+td{padding:7px 12px;border-bottom:1px solid var(--line);vertical-align:top;color:var(--tx2)}
+tr:last-child td{border-bottom:none}
+td:first-child{color:var(--tx);font-weight:700}
+code{font:11.5px var(--mono);background:#eef4f8;border:1px solid #d5e2ea;border-radius:4px;padding:1px 5px;color:var(--ac);white-space:nowrap;display:inline-block}
+.cov{font:11px var(--mono);color:var(--tx2);white-space:nowrap;font-variant-numeric:tabular-nums}
+.cov b{color:var(--tx)}
+.deep{color:var(--g);font-weight:700}
+.curt{color:var(--r);font-weight:700}
+.b{display:inline-block;font:10px var(--mono);font-weight:700;padding:2px 7px;border-radius:4px;white-space:nowrap}
+.b3{background:#dbeafe;color:#1d4f91}.an{background:#fdf0d5;color:#8a5a09}
+.bc{background:#d8f3e6;color:#0b6b45}.fi{background:#ede4fb;color:#5b3a8e}
+.bl{background:#fde4dc;color:#9c3b21}.ca{background:#e6ebf1;color:#4a5c6e}
+.pipe{display:grid;grid-template-columns:repeat(auto-fill,minmax(196px,1fr));gap:8px}
+.st{background:var(--pan);border:1px solid var(--line2);border-left:3px solid var(--y);border-radius:6px;padding:9px 11px}
+.st u{display:block;font:10px var(--mono);color:var(--y);text-decoration:none;margin-bottom:3px}
+.st b{display:block;font-size:12.5px;margin-bottom:4px;line-height:1.25}
+.st code{font-size:10.5px}
+.st em{display:block;font-style:normal;font-size:11px;color:var(--dim);margin-top:3px}
+.nota{font:11px var(--mono);color:var(--dim);line-height:1.6;padding:8px 2px 0}
+.nota b{color:var(--tx2)}
+.no{display:none;padding:14px;color:var(--dim);font:12px var(--mono);text-align:center}
+.hide{display:none!important}
+footer{padding:0 20px;font:11px var(--mono);color:var(--dim)}
+@media(max-width:640px){header{padding:9px 12px}main{padding:12px}}
+</style>
+</head>
+<body>
+<header>
+<b>CHEAT SHEET <span class="t">· Negociação Secundária de Crédito Privado</span></b>
+<input id="q" type="search" placeholder="filtrar…  ex: VNA · IPCA · B3 · duration · spread · curva" autocomplete="off" autofocus>
+<span id="hits"></span>
+</header>
+<main>
+<section id="sec1">
+<div class="h s1"><i></i><h2>Matriz mestre de fontes</h2><small>de onde vem · até quando temos</small></div>
+<div class="tw"><table>
+<thead><tr><th>Dado / métrica</th><th>Fonte</th><th>Script</th><th>Salva em</th><th>Cobertura da nossa base</th><th>Gatilho</th></tr></thead>
+<tbody>
+<tr data-k="trades pu volume secundario deb cri"><td>Negócios do secundário</td><td><span class="b b3">B3</span> Boletim</td><td><code>scrape_b3_boletim.py</code></td><td><code>NegociosBrutos</code></td><td class="cov"><b>2026-06-08</b> → 2026-07-17</td><td>Pipeline · X e X−1</td></tr>
+<tr data-k="vne aniversario cupom taxa emissao amortizacao"><td>Cadastro + agenda de eventos</td><td><span class="b b3">B3</span> getBondDetails <b>(primária)</b></td><td><code>scrape_b3_bond_details.py</code></td><td><code>InfoAtivos</code> · <code>FluxoAtivos</code></td><td class="cov">snapshot atual <i>(sem série)</i></td><td>Pipeline · só quem negociou</td></tr>
+<tr><td>Cadastro + agenda <i>(fallback)</i></td><td><span class="b an">ANBIMA</span> Data</td><td><code>scrape_anbima_data_ativos.py</code></td><td><code>InfoAtivos</code> · <code>FluxoAtivos</code></td><td class="cov">snapshot atual</td><td>Pipeline · só o que a B3 não cobriu</td></tr>
+<tr data-k="spread debenture cri cra portal xls"><td>Taxa indicativa</td><td><span class="b an">ANBIMA</span> XLS <i>(deb)</i> · portal <i>(CRI/CRA)</i></td><td><code>scrape_anbima_debentures.py</code> · <code>_cri_cra.py</code></td><td><code>AnbimaIndicativos</code></td><td class="cov"><b>2026-02-23</b> → 2026-07-17</td><td>Pipeline · CRI/CRA <b>janela ~5 pregões</b></td></tr>
+<tr data-k="referencia vertice"><td>Curva NTN-B <i>(ref. IPCA)</i></td><td><span class="b an">ANBIMA</span> merc. secundário</td><td><code>scrape_anbima_ntnb.py</code></td><td><code>MtmAnbima</code> · <code>NTN-B *</code></td><td class="cov"><b>2026-06-08</b> → 2026-07-17</td><td>Pipeline diário</td></tr>
+<tr data-k="referencia vertice projecao"><td>Curva DI futuro <i>(ref. PREFIXADO)</i></td><td><span class="b b3">B3</span> API derivativos</td><td><code>scrape_b3_curva_di.py</code></td><td><code>MtmAnbima</code>·<code>DI1F*</code> + <code>di.db/CurvaDi</code></td><td class="cov"><span class="curt">só 25 datas</span> · <b>2026-06-15</b> → 07-17</td><td>Pipeline · <b>fonte guarda ~20 pregões</b></td></tr>
+<tr data-k="cdi serie diario"><td>DI realizado <i>(série 12)</i></td><td><span class="b bc">BCB</span></td><td><code>scrape_di_bcb.py</code></td><td><code>di.db/DiHistorico</code></td><td class="cov"><span class="deep">2000-01-03</span> → 2026-07-16</td><td>Pipeline · 1×/ciclo</td></tr>
+<tr data-k="numero indice realizado vna"><td>IPCA número-índice</td><td><span class="b bc">IBGE</span></td><td><code>scrape_ipca_ibge.py</code></td><td><code>ipca.db/IPCA</code></td><td class="cov"><span class="deep">1979-12</span> → 2026-12</td><td>Mensal</td></tr>
+<tr data-k="projecao vna mes corrente"><td>Projeção de IPCA</td><td><span class="b an">ANBIMA</span></td><td><code>scrape_ipca_projetado_anbima.py</code></td><td><code>ipca.db/IPCAProjetado</code></td><td class="cov"><b>2025-06-17</b> → 2026-07-20</td><td>Pipeline · 1×/ciclo</td></tr>
+<tr data-k="login"><td>Cadastro / duration complementar</td><td><span class="b fi">FI</span> CSV</td><td><code>scrape_fianalytics_planilha.py</code></td><td><code>InfoAtivos</code></td><td class="cov">snapshot atual</td><td>Pipeline · 1×/ciclo</td></tr>
+<tr data-k="calcyield"><td>Taxa / PU <i>(fallback da cascata)</i></td><td><span class="b fi">FI</span> + <span class="b b3">B3</span> calcPU</td><td><code>lib/fianalytics_api.py</code> · <code>lib/b3_calc_api.py</code></td><td>— <i>(não persiste)</i></td><td class="cov">tempo real</td><td>Sob demanda</td></tr>
+<tr data-k="saldo circulacao peso visao anbima"><td>Outstanding</td><td><span class="b bl">BLOOMBERG</span></td><td><code>scrape_outstanding_bloomberg.py</code></td><td><code>Outstanding</code></td><td class="cov"><span class="curt">VAZIA</span> · usa proxy de emissão</td><td>Manual · <b>só no banco</b></td></tr>
+<tr data-k="calendario dias uteis 252"><td>Feriados <i>(base de todo DU)</i></td><td><span class="b ca">ARQUIVO</span> versionado</td><td>— <i>(editado à mão)</i></td><td><code>data/feriados_anbima.csv</code></td><td class="cov"><span class="deep">2001</span> → 2099</td><td>Estático</td></tr>
+<tr data-k="pupar motor trgp13 sabp13 plac23 ralm11 baru11 mnau18"><td>VNA · PU Par · PU Operação</td><td><span class="b ca">CALC</span> local</td><td><code>calculadora_rf.py</code> via <code>lib/calc.py</code></td><td>— <i>(em memória)</i></td><td class="cov">limitado pelo insumo mais curto</td><td>Sob demanda</td></tr>
+<tr data-k="negociada calculada cascata newton yield"><td>Taxa do negócio</td><td><span class="b ca">CALC</span> → <span class="b fi">FI</span> → <span class="b b3">B3</span></td><td><code>calc_taxa_negocios.py</code></td><td><code>NegociosProcessados.vrTaxaCalculada</code></td><td class="cov"><b>2026-06-09</b> → 2026-07-17</td><td>Pipeline diário</td></tr>
+<tr data-k="macaulay modificada dv01 risco anos 252"><td>Duration · DV01</td><td><span class="b ca">CALC</span> local</td><td><code>match_referencias.py</code> <i>(pré-passo)</i></td><td><code>InfoAtivos.vrDuration</code> <i>(anos/252)</i></td><td class="cov">snapshot · <b>só recalcula se NULL</b></td><td>Pipeline</td></tr>
+<tr data-k="vertice match ntnb di1"><td>Referência do papel</td><td><span class="b ca">CALC</span> duration-match</td><td><code>match_referencias.py</code></td><td><code>InfoAtivos.cdReferencia</code></td><td class="cov">snapshot atual</td><td>Pipeline · idempotente</td></tr>
+<tr data-k="over entrega final bps"><td>Spread over <i>(entrega final)</i></td><td><span class="b ca">CALC</span></td><td><code>calc_spread_over.py</code></td><td><code>NegociosProcessados.vrSpreadOver</code></td><td class="cov"><b>2026-06-09</b> → 2026-07-17</td><td>Pipeline diário</td></tr>
+</tbody></table></div>
+<div class="nota">Reprocessar data passada exige <b>todos</b> os insumos daquele dia. O teto real é a <b>curva DI: 25 datas</b> — antes de 2026-06-15 não há como reprecificar CDI+/%CDI. Buraco de coleta não se recupera: a B3 guarda ~20 pregões, o portal ANBIMA ~5.</div>
+</section>
+<section id="sec2">
+<div class="h s2"><i></i><h2>Pipeline em 1 tela</h2><small>ordem real · pipeline_core.py</small></div>
+<div class="pipe">
+<div class="st" data-k="boletim brutos"><u>01</u><b>Boletim B3</b><code>scrape_b3_boletim.py</code><em>→ NegociosBrutos (X e X−1)</em></div>
+<div class="st" data-k="bonddetails primaria"><u>02</u><b>Cadastro + fluxo</b><code>scrape_b3_bond_details.py</code><em>→ InfoAtivos · FluxoAtivos</em></div>
+<div class="st" data-k="deb cri cra"><u>03</u><b>Indicativas ANBIMA</b><code>scrape_anbima_debentures / _cri_cra</code><em>→ AnbimaIndicativos</em></div>
+<div class="st" data-k="fi cadastro"><u>04</u><b>Planilha FI</b><code>scrape_fianalytics_planilha.py</code><em>→ InfoAtivos</em></div>
+<div class="st" data-k="fallback"><u>05</u><b>ANBIMA Data</b><code>scrape_anbima_data_ativos.py</code><em>→ só o que a B3 não cobriu</em></div>
+<div class="st" data-k="ntnb di1 referencia"><u>06</u><b>Curvas de referência</b><code>scrape_anbima_ntnb / _b3_curva_di</code><em>→ MtmAnbima · di.db</em></div>
+<div class="st" data-k="ipca di motor"><u>07</u><b>Insumos do motor</b><code>scrape_ipca_ibge / _projetado / _di_bcb</code><em>→ ipca.db · di.db</em></div>
+<div class="st" data-k="agenda"><u>08</u><b>Validar fluxos</b><code>validar_fluxos.py</code><em>→ confere a agenda</em></div>
+<div class="st" data-k="stfluxovalidado confianca"><u>09</u><b>GATE de confiança</b><code>validar_calc_b3.py</code><em>→ stFluxoValidado · régua 1e−5</em></div>
+<div class="st" data-k="calc fi b3 null"><u>10</u><b>Cascata de taxa</b><code>calc_taxa_negocios.py</code><em>→ vrTaxaCalculada · cdFonteTaxa</em></div>
+<div class="st" data-k="union find fundo broker pf"><u>11</u><b>Filtro de duplicados</b><code>filtrar_trades.py</code><em>→ VALIDO · BROKER · FUNDO · PF</em></div>
+<div class="st" data-k="indicativa"><u>12</u><b>Spread da indicativa</b><code>calc_spread_anbima.py</code><em>→ vrSpreadAnbima</em></div>
+<div class="st" data-k="duration ntnb di1"><u>13</u><b>Match de referência</b><code>match_referencias.py</code><em>→ cdReferencia</em></div>
+<div class="st" data-k="bps final"><u>14</u><b>Spread over</b><code>calc_spread_over.py</code><em>→ vrSpreadOver</em></div>
+<div class="st" data-k="html jinja publicacao"><u>15</u><b>Relatório HTML</b><code>gerar_relatorio_credito.py</code><em>→ data/relatorios/</em></div>
+</div>
+</section>
+<section id="sec3">
+<div class="h s3"><i></i><h2>Deu problema? O que rodar</h2><small>tudo idempotente · rode de code/</small></div>
+<div class="tw"><table>
+<thead><tr><th>Sintoma</th><th>Verificar</th><th>Rodar</th></tr></thead>
+<tbody>
+<tr data-k="divergindo estranha errada cadastro"><td>Taxa IPCA divergindo</td><td><code>InfoAtivos</code>: <code>vrAniversario</code>, <code>vrTaxaEmissao</code>, <code>dtInicioRentabilidade</code></td><td><code>python scripts/scrape_b3_bond_details.py --ticker X</code> → <code>validar_calc_b3.py</code> → <code>calc_taxa_negocios.py</code></td></tr>
+<tr data-k="inteiro evento descartado"><td>PU explode / VNA inteiro demais</td><td><code>InfoAtivos.vrAniversario</code> × datas de <code>FluxoAtivos</code> <b>(se não casa, evento some em silêncio)</b></td><td><code>python scripts/scrape_b3_bond_details.py --ticker X</code></td></tr>
+<tr data-k="faltando"><td>Papel sem spread</td><td><code>InfoAtivos.cdReferencia</code> e <code>.vrDuration</code> <i>(match exige duration)</i></td><td><code>python scripts/match_referencias.py</code> → <code>calc_spread_over.py --date X</code></td></tr>
+<tr data-k="vazia grafico prefixado visao"><td>Curva DI1 vazia no relatório</td><td><code>SELECT COUNT(*) FROM InfoAtivos WHERE cdReferencia LIKE 'DI1%'</code></td><td><code>python scripts/scrape_b3_curva_di.py --date X</code> → <code>match_referencias.py</code></td></tr>
+<tr data-k="vazia grafico ipca"><td>Curva NTN-B vazia</td><td><code>MtmAnbima</code> onde <code>cdTicker LIKE 'NTN-B%'</code></td><td><code>python scripts/scrape_anbima_ntnb.py --date X</code></td></tr>
+<tr data-k="desvalidado gate rebaixado"><td>Ativo caiu de validado p/ inválido</td><td><code>data/diagnosticos/validar_calc_b3.csv</code> · coluna <code>veredito</code></td><td><code>python scripts/validar_calc_b3.py --dry-run --tickers X</code></td></tr>
+<tr data-k="cascata falhou"><td>Muitos negócios com taxa NULL</td><td><code>NegociosProcessados.cdFonteTaxa</code> · contador <code>calcFalhas</code> no email</td><td><code>python scripts/calc_taxa_negocios.py --date X --force</code></td></tr>
+<tr data-k="hoje baixo faltando"><td>Sem dados de negociação / volume baixo</td><td><code>SELECT dtNegocio,COUNT(*) FROM NegociosBrutos GROUP BY 1</code> <b>(liq. X exige X e X−1)</b></td><td><code>python scripts/scrape_b3_boletim.py --date X</code> <i>(pregão a pregão)</i></td></tr>
+<tr data-k="peso emissao"><td>Peso estranho na Visão ANBIMA</td><td><code>Outstanding</code> vazia → cai no proxy <code>vrQuantidadeEmissao</code></td><td><code>python scripts/scrape_outstanding_bloomberg.py</code> <i>(só no banco)</i></td></tr>
+<tr data-k="congelada motor corrigido"><td>Duration não muda após corrigir o motor</td><td><code>InfoAtivos.vrDuration</code> — pré-passo só preenche se <b>NULL</b></td><td>— <i>sem caminho automático · item <code>--forcar-duration</code> no backlog</i></td></tr>
+<tr data-k="reprocessar passado historico retroativo data antiga"><td>Reprocessar data antiga não funciona</td><td>Insumo daquele dia existe? <code>di.db/CurvaDi</code> é o mais curto <b>(25 datas)</b></td><td>— <i>sem a curva do dia não há como reprecificar CDI+/%CDI</i></td></tr>
+<tr data-k="precisao b3 conferir"><td>Suspeita do motor de cálculo</td><td>Régua: PU ~1e−8 vs B3 · gate 1e−5</td><td><code>python tests_fase1.py</code> · <code>scripts/comparar_calcpu_b3.py --batch TRGP13,SABP13</code></td></tr>
+<tr data-k="rodar tudo dia range completo"><td>Rodar o pipeline inteiro</td><td>—</td><td><code>python run_diario.py --start AAAA-MM-DD --end AAAA-MM-DD</code></td></tr>
+</tbody></table></div>
+</section>
+<div class="no" id="no">nenhum resultado</div>
+<footer>Cobertura medida no banco em <b>2026-07-23</b> — reconfira após cargas. Detalhe técnico em <code>CONTEXTO_PROJETO.md</code>.</footer>
+</main>
+<script>
+(function(){
 var q=document.getElementById('q'),hits=document.getElementById('hits'),no=document.getElementById('no');
 var itens=[].slice.call(document.querySelectorAll('tbody tr,.st'));
 var secs=[].slice.call(document.querySelectorAll('section'));
 itens.forEach(function(el){el._t=((el.textContent||'')+' '+(el.dataset.k||'')).toLowerCase();});
 function filtrar(){
 var t=q.value.trim().toLowerCase(),n=0;
-itens.forEach(function(el){
-var ok=!t||el._t.indexOf(t)>-1;
-el.classList.toggle('hide',!ok); if(ok)n++;
-});
-secs.forEach(function(s){
-var vis=s.querySelectorAll('tbody tr:not(.hide),.st:not(.hide)').length;
-s.classList.toggle('hide',!!t&&!vis);
-});
+itens.forEach(function(el){var ok=!t||el._t.indexOf(t)>-1;el.classList.toggle('hide',!ok);if(ok)n++;});
+secs.forEach(function(s){var vis=s.querySelectorAll('tbody tr:not(.hide),.st:not(.hide)').length;s.classList.toggle('hide',!!t&&!vis);});
 no.style.display=(t&&!n)?'block':'none';
 hits.textContent=t?n+'/'+itens.length:itens.length+' linhas';
 }
 q.addEventListener('input',filtrar);
 q.addEventListener('keydown',function(e){if(e.key==='Escape'){q.value='';filtrar();}});
-document.addEventListener('keydown',function(e){
-if(e.key==='/'&&document.activeElement!==q){e.preventDefault();q.focus();}
-});
+document.addEventListener('keydown',function(e){if(e.key==='/'&&document.activeElement!==q){e.preventDefault();q.focus();}});
 filtrar();
-})();</script></body></html>
+})();
+</script>
+</body>
+</html>
