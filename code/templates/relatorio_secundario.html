@@ -114,7 +114,8 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f4f5f7;color:#1a1a2e;fo
 #ia-tabela thead th:nth-child(1), #ia-tabela tbody td:nth-child(1),
 #ia-tabela thead th:nth-child(2), #ia-tabela tbody td:nth-child(2),
 #ia-tabela thead th:nth-child(3), #ia-tabela tbody td:nth-child(3),
-#ia-tabela thead th:nth-child(5), #ia-tabela tbody td:nth-child(5){text-align:left}
+#ia-tabela thead th:nth-child(5), #ia-tabela tbody td:nth-child(5),
+#ia-tabela thead th:nth-child(6), #ia-tabela tbody td:nth-child(6){text-align:left}
 </style>
 </head>
 <body>
@@ -404,8 +405,9 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f4f5f7;color:#1a1a2e;fo
               <th onclick="iaSort(this,2,false)">Emissor<span class="sa"></span></th>
               <th onclick="iaSort(this,3,true)">Duration<span class="sa"></span></th>
               <th onclick="iaSort(this,4,false)">Indexador<span class="sa"></span></th>
-              <th onclick="iaSort(this,5,true)">Taxa Anbima (%)<span class="sa"></span></th>
-              <th onclick="iaSort(this,6,true)">Taxa Méd. Trade (%)<span class="sa"></span></th>
+              <th onclick="iaSort(this,5,false)">Referência<span class="sa"></span></th>
+              <th onclick="iaSort(this,6,true)">Taxa Anbima (%)<span class="sa"></span></th>
+              <th onclick="iaSort(this,7,true)">Taxa Méd. Trade (%)<span class="sa"></span></th>
             </tr>
             <tr class="bfr">
               <th><input type="text" placeholder="Ticker"      oninput="iaFilter()"></th>
@@ -413,6 +415,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f4f5f7;color:#1a1a2e;fo
               <th><input type="text" placeholder="Emissor"     oninput="iaFilter()"></th>
               <th><input type="text" placeholder="Duration"    oninput="iaFilter()"></th>
               <th><input type="text" placeholder="Indexador"   oninput="iaFilter()"></th>
+              <th><input type="text" placeholder="Referência"  oninput="iaFilter()"></th>
               <th><input type="text" placeholder="Taxa Anb."   oninput="iaFilter()"></th>
               <th><input type="text" placeholder="Taxa Trade"  oninput="iaFilter()"></th>
             </tr>
@@ -1472,6 +1475,7 @@ function renderInfoAtivos() {
     <td data-v="${r.emissor||''}">${r.emissor||'—'}</td>
     ${r.duration!=null ? `<td data-v="${r.duration}">${bFmt(r.duration,2)}</td>` : `<td data-v="" class="bnull">—</td>`}
     <td data-v="${r.indexador||''}">${r.indexador||'—'}</td>
+    <td data-v="${r.referencia||''}">${r.referencia ? bRefDisp(r.referencia) : '—'}</td>
     ${rc(r.taxaAnbima, r.dtAnbima)}
     ${rc(r.taxaTrade,  r.dtTrade)}
   </tr>`).join('');

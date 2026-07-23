@@ -1,7 +1,17 @@
 import os
+import re
 import sqlite3
+from datetime import datetime
+from pathlib import Path
 
 from lib.config import cfg
+
+
+# Versao do schema gravada em SchemaVersao a cada bootstrap. Bump SEMPRE que a DDL
+# ganhar coluna/tabela nova, para o banco de producao saber em que versao roda.
+#   1 = schema PT-BR base   2 = validacao de fluxo + cadastro B3
+#   3 = cdTipoAmortizacao + motor unificado (FASE 3)
+SCHEMA_VERSION = 3
 
 
 DDL = """
@@ -143,6 +153,16 @@ CREATE TABLE IF NOT EXISTS Outstanding (
     PRIMARY KEY (cdTicker, dtOutstanding)
 );
 CREATE INDEX IF NOT EXISTS idxOutstandingDtOutstanding ON Outstanding(dtOutstanding);
+
+-- ===== SchemaVersao =====
+-- Metadados: uma linha por versao de schema ja aplicada (trilha, nao so a atual).
+-- A versao corrente e MAX(vrVersao). Ver SCHEMA_VERSION e Bootstrap.
+CREATE TABLE IF NOT EXISTS SchemaVersao (
+    vrVersao      INTEGER NOT NULL,
+    dtAtualizacao TEXT    NOT NULL,
+    cdNota        TEXT    NULL,
+    PRIMARY KEY (vrVersao)
+);
 """
 
 
@@ -192,6 +212,21 @@ BEGIN
      WHERE cdTicker = new.cdTicker;
 END;
 """
+
+
+# A DDL mistura CREATE TABLE e CREATE INDEX. Num banco de versao anterior, um indice
+# pode referenciar coluna que so o ALTER vai adicionar (ex.: idGrupoNegocio), entao a
+# ordem importa: criar tabelas -> ALTER add colunas -> criar indices. Separamos os dois
+# a partir da MESMA DDL (fonte unica), sem manter duas strings a mao.
+#
+# Antes de separar por ';', tiramos os comentarios de linha: alguns contem ';' no texto
+# ('convencao de NTN-B; a debenture...') e cortariam um CREATE TABLE no meio.
+DDL_SEM_COMENTARIOS = "\n".join(
+    (linha[:linha.index("--")] if "--" in linha else linha) for linha in DDL.splitlines())
+DDL_TABELAS = ";\n".join(
+    s.strip() for s in DDL_SEM_COMENTARIOS.split(";") if "CREATE TABLE" in s.upper()) + ";"
+DDL_INDICES = ";\n".join(
+    s.strip() for s in DDL_SEM_COMENTARIOS.split(";") if "CREATE INDEX" in s.upper()) + ";"
 
 
 # PRAGMAs de performance aplicados em toda conexao (leitura e escrita).
@@ -260,40 +295,146 @@ def ObterConexaoLeitura(caminhoBanco: str | None = None) -> sqlite3.Connection:
     return conn
 
 
+def ColunasEsperadas(ddl: str) -> dict[str, list[tuple[str, str]]]:
+    """Le a DDL e devolve {tabela: [(coluna, definicaoParaAlter)]}. Fonte unica da
+    verdade do schema — a migracao compara ISTO com o banco vivo, entao qualquer
+    coluna nova na DDL e migrada sem precisar de lista paralela (que foi a origem de
+    colunas esquecidas fora de InfoAtivos).
+
+    A definicao e ajustada para ser aceita por ALTER TABLE ADD COLUMN numa tabela ja
+    com linhas: DEFAULT nao-constante (CURRENT_TIMESTAMP) e removido, e NOT NULL sem
+    DEFAULT vira NULL (SQLite recusa NOT NULL sem default constante em tabela populada;
+    a coluna nasce NULL nas linhas antigas, o que e o unico resultado possivel)."""
+    esperadas: dict[str, list[tuple[str, str]]] = {}
+    for bloco in re.finditer(r'CREATE TABLE IF NOT EXISTS (\w+)\s*\((.*?)\n\);', ddl, re.S):
+        tabela, corpo = bloco.group(1), bloco.group(2)
+        cols: list[tuple[str, str]] = []
+        for bruta in corpo.split('\n'):
+            linha = bruta.strip()
+            if '--' in linha:
+                linha = linha[:linha.index('--')]
+            linha = linha.strip().rstrip(',').strip()
+            if not linha:
+                continue
+            if linha.split()[0].upper() in ('PRIMARY', 'FOREIGN', 'UNIQUE', 'CHECK', 'CONSTRAINT'):
+                continue
+            partes = linha.split(None, 1)
+            if len(partes) < 2:
+                continue
+            nome, definicao = partes
+            if 'PRIMARY KEY' in definicao.upper():
+                continue  # coluna de PK: existe desde a criacao, nunca se adiciona por ALTER
+            if 'CURRENT_TIMESTAMP' in definicao.upper():
+                definicao = re.sub(r'DEFAULT\s+CURRENT_TIMESTAMP', '', definicao, flags=re.I)
+            if 'NOT NULL' in definicao.upper() and 'DEFAULT' not in definicao.upper():
+                definicao = re.sub(r'NOT\s+NULL', '', definicao, flags=re.I)
+            cols.append((nome, ' '.join(definicao.split())))
+        esperadas[tabela] = cols
+    return esperadas
+
+
+COLUNAS_ESPERADAS = ColunasEsperadas(DDL)
+
+
+def ColunasFaltantes(conn: sqlite3.Connection) -> dict[str, list[tuple[str, str]]]:
+    """{tabela: [(coluna, def)]} que a DDL preve e o banco vivo NAO tem. So considera
+    tabelas que JA existem — as ausentes o executescript(DDL) cria inteiras."""
+    existentes = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    faltando: dict[str, list[tuple[str, str]]] = {}
+    for tabela, cols in COLUNAS_ESPERADAS.items():
+        if tabela not in existentes:
+            continue
+        atuais = {r[1] for r in conn.execute(f"PRAGMA table_info({tabela})")}
+        pend = [(n, d) for n, d in cols if n not in atuais]
+        if pend:
+            faltando[tabela] = pend
+    return faltando
+
+
+def LerVersaoSchema(conn: sqlite3.Connection) -> int:
+    """Maior vrVersao gravada, ou 0 se a tabela ainda nao existe / esta vazia."""
+    try:
+        v = conn.execute("SELECT MAX(vrVersao) FROM SchemaVersao").fetchone()[0]
+        return v or 0
+    except sqlite3.OperationalError:
+        return 0
+
+
+def CaminhoBancoDaConexao(conn: sqlite3.Connection) -> Path | None:
+    """Caminho do arquivo do banco 'main', ou None se for :memory:."""
+    for _seq, nome, arquivo in conn.execute("PRAGMA database_list"):
+        if nome == "main" and arquivo:
+            return Path(arquivo)
+    return None
+
+
+def BackupPreventivo(conn: sqlite3.Connection) -> Path | None:
+    """Copia o banco para data/backups/<nome>_pre_migracao_<ts>.db ANTES de migrar.
+    Usa a API de backup do SQLite (segura com WAL). None se for :memory:."""
+    origem = CaminhoBancoDaConexao(conn)
+    if origem is None:
+        return None
+    destinoDir = origem.parent / "backups"
+    destinoDir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    destino = destinoDir / f"{origem.stem}_pre_migracao_{ts}.db"
+    bkp = sqlite3.connect(str(destino))
+    try:
+        conn.backup(bkp)
+    finally:
+        bkp.close()
+    return destino
+
+
+def ContarLinhas(conn: sqlite3.Connection, tabelas) -> dict[str, int]:
+    return {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tabelas}
+
+
 def Bootstrap(conn: sqlite3.Connection) -> None:
-    """Executa DDL completo. Idempotente (IF NOT EXISTS em tudo)."""
-    conn.executescript(DDL)
-    # Migração segura: adiciona colunas novas em tabelas existentes
-    novas = set()
-    for coluna, sql in [
-        ("dtAtualizacaoDuration", "ALTER TABLE InfoAtivos ADD COLUMN dtAtualizacaoDuration TEXT NULL"),
-        ("cdFonteReferencia",     "ALTER TABLE InfoAtivos ADD COLUMN cdFonteReferencia TEXT NULL"),
-        ("vrTaxaEmissao",         "ALTER TABLE InfoAtivos ADD COLUMN vrTaxaEmissao REAL NULL"),
-        ("vrVNE",                 "ALTER TABLE InfoAtivos ADD COLUMN vrVNE REAL NULL"),
-        ("dtInicioRentabilidade", "ALTER TABLE InfoAtivos ADD COLUMN dtInicioRentabilidade TEXT NULL"),
-        ("cdISIN",                "ALTER TABLE InfoAtivos ADD COLUMN cdISIN              TEXT NULL"),
-        ("vrQuantidadeEmissao",   "ALTER TABLE InfoAtivos ADD COLUMN vrQuantidadeEmissao REAL NULL"),
-        ("dtEmissao",             "ALTER TABLE InfoAtivos ADD COLUMN dtEmissao           TEXT NULL"),
-        # Validacao de fluxo. Os dois INTEGER tem DEFAULT NOT NULL, entao o
-        # ALTER ja preenche as linhas existentes com 0 (= nada validado ainda).
-        ("stTemFluxo",            "ALTER TABLE InfoAtivos ADD COLUMN stTemFluxo            INTEGER NOT NULL DEFAULT 0"),
-        ("stFluxoValidado",       "ALTER TABLE InfoAtivos ADD COLUMN stFluxoValidado       INTEGER NOT NULL DEFAULT 0"),
-        ("dtValidacaoFluxo",      "ALTER TABLE InfoAtivos ADD COLUMN dtValidacaoFluxo      TEXT NULL"),
-        ("cdFonteValidacaoFluxo", "ALTER TABLE InfoAtivos ADD COLUMN cdFonteValidacaoFluxo TEXT NULL"),
-        ("dtUltimaTentativa",     "ALTER TABLE InfoAtivos ADD COLUMN dtUltimaTentativa     TEXT NULL"),
-        ("vrAniversario",         "ALTER TABLE InfoAtivos ADD COLUMN vrAniversario   INTEGER NULL"),
-        ("cdFonteCadastro",       "ALTER TABLE InfoAtivos ADD COLUMN cdFonteCadastro TEXT NULL"),
-        ("cdTipoAmortizacao",     "ALTER TABLE InfoAtivos ADD COLUMN cdTipoAmortizacao TEXT NULL"),
-    ]:
-        try:
-            conn.execute(sql)
-            novas.add(coluna)
-        except Exception:
-            pass  # coluna já existe
+    """Garante o schema no banco vivo, preservando 100% dos dados. Idempotente.
+
+    Autonomo: rodar qualquer script (todos chamam ObterBanco) sobre um trades.db de
+    versao anterior migra o schema na hora — adiciona as colunas/tabelas que faltam
+    via ALTER TABLE ADD COLUMN, NUNCA recria nem apaga tabela. Antes de qualquer ALTER,
+    tira um backup preventivo; ao final, confere que nenhuma linha sumiu e grava a
+    versao em SchemaVersao. Numa base ja atual, e um no-op barato (so o diff de colunas).
+    """
+    # 1. Estado ANTES de tocar em nada.
+    faltando   = ColunasFaltantes(conn)
+    versaoAtual = LerVersaoSchema(conn)
+    temTabelas = conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()[0] > 0
+    precisaMigrar = bool(faltando) or versaoAtual < SCHEMA_VERSION
+
+    # 2. Backup preventivo — so quando ha migracao real sobre um banco que ja tem dados.
+    #    (Banco novo/vazio nao tem o que proteger; base ja atual nao migra.)
+    backup = None
+    if faltando and temTabelas:
+        backup = BackupPreventivo(conn)
+
+    contagensAntes = ContarLinhas(conn, faltando.keys()) if faltando else {}
+
+    # 3. Cria as TABELAS que faltam (aditivo, IF NOT EXISTS). Os indices ficam para
+    #    depois dos ALTER — um indice pode citar coluna que ainda vamos adicionar.
+    conn.executescript(DDL_TABELAS)
+
+    # 4. Adiciona as colunas que faltam. Idempotente por construcao (so as ausentes).
+    novas: set[str] = set()
+    for tabela, cols in faltando.items():
+        for coluna, definicao in cols:
+            try:
+                conn.execute(f"ALTER TABLE {tabela} ADD COLUMN {coluna} {definicao}")
+                novas.add(f"{tabela}.{coluna}")
+            except sqlite3.OperationalError:
+                pass  # corrida/coluna ja presente — segue
+
+    # 4b. Agora que todas as colunas existem, cria os indices.
+    conn.executescript(DDL_INDICES)
 
     # Backfill do stTemFluxo: so na migracao (uma passada). Dai em diante quem
     # mantem e o MarcarTemFluxo(), chamado por quem escreve em FluxoAtivos.
-    if "stTemFluxo" in novas:
+    if "InfoAtivos.stTemFluxo" in novas:
         conn.execute("""
             UPDATE InfoAtivos SET stTemFluxo =
                 CASE WHEN EXISTS (SELECT 1 FROM FluxoAtivos f
@@ -311,6 +452,29 @@ def Bootstrap(conn: sqlite3.Connection) -> None:
                  "ON InfoAtivos(stFluxoValidado)")
     # Remove indice redundante (coberto pela PK composta de FluxoAtivos).
     conn.execute("DROP INDEX IF EXISTS idxFluxoAtivosCdTicker")
+
+    # 5. Validacao de sanidade: migracao SO adiciona coluna, nunca mexe em linha.
+    #    Provamos: nenhuma tabela migrada perdeu registro. Se perdeu, algo esta muito
+    #    errado — aborta o commit e preserva o backup, sem gravar a versao.
+    if faltando:
+        contagensDepois = ContarLinhas(conn, faltando.keys())
+        perdas = {t: (contagensAntes[t], contagensDepois[t])
+                  for t in faltando if contagensDepois[t] < contagensAntes.get(t, 0)}
+        if perdas:
+            conn.rollback()
+            raise RuntimeError(
+                f"Migracao ABORTADA — contagem caiu apos ALTER (antes/depois): {perdas}. "
+                f"Nada foi commitado; backup preventivo em {backup}.")
+
+    # 6. Registra a versao corrente do schema (uma linha por versao; INSERT OR IGNORE
+    #    para nao duplicar em bases ja na versao). So quando houve migracao real.
+    if precisaMigrar:
+        conn.execute(
+            "INSERT OR IGNORE INTO SchemaVersao (vrVersao, dtAtualizacao, cdNota) VALUES (?,?,?)",
+            (SCHEMA_VERSION, datetime.now().isoformat(timespec="seconds"),
+             f"{sum(len(v) for v in faltando.values())} coluna(s) migrada(s)"
+             + (f"; backup {backup.name}" if backup else "")))
+
     conn.commit()
     # ANALYZE: estatisticas para o planejador escolher os indices certos.
     # So roda se ainda nao houver (sqlite_stat1) — evita custo a cada conexao.

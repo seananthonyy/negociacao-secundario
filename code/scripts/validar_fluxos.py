@@ -73,6 +73,15 @@ DIAS_THROTTLE = 10    # não re-bater na fonte antes disso (ativo já tentado e 
 
 CSV_DIVERGENCIAS = Path("data/diagnosticos/divergencias_fluxo.csv")
 
+# Janela sa para uma data de evento de fluxo. Fora disto e cadastro corrompido
+# (vimos '0001-06-25' e '2423-01-25' vindos da B3): a data nao quebra o PU — o
+# desconto sobre 400 anos zera o VP — mas custa um walk de ~145 mil dias uteis por
+# precificacao, e so nao explode o preco por sorte (num PREFIXADO/IPCA sem o desconto
+# do DI, explodiria). Evento fora da janela => o ativo e DESVALIDADO (cai na cascata
+# de API) e reportado, sem apagar o dado — quem decide o conserto e humano.
+JANELA_DATA_MIN = "1990-01-01"
+JANELA_DATA_MAX = "2100-12-31"
+
 calc = ImportarCalc()
 FERIADOS = calc.FERIADOS_ANBIMA
 
@@ -189,6 +198,19 @@ def UltimoDuUtil() -> date:
     while not calc.EhDu(d, FERIADOS):
         d -= timedelta(days=1)
     return d
+
+
+def EventosForaDaJanela(conn) -> dict[str, list[str]]:
+    """{cdTicker: [dtEvento, ...]} dos ativos com ALGUM evento de fluxo com data fora
+    de [JANELA_DATA_MIN, JANELA_DATA_MAX] — cadastro corrompido. Uma varredura só."""
+    fora: dict[str, list[str]] = {}
+    for r in conn.execute(
+        "SELECT cdTicker, dtEvento FROM FluxoAtivos "
+        "WHERE dtEvento < ? OR dtEvento > ? ORDER BY cdTicker, dtEvento",
+        (JANELA_DATA_MIN, JANELA_DATA_MAX),
+    ):
+        fora.setdefault(r["cdTicker"], []).append(r["dtEvento"])
+    return fora
 
 
 def ConferirSaldo(cdTicker: str, dados: dict, dtRef: date, conn) -> tuple | None:
@@ -425,8 +447,33 @@ def Principal() -> None:
             rel.Datas([dtRef.isoformat()])
 
             cont = {"validados": 0, "divergentes": 0, "sem_fonte": 0,
-                    "incorp_sem_fonte": 0, "desvalidados": 0, "conferidos": 0, "sem_rede": 0}
+                    "incorp_sem_fonte": 0, "desvalidados": 0, "conferidos": 0,
+                    "sem_rede": 0, "data_insana": 0}
             try:
+                # -- 0. Tripwire de data: evento de fluxo fora da janela sa (cadastro
+                #       corrompido, ex.: ano 2423). Desvalida e reporta ANTES de validar,
+                #       para o ativo nao ser validado com agenda corrompida nesta rodada.
+                foraJanela = EventosForaDaJanela(conn)
+                if foraJanela:
+                    flag = set(foraJanela)
+                    filaValidar = [t for t in filaValidar if t not in flag]
+                    filaTripwire = [t for t in filaTripwire if t not in flag]
+                    for cdTicker, datas in foraJanela.items():
+                        cont["data_insana"] += 1
+                        log.warning("%s: %s tem %d evento(s) com data fora de [%s, %s]: %s "
+                                    "-> DESVALIDADO", NOME_SCRIPT, cdTicker, len(datas),
+                                    JANELA_DATA_MIN, JANELA_DATA_MAX, ", ".join(datas[:4]))
+                        for d in datas:
+                            csvDiv.writerow([cdTicker, "tripwire-data", "dtEvento",
+                                             f"fora de [{JANELA_DATA_MIN},{JANELA_DATA_MAX}]", d, ""])
+                        rel.Exemplo("data_insana", {"cdTicker": cdTicker,
+                                                    "datas": ", ".join(datas[:3])})
+                        conn.execute(
+                            "UPDATE InfoAtivos SET stFluxoValidado = 0, dtValidacaoFluxo = NULL, "
+                            "cdFonteValidacaoFluxo = NULL, dtUltimaTentativa = ? WHERE cdTicker = ?",
+                            (hoje, cdTicker))
+                    conn.commit()
+
                 # -- 1. Validacao: so o fluxo que veio da Anbima -----------------
                 for i, cdTicker in enumerate(filaValidar, 1):
                     validado, fonte, divergencias = 0, None, None
@@ -507,6 +554,11 @@ def Principal() -> None:
             rel.Metrica("Com incorporacao (FI nao valida)", cont["incorp_sem_fonte"])
             rel.Metrica("Saldo reconferido e OK", cont["conferidos"])
             rel.Metrica("DESVALIDADOS pelo saldo", cont["desvalidados"])
+            rel.Metrica("DESVALIDADOS por data insana (tripwire)", cont["data_insana"])
+            if cont["data_insana"]:
+                rel.Aviso(f"{cont['data_insana']} ativo(s) com data de evento fora de "
+                          f"[{JANELA_DATA_MIN}, {JANELA_DATA_MAX}] — cadastro corrompido, "
+                          f"desvalidados. Ver {CSV_DIVERGENCIAS}.")
 
             total = conn.execute("SELECT COUNT(*) FROM InfoAtivos WHERE stFluxoValidado = 1").fetchone()[0]
             rel.Metrica("Total validado na base (apos a rodada)", total)
