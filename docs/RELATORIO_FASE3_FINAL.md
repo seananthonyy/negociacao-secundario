@@ -121,9 +121,36 @@ Alcance na base: dos 4.889 ativos, mudaram **35** — 33 IPCA + 2 PREFIXADO — 
 cupom empurra caixa para a frente), de +0,4% a +33,5% (SRQE21: 12,39 → 16,53 anos).
 Nenhum papel DI mudou. Os demais ficaram em ≤ 1e-15 relativo.
 
-> ⚠️ **Impacto a jusante:** a duration alimenta o `match_referencias.py`
-> (duration-match IPCA→NTN-B / PREFIXADO→DI1). Esses 35 ativos podem trocar de
-> referência no próximo ciclo — é o comportamento correto, mas convém olhar o diff.
+#### Impacto a jusante — verificado após o merge (23/07/2026)
+
+Uma versão anterior deste relatório advertia que os 35 ativos poderiam trocar de
+referência no `match_referencias.py`. **Isso estava errado**, e a execução do script
+depois do merge provou: **1 único ativo mudou de referência na base inteira** — `ENERB8`
+(`None` → `NTN-B 35`), que não é um dos 35 e apenas ganhou uma atribuição que não tinha.
+
+O mecanismo real é outro. O `match_referencias.py` **não chama a calc ao vivo**: ele lê
+`InfoAtivos.vrDuration` já persistida, e o pré-passo que a calcula roda apenas
+`WHERE ia.vrDuration IS NULL`. Ou seja, quem já tem duration gravada **não é
+recalculado**. Dos 35 afetados:
+
+- **16 estão com `vrDuration` NULL** → recebem a duration nova e correta assim que
+  negociarem e o pré-passo rodar. A correção propaga sozinha nesses.
+- **19 já têm `vrDuration` gravada** → mantêm o valor antigo indefinidamente; não há
+  hoje caminho para a duration corrigida alcançá-los.
+
+O risco prático é baixo, porque os valores gravados vieram de fonte externa (FI / B3 /
+Anbima) e **já estavam mais próximos da calc nova do que da antiga**:
+
+| ticker | gravada | calc nova | calc antiga |
+|---|---:|---:|---:|
+| MNAU18 | 8,0400 | 8,4363 | 7,2932 |
+| RALM11 | 8,3000 | 8,6300 | 7,2789 |
+| SABP13 | 9,3400 | 10,7547 | 9,2222 |
+| CCPV11 | 3,3800 | 3,3808 | 3,0078 |
+
+Os deltas contra o valor gravado (mediana ~0,2 ano, máximo 1,42 em SABP13) são pequenos
+demais para trocar o vértice da NTN-B — daí o match não ter mexido em ninguém. A lacuna
+de atualização em lote está registrada no backlog (flag `--forcar-duration`).
 
 ### 3.4 DV01 e taxa
 

@@ -234,3 +234,23 @@ Conversa direto com o item "Calcular duration de corporates" (a calc também exp
 
 **Por que importa:** destrava spread histórico profundo (match de referência precisa de NTN-B/DI na data do trade) e relatórios cobrindo período longo, sem depender da janela curta das fontes online.
 
+
+---
+
+## `--forcar-duration` no `match_referencias.py` (recalcular em lote a duration dos validados)
+
+**Origem:** 23/07/2026, no fechamento da FASE 3 (unificação da máquina de fluxo).
+
+**O que é:** uma flag que faça o pré-passo do `match_referencias.py` **recalcular** a `vrDuration` dos ativos validados, em vez de só preencher quem está `NULL`.
+
+**Por que importa:** o pré-passo hoje roda `WHERE ia.vrDuration IS NULL` — quem já tem duration gravada nunca é recalculado. Quando a calc melhora, a melhoria **não alcança esses papéis**. Foi exatamente o que aconteceu agora: a FASE 3 corrigiu um bug na `CalcularDuration` (a incorporação de juros era ignorada — errava até 1,53 ano contra a B3), e dos 35 ativos afetados, **19 seguem com o valor antigo** porque já tinham `vrDuration` gravada. Os outros 16 (com NULL) vão pegar o valor novo naturalmente.
+
+**Por que não é urgente:** os 19 valores congelados vieram de fonte externa (FI / B3 / Anbima), não da calc bugada, e já estavam mais perto da calc nova do que da antiga. Os deltas contra o gravado ficaram em ~0,2 ano na mediana (máx. 1,42 em SABP13) — pequenos demais para trocar o vértice da NTN-B no duration-match. Rodado o `match_referencias` depois do merge, **nenhum dos 35 mudou de referência**; só `ENERB8` ganhou uma atribuição nova, sem relação com a duration.
+
+**O que precisa ser decidido/feito:**
+- Escopo da flag: só `stFluxoValidado = 1` (onde a calc local é confiável) ou também FI/B3? A cascata de `CalcularDurationAtivo` já cobre os três — a questão é quem se deixa sobrescrever.
+- Se a flag recalcula tudo ou aceita `--tickers` / um corte por `dtAtualizacaoDuration` mais velha que N dias (recálculo por envelhecimento seria mais automático que uma flag manual).
+- Guardar a **fonte** da duration (hoje `CalcularDurationAtivo` devolve `fonte`, mas ela não é persistida). Sem isso não dá para saber quais linhas vieram da calc e mereceriam refresh após uma mudança do motor.
+- Rodar em `--dry-run` antes, comparando gravado × recalculado, e só então decidir se vale gravar.
+
+**Conversa com:** `docs/RELATORIO_FASE3_FINAL.md` §3.3 (medição do impacto) e `docs/BACKLOG_INCORP.md` (a outra pendência aberta pela FASE 3).
