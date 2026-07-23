@@ -34,3 +34,7 @@ venv/
 # Config local do Claude Code (pessoal)
 .claude/settings.local.json
 pv.html
+
+# Artefatos ad-hoc de depuracao (respostas de API, coberturas) — nao versionar
+code/data/fianalytics_resposta.json
+code/data/cobertura_fontes.csv
