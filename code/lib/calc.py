@@ -245,20 +245,27 @@ def CalcularVnaAtivo(ativo: dict, dtCalc: date) -> float:
 def CalcularDuration(ativo: dict, dtCalc: date, vrTaxaNegociacao: float) -> float:
     """Duration de Macaulay do ativo em dtCalc (em ANOS, base 252), descontada por
     vrTaxaNegociacao — mesma unidade da `vrDuration` na base (Anbima/MtmAnbima).
-    Desde a FASE 2 a calc ja devolve em anos; nao dividimos mais por 252. A calc
-    usa o VNE como face (sem correcao por IPCA) no calculo de duration."""
+    Desde a FASE 2 a calc ja devolve em anos; nao dividimos mais por 252.
+
+    Desde o Passo 3 da FASE 3 a duration sai do gerador unificado e usa o VNA real
+    (antes usava VNE cru como face). Por isso agora depende do `diaAniversario`:
+    com o aniversario errado, os eventos do fluxo nao casam e sao ignorados no VNA."""
     C = ImportarCalc()
+    aniv = ativo["vrAniversario"]
     return C.CalcularDuration(
         dtCalc, ativo["dtInicioRentabilidade"], ativo["vrTaxaEmissao"], vrTaxaNegociacao,
-        ativo["fluxo"], ativo["vrVNE"], ativo["cdIndexador"], ativo["cdTipoAmortizacao"])
+        ativo["fluxo"], ativo["vrVNE"], ativo["cdIndexador"], ativo["cdTipoAmortizacao"],
+        aniv if aniv is not None else C.DIA_ANIV)
 
 
 def CalcularDurationModificada(ativo: dict, dtCalc: date, vrTaxaNegociacao: float) -> float:
     """Duration modificada (anos) do ativo em dtCalc = D_macaulay / (1 + y)."""
     C = ImportarCalc()
+    aniv = ativo["vrAniversario"]
     return C.CalcularDurationModificada(
         dtCalc, ativo["dtInicioRentabilidade"], ativo["vrTaxaEmissao"], vrTaxaNegociacao,
-        ativo["fluxo"], ativo["vrVNE"], ativo["cdIndexador"], ativo["cdTipoAmortizacao"])
+        ativo["fluxo"], ativo["vrVNE"], ativo["cdIndexador"], ativo["cdTipoAmortizacao"],
+        aniv if aniv is not None else C.DIA_ANIV)
 
 
 def CalcularDv01(ativo: dict, dtCalc: date, vrTaxaNegociacao: float) -> float:
