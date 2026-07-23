@@ -34,21 +34,23 @@ def B3CalcPuRaw(tk: str, dt: str, taxa: float) -> dict | None:
 
 
 def PvsNossos(ativo: dict, dCalc: date, taxaNeg: float):
-    """[(dataEv, FV, du, PV)] por evento futuro, replicando CalcularPuOperacao (IPCA)."""
-    inicio = ativo["dtInicioRentabilidade"]
-    taxaEmi = ativo["vrTaxaEmissao"]
-    fluxo = ativo["fluxo"]
-    vne = ativo["vrVNE"]
+    """[(dataEv, FV, du, PV)] por evento futuro, direto do gerador unificado —
+    o mesmo que o CalcularPuOperacao consome, então o que esta tabela mostra é
+    exatamente o que a calc precifica (antes isto replicava o walk por fora)."""
+    idx = ativo["cdIndexador"]
     aniv = ativo["vrAniversario"] if ativo["vrAniversario"] is not None else C.DIA_ANIV
     tipo = ativo["cdTipoAmortizacao"]
-    fluxosDesc = C._FluxosDescontaveis(dCalc, inicio, taxaEmi, fluxo, vne, "IPCA", aniv, tipo)
-    datasFut = [d for d, _, __ in sorted(fluxo, key=lambda x: x[0]) if d > dCalc]
-    jNeg = taxaNeg / 100
+
+    estrategia = C.ResolverEstrategia(idx)
+    ctx        = C.MontarContexto(idx, dCalc, aniv, tipo)
+    tipoAmort  = C.ResolverTipoAmort(ativo["fluxo"], tipo)
+
     saida = []
-    for (fv, du), dEv in zip(fluxosDesc, datasFut):
-        fatorDesc = round((1 + jNeg) ** (du / 252), 9)
-        pv = C.Trunca(fv / fatorDesc, 6)
-        saida.append((dEv, fv, du, pv))
+    for dataEv, du, fv in C.GerarFluxosFuturos(
+            dCalc, ativo["dtInicioRentabilidade"], ativo["vrTaxaEmissao"],
+            ativo["fluxo"], ativo["vrVNE"], estrategia, tipoAmort, ctx):
+        pv = C.Trunca(fv / estrategia.FatorDesconto(dCalc, dataEv, taxaNeg, du, ctx), 6)
+        saida.append((dataEv, fv, du, pv))
     return saida
 
 
@@ -147,10 +149,6 @@ def main() -> None:
             Tabela(args.ticker, dtStr, args.delta, conn)
     finally:
         conn.close()
-
-
-if __name__ == "__main__":
-    main()
 
 
 if __name__ == "__main__":
