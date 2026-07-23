@@ -25,7 +25,7 @@ de 1e-6; o mesmo 1e-3 num PU de 10.000 seria um sarrafo 10x mais apertado, e num
   - <= 1e-6 (0,0001%)  bate exato    — o que uma implementacao correta atinge
   - >  1e-3 (0,1%)     investigar    — a fila de trabalho
 
-Saida: data/pu_divergencias.csv, ordenado pelo erro relativo.
+Saida: data/diagnosticos/pu_divergencias.csv, ordenado pelo erro relativo.
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ DELTA_FORA_PAR = 1.0  # pontos percentuais fora do par, para testar o DESCONTO
 TOL_TRIAGEM = 1e-3    # relativo — acima disso, investigar
 WORKERS = 8
 
-CSV_SAIDA = Path("data/pu_divergencias.csv")
+CSV_SAIDA = Path("data/diagnosticos/pu_divergencias.csv")
 
 
 def LerArgumentos() -> argparse.Namespace:

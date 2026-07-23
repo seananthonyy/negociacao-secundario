@@ -1,0 +1,49 @@
+# Dependências de produção — pipeline de negociação secundária de crédito privado.
+# Python 3.11+ (tomllib é stdlib a partir do 3.11; NÃO instalar `tomli`).
+#
+# Fonte da verdade única: code/requirements.txt aponta para este arquivo, então
+# `pip install -r requirements.txt` funciona tanto da raiz quanto de code/.
+#
+# Depois do pip, o Playwright ainda precisa baixar o browser:
+#     playwright install chromium
+
+# --- HTTP ---------------------------------------------------------------------
+# httpx: todas as APIs (B3 boletim/bondDetails/curva DI/calcPU, FI Analytics,
+#        BCB série 12, IBGE SIDRA). Cliente compartilhado com keepalive em
+#        lib/b3_calc_api.py e lib/fianalytics_api.py.
+httpx>=0.27
+
+# --- Scraping de navegador ----------------------------------------------------
+# playwright: fontes sem API — boletim B3, CRI/CRA Anbima (link é blob URL),
+#             planilha FI Analytics (login), Anbima Data.
+playwright>=1.45
+
+# --- Parsing de arquivos das fontes -------------------------------------------
+# xlrd: .xls legado da Anbima (debêntures indicativas, NTN-B). NÃO trocar por
+#       openpyxl — este lê .xlsx, e a Anbima publica .xls binário antigo.
+xlrd>=2.0
+# beautifulsoup4: HTML da projeção de IPCA da Anbima (scrape_ipca_projetado_anbima).
+beautifulsoup4>=4.12
+
+# --- Relatório ----------------------------------------------------------------
+# jinja2: templates HTML (relatorio_secundario.html, relatorio_diario.html).
+jinja2>=3.1
+
+# --- Configuração e segredos --------------------------------------------------
+# python-dotenv: carrega code/.env no PC pessoal (no banco os segredos vêm do
+#                ambiente; ver [env] no config.toml).
+python-dotenv>=1.0
+
+# --- Email (somente Windows) --------------------------------------------------
+# pywin32: envio via COM do Outlook ao fim de cada script. Em Linux/servidor sem
+#          Outlook, o import falha — desligue com email.ativo=false no config.toml
+#          ou NEGSEC_SEM_EMAIL=1 (grava o HTML em data/emails/ em vez de enviar).
+pywin32>=306; sys_platform == "win32"
+
+# --- Opcional: outstanding via Bloomberg --------------------------------------
+# xbbg exige terminal Bloomberg + blpapi instalados; só existe no PC do banco.
+# Sem ele, apenas scrape_outstanding_bloomberg.py não roda — a Visão Anbima cai
+# automaticamente no proxy de quantidade de emissão. Instale à parte:
+#     pip install xbbg
+# (deliberadamente fora deste arquivo: quebra o `pip install -r` onde não há
+#  Bloomberg, e o pipeline inteiro funciona sem ele.)

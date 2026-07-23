@@ -8,6 +8,8 @@ Este projeto gera relatórios HTML diários de negócios de crédito privado bra
 
 **Toda decisão de projeto está em `PLANEJAMENTO_v5.md` na raiz.** Leia esse arquivo antes de qualquer ação. É a fonte da verdade.
 
+**Para contexto técnico rápido (arquitetura, dicionário de dados do banco, mapa do motor de cálculo): `CONTEXTO_PROJETO.md` na raiz.** Foi escrito para ser colado inteiro como contexto e é verificado contra o código. O `guia_projeto.html` é a mesma informação em formato visual, para leitura humana.
+
 ## Estrutura
 
 ```

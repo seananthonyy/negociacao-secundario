@@ -33,7 +33,7 @@ Contrato das colunas (ver `lib/db.py` e [[04 - Banco de Dados]]):
   - `cdFonteValidacaoFluxo` — 'B3' | 'FiAnalytics'.
   - `dtUltimaTentativa`     — ISO de TODA tentativa (alimenta o throttle).
 
-Saídas: `data/divergencias_fluxo.csv` e `data/carencia_conferir_pu.csv`.
+Saída: `data/diagnosticos/divergencias_fluxo.csv`.
 
 CLI:
     python scripts/validar_fluxos.py                    # a fila (rotina)
@@ -71,7 +71,7 @@ TOL_SALDO = 0.05      # tolerância do saldo devedor, em % do VNA (ver ConferirS
 
 DIAS_THROTTLE = 10    # não re-bater na fonte antes disso (ativo já tentado e não validado)
 
-CSV_DIVERGENCIAS = Path("data/divergencias_fluxo.csv")
+CSV_DIVERGENCIAS = Path("data/diagnosticos/divergencias_fluxo.csv")
 
 calc = ImportarCalc()
 FERIADOS = calc.FERIADOS_ANBIMA

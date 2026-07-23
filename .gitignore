@@ -19,8 +19,7 @@ code/data/anbima_data_raw/
 code/data/api_samples/
 code/data/debug/
 code/data/backups/
-code/data/divergencias_fluxo.csv
-code/data/carencia_conferir_pu.csv
+code/data/diagnosticos/
 
 # --- Ferramentas / editores ---
 .obsidian/

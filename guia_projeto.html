@@ -1,0 +1,778 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guia do Projeto · Negociação Secundária de Crédito Privado</title>
+<style>
+/* ---------------------------------------------------------------------------
+   Tokens. Neutros com viés frio (levemente azulados) para conversar com o
+   accent petróleo — cinza puro leria como não-escolhido.
+   --------------------------------------------------------------------------- */
+:root{
+  --ground:#F4F6F8;
+  --surface:#FFFFFF;
+  --surface-2:#EDF1F4;
+  --ink:#0F151C;
+  --ink-2:#3D4855;
+  --muted:#66737F;
+  --line:#D8DFE6;
+  --line-strong:#B8C3CD;
+  --accent:#0F5C6B;
+  --accent-soft:#E2EFF1;
+  --ok:#1A6B45;
+  --ok-soft:#E1F0E8;
+  --warn:#8A5A00;
+  --warn-soft:#F7EEDB;
+  --crit:#9B3016;
+  --crit-soft:#F8E7E2;
+  --shadow:0 1px 2px rgba(15,21,28,.05),0 4px 12px rgba(15,21,28,.04);
+  --mono:ui-monospace,"SFMono-Regular",Menlo,Consolas,"Liberation Mono",monospace;
+  --body:Arial,Helvetica,"Helvetica Neue",sans-serif;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --ground:#0D1217; --surface:#141B22; --surface-2:#1B242D;
+    --ink:#E9EEF2; --ink-2:#BAC5CF; --muted:#8695A2;
+    --line:#26313B; --line-strong:#3A4854;
+    --accent:#5FBECD; --accent-soft:#12313A;
+    --ok:#6BC79A; --ok-soft:#122A20;
+    --warn:#DCAE5B; --warn-soft:#2C2213;
+    --crit:#E08D74; --crit-soft:#2E1913;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 4px 14px rgba(0,0,0,.25);
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0D1217; --surface:#141B22; --surface-2:#1B242D;
+  --ink:#E9EEF2; --ink-2:#BAC5CF; --muted:#8695A2;
+  --line:#26313B; --line-strong:#3A4854;
+  --accent:#5FBECD; --accent-soft:#12313A;
+  --ok:#6BC79A; --ok-soft:#122A20;
+  --warn:#DCAE5B; --warn-soft:#2C2213;
+  --crit:#E08D74; --crit-soft:#2E1913;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 4px 14px rgba(0,0,0,.25);
+}
+:root[data-theme="light"]{
+  --ground:#F4F6F8; --surface:#FFFFFF; --surface-2:#EDF1F4;
+  --ink:#0F151C; --ink-2:#3D4855; --muted:#66737F;
+  --line:#D8DFE6; --line-strong:#B8C3CD;
+  --accent:#0F5C6B; --accent-soft:#E2EFF1;
+  --ok:#1A6B45; --ok-soft:#E1F0E8;
+  --warn:#8A5A00; --warn-soft:#F7EEDB;
+  --crit:#9B3016; --crit-soft:#F8E7E2;
+  --shadow:0 1px 2px rgba(15,21,28,.05),0 4px 12px rgba(15,21,28,.04);
+}
+
+*{box-sizing:border-box;}
+html{scroll-behavior:smooth;}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto;} *{animation:none!important;transition:none!important;}}
+body{
+  margin:0; background:var(--ground); color:var(--ink);
+  font-family:var(--body); font-size:15px; line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+}
+
+/* ---------------------------------------------------------------------------
+   Shell: navegação fixa à esquerda, conteúdo à direita.
+   --------------------------------------------------------------------------- */
+.shell{display:grid; grid-template-columns:250px minmax(0,1fr); gap:0; min-height:100vh;}
+
+.nav{
+  position:sticky; top:0; align-self:start; height:100vh; overflow-y:auto;
+  background:var(--surface); border-right:1px solid var(--line);
+  padding:26px 18px 32px; display:flex; flex-direction:column; gap:22px;
+}
+.brand{display:flex; flex-direction:column; gap:6px;}
+.brand .kicker{
+  font-size:10px; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--muted); font-weight:700;
+}
+.brand h1{
+  margin:0; font-size:17px; line-height:1.25; font-weight:900;
+  letter-spacing:-.02em; text-wrap:balance;
+}
+.brand .sub{font-size:12px; color:var(--muted); line-height:1.45;}
+
+.nav ol{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:1px;}
+.nav ol a{
+  display:flex; gap:9px; align-items:baseline;
+  padding:7px 9px; border-radius:5px; text-decoration:none;
+  color:var(--ink-2); font-size:13px; line-height:1.35;
+  border-left:2px solid transparent;
+}
+.nav ol a .n{
+  font-family:var(--mono); font-size:10.5px; color:var(--muted);
+  font-variant-numeric:tabular-nums; flex:0 0 auto;
+}
+.nav ol a:hover{background:var(--surface-2); color:var(--ink);}
+.nav ol a:focus-visible{outline:2px solid var(--accent); outline-offset:1px;}
+.nav ol a.active{background:var(--accent-soft); color:var(--accent); border-left-color:var(--accent); font-weight:700;}
+.nav ol a.active .n{color:var(--accent);}
+
+.themebtn{
+  margin-top:auto; background:transparent; border:1px solid var(--line-strong);
+  color:var(--ink-2); font-family:var(--body); font-size:12px;
+  padding:8px 10px; border-radius:5px; cursor:pointer; text-align:left;
+}
+.themebtn:hover{background:var(--surface-2); color:var(--ink);}
+.themebtn:focus-visible{outline:2px solid var(--accent); outline-offset:1px;}
+
+.main{padding:44px 46px 100px; min-width:0;}
+.wrap{max-width:1000px;}
+
+/* ---------------------------------------------------------------------------
+   Tipografia. Arial precisa de contraste de peso e tracking para ganhar
+   personalidade — pesos 900/700/400 e labels em caixa alta espaçada.
+   --------------------------------------------------------------------------- */
+section{scroll-margin-top:24px; margin-bottom:64px;}
+.eyebrow{
+  font-family:var(--mono); font-size:10.5px; letter-spacing:.13em;
+  text-transform:uppercase; color:var(--accent); font-weight:700; margin-bottom:9px;
+}
+h2{
+  margin:0 0 10px; font-size:29px; line-height:1.16; font-weight:900;
+  letter-spacing:-.026em; text-wrap:balance;
+}
+h3{
+  margin:34px 0 10px; font-size:16.5px; font-weight:900;
+  letter-spacing:-.012em; text-wrap:balance;
+}
+h4{margin:22px 0 7px; font-size:13.5px; font-weight:700; letter-spacing:-.005em;}
+p{margin:0 0 12px; max-width:68ch; color:var(--ink-2);}
+.lead{font-size:16px; color:var(--ink-2); max-width:66ch;}
+strong{color:var(--ink); font-weight:700;}
+code{
+  font-family:var(--mono); font-size:.855em; background:var(--surface-2);
+  padding:.13em .38em; border-radius:3px; color:var(--ink);
+  border:1px solid var(--line); white-space:nowrap;
+}
+a{color:var(--accent);}
+
+/* ---------------------------------------------------------------------------
+   Tabelas. Wide content rola no próprio container.
+   --------------------------------------------------------------------------- */
+.tw{overflow-x:auto; border:1px solid var(--line); border-radius:7px; background:var(--surface); box-shadow:var(--shadow); margin:0 0 16px;}
+table{border-collapse:collapse; width:100%; font-size:13px; min-width:640px;}
+thead th{
+  background:var(--surface-2); text-align:left; padding:9px 13px;
+  font-size:10.5px; letter-spacing:.09em; text-transform:uppercase;
+  color:var(--muted); font-weight:700; border-bottom:1px solid var(--line-strong);
+  white-space:nowrap;
+}
+tbody td{padding:9px 13px; border-bottom:1px solid var(--line); vertical-align:top; color:var(--ink-2);}
+tbody tr:nth-child(even) td{background:var(--surface-2);}
+tbody tr:last-child td{border-bottom:none;}
+tbody td:first-child{color:var(--ink); font-weight:700;}
+td.num,th.num{text-align:right; font-family:var(--mono); font-variant-numeric:tabular-nums;}
+td .mono{font-family:var(--mono); font-size:12px;}
+
+/* Chip de fonte — o ponto colorido codifica a ORIGEM do dado. */
+.src{display:inline-flex; align-items:center; gap:6px; white-space:nowrap; font-weight:700; color:var(--ink);}
+.src::before{content:""; width:7px; height:7px; border-radius:50%; background:var(--dot,var(--muted)); flex:0 0 auto;}
+.s-b3{--dot:#2F6FA8;} .s-anb{--dot:#B07A1E;} .s-bcb{--dot:#3F8A5C;}
+.s-fi{--dot:#8A5AA8;} .s-blm{--dot:#B2543A;} .s-int{--dot:#6E7A86;}
+
+/* ---------------------------------------------------------------------------
+   Cards, callouts, passos.
+   --------------------------------------------------------------------------- */
+.callout{
+  border:1px solid var(--line); border-left:3px solid var(--accent);
+  background:var(--surface); border-radius:0 7px 7px 0;
+  padding:13px 16px; margin:0 0 16px; box-shadow:var(--shadow);
+}
+.callout p:last-child{margin-bottom:0;}
+.callout .tag{
+  font-family:var(--mono); font-size:10px; letter-spacing:.11em; text-transform:uppercase;
+  font-weight:700; color:var(--accent); display:block; margin-bottom:5px;
+}
+.callout.warn{border-left-color:var(--warn);} .callout.warn .tag{color:var(--warn);}
+.callout.crit{border-left-color:var(--crit);} .callout.crit .tag{color:var(--crit);}
+
+.steps{display:flex; flex-direction:column; gap:0; margin:18px 0 8px;}
+.step{
+  display:grid; grid-template-columns:38px minmax(0,1fr); gap:15px;
+  padding:14px 0; border-top:1px solid var(--line); position:relative;
+}
+.step:last-child{border-bottom:1px solid var(--line);}
+.step .idx{
+  font-family:var(--mono); font-size:12px; font-weight:700; color:var(--accent);
+  background:var(--accent-soft); border-radius:5px; height:26px;
+  display:flex; align-items:center; justify-content:center;
+  font-variant-numeric:tabular-nums;
+}
+.step h4{margin:2px 0 4px; font-size:14px;}
+.step p{margin:0 0 6px; font-size:13.5px; max-width:70ch;}
+.step .meta{
+  font-family:var(--mono); font-size:11.5px; color:var(--muted);
+  display:flex; flex-wrap:wrap; gap:5px 14px;
+}
+.step .meta b{color:var(--ink-2); font-weight:700;}
+
+.grid2{display:grid; grid-template-columns:repeat(auto-fit,minmax(270px,1fr)); gap:14px; margin:0 0 16px;}
+.card{
+  background:var(--surface); border:1px solid var(--line); border-radius:7px;
+  padding:15px 17px; box-shadow:var(--shadow);
+}
+.card h4{margin:0 0 7px; font-size:13.5px;}
+.card p{margin:0; font-size:13px;}
+.card .formula{
+  font-family:var(--mono); font-size:12px; background:var(--surface-2);
+  border:1px solid var(--line); border-radius:5px; padding:9px 11px;
+  margin:9px 0; overflow-x:auto; white-space:pre; color:var(--ink); line-height:1.5;
+}
+pre.formula{
+  font-family:var(--mono); font-size:12.5px; background:var(--surface);
+  border:1px solid var(--line); border-radius:7px; padding:14px 16px;
+  overflow-x:auto; margin:0 0 16px; line-height:1.55; color:var(--ink);
+  box-shadow:var(--shadow);
+}
+
+.pill{
+  display:inline-block; font-family:var(--mono); font-size:10.5px; font-weight:700;
+  padding:2px 7px; border-radius:20px; letter-spacing:.03em; white-space:nowrap;
+}
+.p-ok{background:var(--ok-soft); color:var(--ok);}
+.p-warn{background:var(--warn-soft); color:var(--warn);}
+.p-crit{background:var(--crit-soft); color:var(--crit);}
+.p-neutral{background:var(--surface-2); color:var(--muted); border:1px solid var(--line);}
+
+.legend{display:flex; flex-wrap:wrap; gap:8px 20px; margin:0 0 18px; font-size:12px; color:var(--muted);}
+
+footer{
+  border-top:1px solid var(--line); margin-top:56px; padding-top:18px;
+  font-size:12px; color:var(--muted); max-width:68ch;
+}
+
+@media (max-width:900px){
+  .shell{grid-template-columns:1fr;}
+  .nav{position:static; height:auto; border-right:none; border-bottom:1px solid var(--line); padding:18px 20px;}
+  .nav ol{display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:2px;}
+  .themebtn{margin-top:14px; align-self:flex-start;}
+  .main{padding:28px 20px 70px;}
+  h2{font-size:24px;}
+}
+</style>
+</head>
+<body>
+<div class="shell">
+
+<nav class="nav">
+  <div class="brand">
+    <span class="kicker">Itaú BBA · Crédito Privado</span>
+    <h1>Guia do Relatório de Negociação Secundária</h1>
+    <span class="sub">De onde vem cada dado, como é calculado, para onde vai.</span>
+  </div>
+  <ol>
+    <li><a href="#panorama"><span class="n">00</span><span>Panorama</span></a></li>
+    <li><a href="#fontes"><span class="n">01</span><span>Origem dos dados</span></a></li>
+    <li><a href="#ciclo"><span class="n">02</span><span>Ciclo de vida do dado</span></a></li>
+    <li><a href="#motor"><span class="n">03</span><span>Motor quantitativo</span></a></li>
+    <li><a href="#checagem"><span class="n">04</span><span>Checagem rápida</span></a></li>
+    <li><a href="#naoexiste"><span class="n">05</span><span>O que não existe</span></a></li>
+  </ol>
+  <button class="themebtn" id="tbtn" type="button">Alternar tema claro / escuro</button>
+</nav>
+
+<main class="main"><div class="wrap">
+
+<!-- ====================================================== PANORAMA -->
+<section id="panorama">
+  <div class="eyebrow">00 · Panorama</div>
+  <h2>O que este sistema entrega</h2>
+  <p class="lead">Todo dia, para cada negócio de debênture, CRI ou CRA no mercado secundário, o sistema responde uma pergunta: <strong>quanto esse papel pagou acima da referência de mercado?</strong> Esse número é o <em>spread over</em>, e é a razão de existir de tudo o que está descrito aqui.</p>
+
+  <p>Chegar nele exige três coisas que raramente vêm prontas. A <strong>taxa</strong> do negócio — o boletim da B3 muitas vezes traz só o PU. A <strong>referência</strong> — qual vértice da curva comparar com aquele papel. E a <strong>duration</strong> — que é o que liga um ao outro.</p>
+
+  <div class="grid2">
+    <div class="card">
+      <h4>Volume da base</h4>
+      <p><span class="mono">556.885</span> negócios brutos · <span class="mono">522.670</span> processados · <span class="mono">5.102</span> ativos cadastrados · <span class="mono">102.253</span> eventos de fluxo.</p>
+    </div>
+    <div class="card">
+      <h4>Onde a taxa nasce</h4>
+      <p>FI Analytics <span class="mono">132.920</span> · calculadora local <span class="mono">21.215</span> · B3 <span class="mono">1.324</span>. O resto não tem taxa resolvida.</p>
+    </div>
+  </div>
+
+  <div class="callout">
+    <span class="tag">Convenção que confunde todo mundo</span>
+    <p>O relatório agrupa por <code>dtLiquidacao</code> (D+1), <strong>não</strong> por <code>dtNegocio</code>. E nunca publica o pregão de hoje — ele não fechou e é meia perna. Por isso a liquidação X sempre puxa boletim de X e de X−1.</p>
+  </div>
+</section>
+
+<!-- ====================================================== FONTES -->
+<section id="fontes">
+  <div class="eyebrow">01 · Origem dos dados</div>
+  <h2>Tabela mestre de fontes</h2>
+  <p class="lead">Cada linha é um dado que existe na base e o caminho exato por onde ele entrou. Se um número parece errado, comece aqui: identifique a fonte, depois o script.</p>
+
+  <div class="legend">
+    <span class="src s-b3">B3</span>
+    <span class="src s-anb">Anbima</span>
+    <span class="src s-bcb">BCB / IBGE</span>
+    <span class="src s-fi">FI Analytics</span>
+    <span class="src s-blm">Bloomberg</span>
+    <span class="src s-int">Interno (calculado)</span>
+  </div>
+
+  <div class="tw">
+  <table>
+    <thead><tr><th>Dado</th><th>Fonte primária</th><th>Script responsável</th><th>Destino</th><th>Frequência</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Negócios do secundário</td>
+        <td><span class="src s-b3">B3 — Boletim Diário</span></td>
+        <td><span class="mono">scrape_b3_boletim.py</span></td>
+        <td><span class="mono">NegociosBrutos</span></td>
+        <td>Diária (X e X−1)</td>
+      </tr>
+      <tr>
+        <td>Cadastro + agenda de eventos</td>
+        <td><span class="src s-b3">B3 — getBondDetails</span></td>
+        <td><span class="mono">scrape_b3_bond_details.py</span></td>
+        <td><span class="mono">InfoAtivos</span>, <span class="mono">FluxoAtivos</span></td>
+        <td>Diária, só quem negociou</td>
+      </tr>
+      <tr>
+        <td>Cadastro + agenda <em>(fallback)</em></td>
+        <td><span class="src s-anb">Anbima Data</span></td>
+        <td><span class="mono">scrape_anbima_data_ativos.py</span></td>
+        <td><span class="mono">InfoAtivos</span>, <span class="mono">FluxoAtivos</span></td>
+        <td>Diária, só o que a B3 não cobriu</td>
+      </tr>
+      <tr>
+        <td>Taxa indicativa — debêntures</td>
+        <td><span class="src s-anb">Anbima — XLS diário</span></td>
+        <td><span class="mono">scrape_anbima_debentures.py</span></td>
+        <td><span class="mono">AnbimaIndicativos</span></td>
+        <td>Diária</td>
+      </tr>
+      <tr>
+        <td>Taxa indicativa — CRI / CRA</td>
+        <td><span class="src s-anb">Anbima — portal</span></td>
+        <td><span class="mono">scrape_anbima_cri_cra.py</span></td>
+        <td><span class="mono">AnbimaIndicativos</span></td>
+        <td>Diária · <strong>janela ~5 pregões</strong></td>
+      </tr>
+      <tr>
+        <td>Curva NTN-B (referência IPCA)</td>
+        <td><span class="src s-anb">Anbima — mercado secundário</span></td>
+        <td><span class="mono">scrape_anbima_ntnb.py</span></td>
+        <td><span class="mono">MtmAnbima</span> <span class="mono">NTN-B *</span></td>
+        <td>Diária</td>
+      </tr>
+      <tr>
+        <td>Curva DI futuro (referência prefixado)</td>
+        <td><span class="src s-b3">B3 — API derivativos</span></td>
+        <td><span class="mono">scrape_b3_curva_di.py</span></td>
+        <td><span class="mono">MtmAnbima</span> <span class="mono">DI1F*</span> + <span class="mono">di.db/CurvaDi</span></td>
+        <td>Diária · <strong>janela ~20 pregões</strong></td>
+      </tr>
+      <tr>
+        <td>DI realizado (série 12)</td>
+        <td><span class="src s-bcb">BCB</span></td>
+        <td><span class="mono">scrape_di_bcb.py</span></td>
+        <td><span class="mono">di.db/DiHistorico</span></td>
+        <td>Diária</td>
+      </tr>
+      <tr>
+        <td>IPCA número-índice</td>
+        <td><span class="src s-bcb">IBGE</span></td>
+        <td><span class="mono">scrape_ipca_ibge.py</span></td>
+        <td><span class="mono">ipca.db/IPCA</span></td>
+        <td>Mensal</td>
+      </tr>
+      <tr>
+        <td>Projeção de IPCA</td>
+        <td><span class="src s-anb">Anbima</span></td>
+        <td><span class="mono">scrape_ipca_projetado_anbima.py</span></td>
+        <td><span class="mono">ipca.db/IPCAProjetado</span></td>
+        <td>Diária</td>
+      </tr>
+      <tr>
+        <td>Cadastro / duration complementar</td>
+        <td><span class="src s-fi">FI Analytics — CSV</span></td>
+        <td><span class="mono">scrape_fianalytics_planilha.py</span></td>
+        <td><span class="mono">InfoAtivos</span></td>
+        <td>Diária</td>
+      </tr>
+      <tr>
+        <td>Taxa / PU de fallback</td>
+        <td><span class="src s-fi">FI Analytics + </span><span class="src s-b3">B3 calcPU</span></td>
+        <td><span class="mono">lib/fianalytics_api.py</span>, <span class="mono">lib/b3_calc_api.py</span></td>
+        <td>usado na cascata</td>
+        <td>Sob demanda</td>
+      </tr>
+      <tr>
+        <td>Outstanding (saldo em circulação)</td>
+        <td><span class="src s-blm">Bloomberg</span></td>
+        <td><span class="mono">scrape_outstanding_bloomberg.py</span></td>
+        <td><span class="mono">Outstanding</span></td>
+        <td>Só no PC do banco</td>
+      </tr>
+      <tr>
+        <td>Spread over do negócio</td>
+        <td><span class="src s-int">Calculado</span></td>
+        <td><span class="mono">calc_spread_over.py</span></td>
+        <td><span class="mono">NegociosProcessados.vrSpreadOver</span></td>
+        <td>Diária</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="callout crit">
+    <span class="tag">Buraco de coleta não se recupera</span>
+    <p>A B3 expõe só <strong>~20 pregões</strong> da curva DI; o portal da Anbima, ~5 de CRI/CRA. O arquivamento diário é o que permite reprecificar o passado. Se o pipeline ficar dias parado, aquele intervalo <strong>some da fonte</strong> e não volta.</p>
+  </div>
+
+  <h3>Duas origens dentro da mesma tabela</h3>
+  <p>A <code>MtmAnbima</code> tem nome enganoso: guarda as duas curvas de referência, e só metade vem da Anbima.</p>
+  <div class="tw">
+  <table>
+    <thead><tr><th>Prefixo do cdTicker</th><th>Origem real</th><th>Serve de referência para</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">NTN-B ...</td><td><span class="src s-anb">Anbima</span></td><td>Papéis <strong>IPCA</strong></td></tr>
+      <tr><td class="mono">DI1F...</td><td><span class="src s-b3">B3</span></td><td>Papéis <strong>PREFIXADO</strong></td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- ====================================================== CICLO -->
+<section id="ciclo">
+  <div class="eyebrow">02 · Ciclo de vida do dado</div>
+  <h2>Do ticker desconhecido ao spread publicado</h2>
+  <p class="lead">A numeração abaixo é a ordem real de execução do pipeline (<code>scripts/pipeline_core.py</code>), não uma didática. Passos fora de ordem quebram: o cadastro precisa existir antes de o motor precificar, e o motor precisa ser validado antes de a taxa dele ser aceita.</p>
+
+  <div class="steps">
+    <div class="step">
+      <div class="idx">01</div>
+      <div>
+        <h4>O negócio aparece no boletim</h4>
+        <p>O papel entra no sistema porque <em>negociou</em>. O boletim traz ticker, quantidade, PU e volume — e a taxa só às vezes.</p>
+        <div class="meta"><span><b>script</b> scrape_b3_boletim.py</span><span><b>grava</b> NegociosBrutos</span></div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="idx">02</div>
+      <div>
+        <h4>A B3 preenche o cadastro e a agenda</h4>
+        <p>Só para os tickers que negociaram e aos quais falta informação — sem esse filtro seriam ~2.900 chamadas por rodada. A B3 é a fonte <strong>primária</strong>; a Anbima Data entra depois, apenas para o que sobrou.</p>
+        <div class="meta"><span><b>script</b> scrape_b3_bond_details.py</span><span><b>grava</b> InfoAtivos + FluxoAtivos</span></div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="idx">03</div>
+      <div>
+        <h4>Chegam as taxas indicativas e as curvas</h4>
+        <p>Indicativa Anbima por papel, curva NTN-B e curva DI futuro. É o material contra o qual o negócio vai ser comparado.</p>
+        <div class="meta"><span><b>grava</b> AnbimaIndicativos, MtmAnbima, di.db</span></div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="idx">04</div>
+      <div>
+        <h4>Insumos do motor são atualizados</h4>
+        <p>IPCA realizado, projeção de IPCA e DI realizado. Sem a projeção não se precifica IPCA+ no mês corrente — entre uma divulgação e a seguinte, o VNA anda pela projeção.</p>
+        <div class="meta"><span><b>grava</b> ipca.db, di.db</span></div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="idx">05</div>
+      <div>
+        <h4>O gate decide em quem confiar</h4>
+        <p>Para cada ativo, o sistema pergunta: <strong>a calculadora local reproduz a B3?</strong> Testa PU no par e a 100 bps fora, em 3 datas, com régua de 1e−5 relativo. Quem passa recebe <code>stFluxoValidado = 1</code>; quem não passa é desvalidado e cai na cascata de API.</p>
+        <div class="meta"><span><b>script</b> validar_calc_b3.py</span><span><b>revalida</b> a cada 15 dias</span></div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="idx">06</div>
+      <div>
+        <h4>A taxa do negócio é resolvida pela cascata</h4>
+        <p>Quatro degraus, nessa ordem. A calculadora local só entra se o ativo passou no gate <em>e</em> o indexador for CDI+, IPCA ou PREFIXADO — <strong>%CDI nunca usa a calc</strong>, porque ela não reproduz o desconto de %CDI fora do par.</p>
+        <div class="meta"><span><b>script</b> calc_taxa_negocios.py</span><span><b>grava</b> vrTaxaCalculada + cdFonteTaxa</span></div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="idx">07</div>
+      <div>
+        <h4>Duplicados são separados</h4>
+        <p>Um mesmo negócio econômico aparece várias vezes no boletim (passagem de fundo, corretor, pessoa física). Union-find agrupa por ticker e quantidade e marca um representante.</p>
+        <div class="meta"><span><b>script</b> filtrar_trades.py</span><span><b>status</b> VALIDO · BROKER · FUNDO · PF</span></div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="idx">08</div>
+      <div>
+        <h4>Cada papel ganha um vértice de referência</h4>
+        <p>Duration-match contra a curva: IPCA vai para uma NTN-B, PREFIXADO para um DI1. O match <strong>nunca sobrescreve</strong> referência que veio da Anbima.</p>
+        <div class="meta"><span><b>script</b> match_referencias.py</span><span><b>grava</b> cdReferencia + cdFonteReferencia</span></div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="idx">09</div>
+      <div>
+        <h4>Spread over e publicação</h4>
+        <p>Taxa do negócio menos taxa da referência, e o HTML é gerado sobre toda a base.</p>
+        <div class="meta"><span><b>scripts</b> calc_spread_over.py → gerar_relatorio_credito.py</span></div>
+      </div>
+    </div>
+  </div>
+
+  <h3>A cascata de taxa, explícita</h3>
+  <pre class="formula">taxa direta do boletim
+   └─ vazia? →  CALCULADORA LOCAL      (só stFluxoValidado=1 e CDI+/IPCA/PREFIXADO)
+        └─ falhou? →  FI ANALYTICS
+             └─ falhou? →  B3 (calcYield)
+                  └─ falhou? →  NULL   (negócio fica sem taxa)</pre>
+</section>
+
+<!-- ====================================================== MOTOR -->
+<section id="motor">
+  <div class="eyebrow">03 · Motor quantitativo</div>
+  <h2>Como cada número é calculado</h2>
+  <p class="lead">O motor é o <code>calculadora_rf.py</code>, no repositório vizinho <code>calculadora-renda-fixa</code>. Desde julho/2026 existe <strong>um único gerador de fluxo</strong> — antes eram sete cópias, o que custou dois bugs do mesmo tipo.</p>
+
+  <h3>O gerador único e as estratégias</h3>
+  <p>Toda métrica (PU, duration, DV01, taxa) consome o mesmo gerador. Ele percorre os eventos futuros e devolve, por evento, o valor de face que o papel paga — <strong>sem nenhum desconto</strong>. Quem desconta é o consumidor.</p>
+  <pre class="formula">GerarFluxosFuturos(...)  →  yield (dataEvento, diasUteis, valorFuturo)
+
+    vna     saldo devedor corrente
+    face    face original atualizada (não cai na amortização, cresce na incorporação)
+    ancora  data do último evento — de onde correm os juros do próximo período</pre>
+
+  <p>O que muda de um indexador para o outro fica isolado numa <em>estratégia</em>:</p>
+  <div class="tw">
+  <table>
+    <thead><tr><th>Etapa</th><th>IPCA / PREFIXADO</th><th>%CDI / CDI+</th></tr></thead>
+    <tbody>
+      <tr><td>VNA na data</td><td>Corrigido pelo número-índice (IPCA) ou nominal (PREFIXADO)</td><td>Nominal, com acúmulo do DI</td></tr>
+      <tr><td>Fator do período</td><td class="mono">round((1+j)^(du/252), 9)</td><td>Fator DI acumulado (realizado + projetado)</td></tr>
+      <tr><td>Fator de desconto</td><td class="mono">round((1+j)^(du/252), 9)</td><td class="mono">FatorDI × (1+spread)^(du/252)</td></tr>
+      <tr><td>Separa taxa do fator?</td><td>Sim</td><td>Só <strong>CDI+</strong>. Em <strong>%CDI</strong> o percentual entra <em>dentro</em> do fator diário — não há o que separar</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>As cinco métricas</h3>
+  <div class="grid2">
+    <div class="card">
+      <h4>PU Par</h4>
+      <p>Quanto o papel vale “no par”, sem prêmio nem desconto: o VNA corrigido, acrescido dos juros corridos desde o último evento.</p>
+      <div class="formula">PU Par = Trunca(VNA × FJ, 6)
+FJ = round((1+cupom)^(du/252), 9)</div>
+    </div>
+    <div class="card">
+      <h4>PU de Operação</h4>
+      <p>O preço que uma taxa negociada implica: cada fluxo futuro trazido a valor presente por essa taxa.</p>
+      <div class="formula">PU = Σ Trunca(VF / FatorDesconto, 6)</div>
+    </div>
+    <div class="card">
+      <h4>Taxa e spread</h4>
+      <p>Caminho inverso do PU. Newton-Raphson com <em>clamp</em> e domínio confinado a [−20 %, 400 %]; se não converge, bisseção. PU que nenhuma taxa reproduz <strong>levanta erro</strong> em vez de gravar taxa espúria.</p>
+      <div class="formula">spread over = taxa do negócio
+              − taxa da referência</div>
+    </div>
+    <div class="card">
+      <h4>Duration modificada</h4>
+      <p>Macaulay em <strong>anos base 252</strong>, dividida por (1 + y). Em <strong>%CDI</strong> a “taxa” é um multiplicador, não um yield — ali prefira o DV01.</p>
+      <div class="formula">D_mac = [Σ(du·VP) / Σ VP] / 252
+D_mod = D_mac / (1 + y)</div>
+    </div>
+    <div class="card">
+      <h4>DV01</h4>
+      <p>Reprecifica de verdade (<em>bump-and-reprice</em>), então vale para todos os indexadores, inclusive onde a duration analítica é aproximada.</p>
+      <div class="formula">DV01 = PU(taxa) − PU(taxa + 1bp)</div>
+    </div>
+    <div class="card">
+      <h4>Incorporação de juros</h4>
+      <p>Quando <code>vrPctIncorporacao &gt; 0</code>, essa fração dos juros <strong>não é paga</strong> — vira principal, e o saldo cresce. O restante é pago em caixa. Com 100 %, o evento não gera caixa nenhum.</p>
+      <div class="formula">vna  ×= 1 + pct/100 × (FJ − 1)
+juros ×= 1 − pct/100</div>
+    </div>
+  </div>
+
+  <h3>Convenções de precisão (ANBIMA)</h3>
+  <div class="callout warn">
+    <span class="tag">A pegadinha número 1</span>
+    <p><strong>Truncar não é arredondar — e a regra alterna por etapa.</strong> É a causa mais comum de divergência de centavos quando alguém reimplementa o cálculo em planilha.</p>
+  </div>
+  <div class="tw">
+  <table>
+    <thead><tr><th>Item</th><th>Regra</th><th>Casas</th></tr></thead>
+    <tbody>
+      <tr><td>Base de dias</td><td>Dias úteis, calendário ANBIMA</td><td class="mono">BUS/252</td></tr>
+      <tr><td>Fator C acumulado (VNA)</td><td><strong>Truncado</strong></td><td class="num">8</td></tr>
+      <tr><td>VNA final</td><td><strong>Arredondado</strong></td><td class="num">6</td></tr>
+      <tr><td>Fator de juros e de desconto</td><td><strong>Arredondado</strong> (<code>round</code>)</td><td class="num">9</td></tr>
+      <tr><td>PU Par e PU de Operação</td><td><strong>Truncados</strong></td><td class="num">6</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Precisão medida contra a B3</h3>
+  <div class="tw">
+  <table>
+    <thead><tr><th>Verificação</th><th>Referência externa</th><th class="num">Erro</th><th>Situação</th></tr></thead>
+    <tbody>
+      <tr><td>PU de operação</td><td>B3 <span class="mono">/calcPU</span>, par e +100 bps</td><td class="num">~1e−8</td><td><span class="pill p-ok">validado</span></td></tr>
+      <tr><td>Duration</td><td>Implícita no <span class="mono">cashFlowList</span> da B3</td><td class="num">4 casas</td><td><span class="pill p-ok">validado</span></td></tr>
+      <tr><td>Gate de confiança</td><td>B3 (primária) / FI (secundária)</td><td class="num">1e−5</td><td><span class="pill p-ok">régua ativa</span></td></tr>
+      <tr><td>%CDI fora do par</td><td>—</td><td class="num">2–4 bps</td><td><span class="pill p-warn">fica fora da calc</span></td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- ====================================================== CHECAGEM -->
+<section id="checagem">
+  <div class="eyebrow">04 · Checagem rápida</div>
+  <h2>Matriz de resolução de problemas</h2>
+  <p class="lead">Tabela de mesa. Sintoma na primeira coluna; onde olhar e o que rodar nas seguintes. Todos os scripts são idempotentes — reexecutar não duplica nada.</p>
+
+  <div class="tw">
+  <table>
+    <thead><tr><th>Sintoma</th><th>Causa mais provável</th><th>Onde olhar</th><th>O que reexecutar</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Taxa de um papel <strong>IPCA</strong> parece estranha</td>
+        <td>Cadastro errado: <code>vrAniversario</code>, <code>vrTaxaEmissao</code> ou <code>dtInicioRentabilidade</code></td>
+        <td><span class="mono">InfoAtivos</span> do ticker; conferir <code>cdFonteTaxa</code> em <span class="mono">NegociosProcessados</span></td>
+        <td><span class="mono">scrape_b3_bond_details.py</span> → <span class="mono">validar_calc_b3.py</span> → <span class="mono">calc_taxa_negocios.py</span></td>
+      </tr>
+      <tr>
+        <td>PU explode / VNA parece inteiro demais</td>
+        <td><code>vrAniversario</code> errado: os eventos não casam com o aniversário e são <strong>descartados em silêncio</strong></td>
+        <td><span class="mono">InfoAtivos.vrAniversario</span> vs datas em <span class="mono">FluxoAtivos</span></td>
+        <td><span class="mono">scrape_b3_bond_details.py --ticker X</span></td>
+      </tr>
+      <tr>
+        <td>Papel sem <strong>spread</strong> no relatório</td>
+        <td>Sem <code>cdReferencia</code> — e sem ela não há contra o que comparar</td>
+        <td><span class="mono">InfoAtivos.cdReferencia</span> e <span class="mono">.vrDuration</span> (o match exige duration)</td>
+        <td><span class="mono">match_referencias.py</span> → <span class="mono">calc_spread_over.py</span></td>
+      </tr>
+      <tr>
+        <td>Curva <strong>DI1</strong> vazia na Visão Anbima</td>
+        <td>Nenhum PREFIXADO recebeu vértice DI1 — 100 % desses vêm do duration-match</td>
+        <td><span class="mono">SELECT COUNT(*) FROM InfoAtivos WHERE cdReferencia LIKE 'DI1%'</span></td>
+        <td><span class="mono">scrape_b3_curva_di.py</span> → <span class="mono">match_referencias.py</span></td>
+      </tr>
+      <tr>
+        <td>Curva <strong>NTN-B</strong> vazia</td>
+        <td>Falta o XLS da Anbima na data</td>
+        <td><span class="mono">MtmAnbima</span> onde <span class="mono">cdTicker LIKE 'NTN-B%'</span></td>
+        <td><span class="mono">scrape_anbima_ntnb.py --date X</span></td>
+      </tr>
+      <tr>
+        <td>Ativo caiu de <strong>validado</strong> para inválido</td>
+        <td>O gate não conseguiu confirmar contra a B3 — ou divergiu, ou o oráculo ficou mudo</td>
+        <td><span class="mono">data/diagnosticos/validar_calc_b3.csv</span> (coluna <code>veredito</code>)</td>
+        <td><span class="mono">validar_calc_b3.py --dry-run --tickers X</span></td>
+      </tr>
+      <tr>
+        <td>Muitos negócios com taxa <strong>NULL</strong></td>
+        <td>A cascata inteira falhou: gate reprovou <em>e</em> as APIs não responderam</td>
+        <td><span class="mono">cdFonteTaxa</span> em <span class="mono">NegociosProcessados</span>; contador <code>calcFalhas</code> no email</td>
+        <td><span class="mono">calc_taxa_negocios.py --date X --force</span></td>
+      </tr>
+      <tr>
+        <td>Volume do dia parece baixo demais</td>
+        <td>Boletim incompleto — liquidação X precisa de X <strong>e</strong> X−1</td>
+        <td><span class="mono">SELECT dtNegocio, COUNT(*) FROM NegociosBrutos GROUP BY 1</span></td>
+        <td><span class="mono">scrape_b3_boletim.py --date X</span> (pregão a pregão)</td>
+      </tr>
+      <tr>
+        <td>Peso estranho na <strong>Visão Anbima</strong></td>
+        <td><span class="mono">Outstanding</span> vazia → cai no proxy de quantidade de emissão, que não encolhe com a amortização</td>
+        <td>Disclaimer na própria aba indica qual peso está ativo</td>
+        <td><span class="mono">scrape_outstanding_bloomberg.py</span> (só no banco)</td>
+      </tr>
+      <tr>
+        <td>Duration não muda depois de corrigir o motor</td>
+        <td>O pré-passo só preenche <code>vrDuration</code> quando está <strong>NULL</strong> — quem já tem valor nunca é recalculado</td>
+        <td><span class="mono">InfoAtivos.vrDuration</span> e <span class="mono">.dtAtualizacaoDuration</span></td>
+        <td>Hoje não há caminho automático — item <code>--forcar-duration</code> no backlog</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Sondagens que valem decorar</h3>
+  <pre class="formula"># o pipeline cobriu todos os pregões?
+SELECT dtNegocio, COUNT(*) FROM NegociosBrutos GROUP BY 1 ORDER BY 1 DESC LIMIT 15;
+
+# de onde veio a taxa dos negócios do dia?
+SELECT cdFonteTaxa, COUNT(*) FROM NegociosProcessados
+WHERE dtLiquidacao = '2026-07-17' GROUP BY 1;
+
+# a curva DI chegou?
+SELECT MAX(dtReferencia), COUNT(DISTINCT dtReferencia)
+FROM MtmAnbima WHERE cdTicker LIKE 'DI1%';
+
+# quantos ativos a calc consegue precificar com confiança?
+SELECT cdIndexador, SUM(stFluxoValidado = 1), COUNT(*) FROM InfoAtivos GROUP BY 1;</pre>
+</section>
+
+<!-- ====================================================== NAO EXISTE -->
+<section id="naoexiste">
+  <div class="eyebrow">05 · Fronteiras</div>
+  <h2>O que este sistema <em>não</em> faz</h2>
+  <p class="lead">Registrado porque já foi assumido por engano — inclusive em briefings. Nada abaixo existe no código.</p>
+
+  <div class="tw">
+  <table>
+    <thead><tr><th>Assumido</th><th>Realidade</th></tr></thead>
+    <tbody>
+      <tr><td>Dados da <strong>CVM</strong> (informe diário, agenda)</td><td>Nenhuma linha de código. A CVM não é consultada em momento algum.</td></tr>
+      <tr><td>Taxa <strong>Selic</strong></td><td>O BCB é consultado só para o <strong>DI realizado</strong> (série 12). Selic não entra no sistema.</td></tr>
+      <tr><td>Ofertas primárias / re-indexações da B3</td><td>Da B3 vêm negócios, cadastro/fluxo, curva DI e a calculadora. Mais nada.</td></tr>
+      <tr><td>Precificação de <strong>%CDI</strong> pela calc local</td><td>Deliberadamente fora: a calc não reproduz o desconto de %CDI fora do par (~2–4 bps). Esses papéis usam FI → B3.</td></tr>
+      <tr><td>Suíte de testes / CI</td><td>Só <span class="mono">code/tests_fase1.py</span> e os gabaritos do motor. Não há pytest nem pipeline de CI.</td></tr>
+      <tr><td>pandas, numpy, requests, lxml, openpyxl</td><td>Nenhum é importado. Estavam no <span class="mono">requirements.txt</span> antigo sem uso.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="callout">
+    <span class="tag">Pendências conhecidas</span>
+    <p><strong>Incorporação passado × futuro</strong> — eventos futuros usam a regra correta; eventos passados descartam a amortização do próprio evento. Inerte hoje, quebra por calendário. Ver <code>docs/BACKLOG_INCORP.md</code>.</p>
+    <p><strong>Duration congelada</strong> — melhoria no motor não alcança quem já tem <code>vrDuration</code> gravada. Ver <code>--forcar-duration</code> no backlog.</p>
+  </div>
+
+  <footer>
+    Gerado a partir da inspeção direta do código e do banco em <strong>23/07/2026</strong>. Contagens conferem com <code>code/data/trades.db</code> nessa data. Contexto técnico completo em <code>CONTEXTO_PROJETO.md</code>; decisões de projeto em <code>PLANEJAMENTO_v5.md</code>; convenções de código em <code>CLAUDE.md</code>.
+  </footer>
+</section>
+
+</div></main>
+</div>
+
+<script>
+(function(){
+  // Tema: respeita o SO por padrão; o botão fixa a escolha no documento.
+  var btn = document.getElementById('tbtn');
+  btn.addEventListener('click', function(){
+    var atual = document.documentElement.getAttribute('data-theme');
+    if(!atual){
+      atual = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+    document.documentElement.setAttribute('data-theme', atual === 'dark' ? 'light' : 'dark');
+  });
+
+  // Marca no menu a seção visível.
+  var links = Array.prototype.slice.call(document.querySelectorAll('.nav ol a'));
+  var secoes = links.map(function(a){ return document.querySelector(a.getAttribute('href')); });
+  function marcar(){
+    var y = window.scrollY + 130, ativo = 0;
+    secoes.forEach(function(s, i){ if(s && s.offsetTop <= y) ativo = i; });
+    links.forEach(function(a, i){ a.classList.toggle('active', i === ativo); });
+  }
+  window.addEventListener('scroll', marcar, {passive:true});
+  window.addEventListener('resize', marcar);
+  marcar();
+})();
+</script>
+</body>
+</html>

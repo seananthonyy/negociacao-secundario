@@ -35,17 +35,30 @@ claude --model claude-sonnet-4-6
 ```
 Ou dentro do Claude Code: `/model`
 
+## Por onde começar a entender o projeto
+
+| Você quer… | Abra |
+|---|---|
+| Entender o sistema visualmente, em 10 minutos | **`guia_projeto.html`** (abra no navegador — funciona offline) |
+| Dar contexto completo a um agente de IA | **`CONTEXTO_PROJETO.md`** (arquitetura + dicionário de dados + motor) |
+| Saber por que uma decisão foi tomada | `PLANEJAMENTO_v5.md` (documento mestre) |
+| Instalar no PC do banco | `INSTALACAO_BANCO.md` |
+
 ## Estrutura
 
+- `guia_projeto.html` — guia visual do fluxo de dados (leitura humana)
+- `CONTEXTO_PROJETO.md` — contexto técnico completo + dicionário de dados
+- `requirements.txt` — dependências (fonte única; `code/requirements.txt` aponta para cá)
 - `CLAUDE.md` — contexto auto-carregado pelo Claude Code (não editar à toa)
 - `PLANEJAMENTO_v5.md` — documento mestre de planejamento (fonte da verdade)
 - `vault/` — Obsidian (abra essa pasta como vault no Obsidian)
 - `code/` — projeto Python
+- `docs/` — relatórios de fase e backlogs técnicos
 - `.claude/agents/` — subagents customizados (coder, documenter)
 
 ## Migrar pra outro PC
 
 1. Copie a pasta `D:\ItauBBA\negociacao-secundario\` inteira
-2. No PC novo, rode `pip install -r code/requirements.txt` e `playwright install chromium`
+2. No PC novo, rode `pip install -r requirements.txt` e `playwright install chromium`
 3. Recrie `code/.env` (não vem na cópia, contém secrets)
 4. Pronto

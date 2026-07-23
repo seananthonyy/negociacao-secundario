@@ -111,7 +111,7 @@ def DiffTaxaEmBps(cdIndexador: str | None, delta: float) -> float:
 
 
 WORKERS = 10
-CSV_SAIDA = Path("data/validar_calc_b3.csv")
+CSV_SAIDA = Path("data/diagnosticos/validar_calc_b3.csv")
 
 C = ImportarCalc()
 
