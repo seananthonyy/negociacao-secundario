@@ -84,8 +84,40 @@ precisamente o modo de falha que originou esta tarefa.
    datas de cálculo anteriores ao evento**, para provar qual semântica a B3 usa antes de
    mexer. Esta é a etapa que decide — nada de mudar as duas pontas por simetria estética.
 
+## Anexo — o pseudocódigo do plano original já trazia a semântica errada
+
+Preservado aqui do `docs/HANDOFF_FASE3.md` (removido em 23/07/2026, depois que a
+FASE 3 fechou; este era o único trecho ainda citado). É o desenho que o plano da
+Tarefa 2 propunha para o gerador unificado:
+
+```python
+def GerarFluxosFuturos(dataCalc, inicio, taxaEmi, fluxo, vne, estrat, tipoAmort, ctx):
+    """ÚNICO ponto com a maquina de estado. yield (dataEv, du, FV) por evento futuro."""
+    vna, face, ancora = estrat.VnaNaData(...)          # aplica eventos <= dataCalc
+    for dataEv, pctAmort, pctIncorp in futuros:
+        fj = estrat.FatorPeriodo(ancora, dataEv, taxaEmi, dataCalc, ctx)
+        if pctIncorp > 0:                              # capitaliza no VNA, sem caixa
+            f = 1 + pctIncorp/100*(fj-1); vna*=f; face*=f; ancora=dataEv; continue
+        juros = vna*(fj-1)
+        amort = (face if tipoAmort=='saldo_original' else vna) * pctAmort/100
+        yield dataEv, ContarDu(dataCalc, dataEv), Trunca(juros+amort, 6)
+        if pctAmort > 0: vna = vna-amort if saldo_original else vna*(1-pctAmort/100)
+        ancora = dataEv
+```
+
+Repare no `continue` da linha de incorporação: é **exatamente a semântica B**. Se
+tivesse sido implementado como escrito, o gerador unificado teria propagado para
+*todos* os indexadores o descarte da amortização e a não-remuneração da fração não
+incorporada — inclusive para o IPCA, que já estava certo.
+
+O plano nasceu assim porque foi desenhado olhando o walk do DI (`_EventosOperacaoDi`),
+que era o mais recente. A implementação final divergiu do plano de propósito, adotando
+a semântica A. **Lição para o Passo 4:** ao unificar duas implementações que discordam,
+a que serviu de molde para o desenho não é necessariamente a correta — decidir qual é
+exige oráculo externo, não leitura de código.
+
 ## Referências
 
 - `calculadora_rf.py` → `GerarFluxosFuturos` (semântica A), `_CaminharVnaDi` (B), `CalcularVna` (B).
-- `docs/HANDOFF_FASE3.md` seção 3 — o pseudocódigo do plano usava a semântica B (`continue`).
-- `docs/RELATORIO_FASE3_FINAL.md` — resultado da unificação.
+- `docs/RELATORIO_FASE3_FINAL.md` — resultado da unificação e evidência contra a B3.
+- `CONTEXTO_PROJETO.md` §7.4 — resumo desta pendência para agentes de IA.
