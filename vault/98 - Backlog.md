@@ -254,3 +254,21 @@ Conversa direto com o item "Calcular duration de corporates" (a calc também exp
 - Rodar em `--dry-run` antes, comparando gravado × recalculado, e só então decidir se vale gravar.
 
 **Conversa com:** `docs/RELATORIO_FASE3_FINAL.md` §3.3 (medição do impacto) e `docs/BACKLOG_INCORP.md` (a outra pendência aberta pela FASE 3).
+
+---
+
+## Flag `--sem-email` para execuções em lote e validação
+
+**Origem:** 23/07/2026, no fechamento da FASE 3.
+
+**O que é:** uma flag global que suprima o envio de email no fim do script, para rodadas de teste/validação em sequência.
+
+**Por que importa:** a convenção do projeto é que **todo script manda email no fim, sucesso ou erro** — ótimo para execução agendada, ruim para depuração. No fechamento da FASE 3 o `validar_calc_b3.py` foi rodado 4× seguidas (comparando calc nova × antiga, amostras diferentes) e o `match_referencias.py` 1×: cada uma disparou um email. O `--dry-run` protege o banco, mas não a caixa de entrada. Pior: uma das chamadas deixou uma **instância órfã de COM do Outlook** (processo sem janela, `MainWindowTitle` vazio, respondendo mas pendurado) — o gotcha de `pywin32` já conhecido no projeto. Rodar validação em lote hoje custa spam e um zumbi de processo.
+
+**O que precisa ser decidido/feito:**
+- Onde mora a flag: em cada `LerArgumentos()` ou num helper comum (o envio já é centralizado — a supressão deveria ser também, senão vira 12 implementações e volta o problema de N cópias).
+- Se `--dry-run` deveria **implicar** `--sem-email` automaticamente. Provavelmente sim: quem não grava, geralmente também não quer notificar.
+- Alternativa/complemento: variável de ambiente (ex.: `SEM_EMAIL=1`) para uma sessão inteira de depuração, sem repetir a flag em cada comando.
+- Conferir se o caminho de erro também respeita a flag — um script que falha em modo de teste não deveria mandar email de erro.
+
+**Conversa com:** a nota do gotcha de COM em [[Email rascunho do relatório]] e a convenção "Email no fim de cada script" no `CLAUDE.md`.
