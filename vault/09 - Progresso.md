@@ -4,7 +4,7 @@
 
 ## Estado atual
 
-**Pipeline operacional end-to-end, agora com 18 passos.** Em 13/07/2026 o **cadastro dos ativos inverteu**: a **B3** (`getBondDetails`) virou a fonte **primária** de cadastro e fluxo, e a Anbima Data virou fallback, puxada **por demanda** (só o que negociou). Ver [[15 - Cadastro dos Ativos]]. Desde 12/07 o pipeline também roda as **rotinas de dados da calculadora de renda fixa** (IPCA, projeção de IPCA, DI realizado, curva DI arquivada) e a **validação de fluxo**; ver [[14 - Rotinas da Calculadora]]. Relatório histórico interativo (`relatorio_secundario.html`) com 6 abas (Boletim, Visão Mercado, Por Ativo, Spread×Duration, Info Ativos, Visão Anbima) cobrindo 09–24/06/2026 (12 pregões, 2.064 ativos, R$ 10.717,92 MM). F17 concluída. Banco SQLite otimizado para lookups por ticker do add-in externo da calculadora (índice cobridor em `FluxoAtivos`, PRAGMAs de performance, `get_readonly_connection`). `AnbimaIndicativos` com taxa indicativa de debêntures backfillada de 23/02→24/06 (janela de arquivamento de ~4 meses). Resta F12 (hardening).**
+**Pipeline operacional end-to-end, com 19 passos.** Em 13/07/2026 o **cadastro dos ativos inverteu**: a **B3** (`getBondDetails`) virou a fonte **primária** de cadastro e fluxo, e a Anbima Data virou fallback, puxada **por demanda** (só o que negociou). Ver [[15 - Cadastro dos Ativos]]. Desde 12/07 o pipeline também roda as **rotinas de dados da calculadora de renda fixa** (IPCA, projeção de IPCA, DI realizado, curva DI arquivada) e a **validação de fluxo**; ver [[14 - Rotinas da Calculadora]]. Desde 15–19/07 a **calc local está LIGADA** como degrau 2 da cascata de taxa (CDI+/IPCA/PREFIXADO validados), com a confiança garantida pelo gate `validar_calc_b3`; ver [[16 - Confianca nos Validados (WIP)]]. Relatório histórico interativo (`relatorio_secundario.html`) com 6 abas (Boletim, Visão Mercado, Por Ativo, Spread×Duration, Info Ativos, Visão Anbima). **Última rodada (29/07/2026): 09/06→28/07, 34 pregões, 2.567 ativos, R$ 34.369,07 MM.** Todas as fases F0–F17 concluídas; o trabalho corrente é a **migração para o PC do banco** (ver `docs/RUNBOOK_MIGRACAO_BANCO.md`) e os itens de [[98 - Backlog]]. Banco SQLite com **migração autônoma de schema** (v3, backup preventivo, reconciliador genérico) e otimizado para lookups por ticker do add-in externo da calculadora.
 
 ## Checklist de implementação
 
@@ -211,6 +211,29 @@ gerar_relatorio_credito       ← análise histórica (todos os pregões, sem ar
   - **Dica:** o add-in deve reutilizar **uma única conexão** (abrir/fechar por lookup domina o tempo). Queries ideais e mapeamento de campos em [[04 - Banco de Dados]]; detalhes do módulo em [[10 - Scripts/libs]].
 
 ## Última atualização
+
+2026-08-06 — **Vault sincronizado + bundle regenerado, tudo pronto para importar no banco.**
+- **Como conferir se o `bundle_banco.py` está atual — NÃO dá para grepar.** O conteúdo dos arquivos vive **base64-encoded** dentro do bundle; só os *caminhos* são texto plano. Procurar `SCHEMA_VERSION` com `Select-String`/`grep` dá **falso negativo garantido** (foi o que aconteceu nesta sessão, gerando um alarme falso de "bundle defasado"). O jeito certo é decodificar:
+  ```python
+  import re, base64
+  src = open('bundle_banco.py', encoding='utf-8').read()
+  m = re.search(r"'code/lib/db\.py': '([A-Za-z0-9+/=]+)'", src)
+  print('SCHEMA_VERSION' in base64.b64decode(m.group(1)).decode('utf-8'))
+  ```
+  Alternativa mais simples: `git log --oneline -1 -- bundle_banco.py` e conferir se ele foi tocado no último commit de código.
+- **O bundle do commit `505a77e` já estava correto** — foi regenerado dentro do próprio commit, junto da migração. Regenerado de novo hoje só para embarcar as notas do vault atualizadas.
+- **`bundle_calc.py` conferido: está atual** — foi regenerado dentro do próprio commit `53be2f5` (23/07), junto do `calculadora_rf.py`. Os dois bundles **têm de ir juntos** para o banco: a FASE 3 mudou a assinatura da calc (`CalcularDuration` passou a receber `cdTipoAmortizacao` e o aniversário), então código novo do negociacao + calc velha = `TypeError`.
+- **Coluna "Referência" na aba Info Ativos: já estava pronta** (entrou no `505a77e`) e validada no HTML gerado — 2.567 ativos, **1.637 com referência** (438 FUNDING, resto NTN-B/DI1), com `bRefDisp` encurtando `NTN-B 35` → `B35+`, filtro por coluna e ordenação.
+- **Risco anotado para o B2 da migração:** o guard `PROTEGIDOS` do extrator cobre `*.db`, `.env` e `destinatarios.py`, mas **não o `config.toml`** (é versionado e será sobrescrito). Ele é neutro de ambiente (segredos são só nomes de variável; proxy vem do env), mas customização local no banco (`[calc] usarCalcTaxa`, thresholds do `[filtro]`) precisa ser salva antes e re-aplicada depois.
+- Passo a passo operacional da migração em `docs/RUNBOOK_MIGRACAO_BANCO.md`.
+
+2026-07-23 — **FASE 3 fechada (unificação da máquina de fluxo) + migração autônoma de schema + tripwire de data.** Relatório completo em `docs/RELATORIO_FASE3_FINAL.md`.
+- **FASE 3 — 7 cópias do walk de fluxo viraram `GerarFluxosFuturos` + Strategy.** No caminho apareceu um **2º bug de incorporação**, na `CalcularDuration`: a incorporação de juros era ignorada e a duration errava até **1,53 ano** contra a B3 (validado vs. `cashFlowList`). Helpers mortos removidos (`_FluxosDescontaveis*`, `_EventosOperacaoDi`, `_PuOperacaoDi`, `_DurationDi`). Gate idêntico ao da calc antiga; gabaritos 11/11; `tests_fase1` verde.
+- **Migração autônoma de schema no `Bootstrap` (`lib/db.py`), schema v3.** Reconciliador **genérico**: lê a DDL (fonte única) e o banco vivo, descobre as colunas faltantes em **qualquer** tabela e as adiciona por `ALTER TABLE ADD COLUMN`. Substitui a lista fixa de ALTERs que só cobria `InfoAtivos` — era a origem de colunas esquecidas em `NegociosProcessados`/etc. **Backup preventivo** antes de qualquer ALTER (só quando há migração real sobre banco com dados); **zero DROP**; ao final confere contagem de linhas antes/depois e faz **`ROLLBACK` + erro** se cair; grava a versão em `SchemaVersao` (nome em PascalCase PT-BR, não `_SchemaVersion` — o `CLAUDE.md` proíbe `_` inicial). Split `DDL_TABELAS`/`DDL_INDICES` porque índice pode citar coluna que o ALTER ainda vai criar. Testado em banco novo, banco antigo sintético com dados, idempotência e no `trades.db` real (contagens idênticas, 0,07s, sem backup por já estar atual).
+- **Como bumpar o schema daqui pra frente:** editar a `DDL` (só aditivo) e incrementar `SCHEMA_VERSION`. **Não existe mais lista paralela de ALTER para manter em dia.**
+- **Coluna "Referência" na aba Info Ativos** do relatório geral (após Indexador, com `bRefDisp`).
+- **Tripwire de data:** evento de `FluxoAtivos` fora de `[1990-01-01, 2100-12-31]` **desvalida o ativo** e o reporta em CSV, antes da fila de validação — não apaga dado (quem conserta é humano). Pegou 4 ativos corrompidos (`22L1086421` com evento em **2423-01-25**): a data não quebrava o PU, mas custava um walk de ~145 mil dias úteis e só não explodia por sorte.
+- **Backlog aberto pela fase:** `--forcar-duration` no `match_referencias` (o pré-passo só preenche `NULL`, então 19 ativos ficaram com a duration antiga) e `docs/BACKLOG_INCORP.md` (duas semânticas de incorporação, passado × futuro — latente).
 
 2026-07-20 (madrugada) — **Preparação para o banco: repos, bundles, auditoria do vault.** (Sessão autônoma pré-migração.)
 - **Calc virou repo git PRIVADO** (`github.com/seananthonyy/calculadora-renda-fixa`) com **`bundle_calc.py`** auto-extraível (`make_bundle.py`) — o banco não clona, abre o repo na web, baixa o bundle e roda. Testado (extrai 18 arquivos, calc compila). `.gitignore` exclui `.db`/`files/`/`.claude`.
