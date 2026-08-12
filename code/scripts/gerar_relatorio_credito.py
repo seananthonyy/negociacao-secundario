@@ -89,6 +89,30 @@ def TipoExibicao(cdInstrumento: str | None, cdIndexador: str | None) -> str | No
     return cdInstrumento
 
 
+def SpreadNaBanda(cdIndexador: str | None, vrSpread: float | None) -> bool:
+    """
+    Banda de sanidade do spread — APENAS para as médias AGREGADAS por indexador
+    (Visão Mercado). NÃO altera a base nem as visões por-ticker (Por Ativo,
+    Spread×Duration, Boletim): lá o usuário precisa enxergar o caso extremo.
+
+    Erros de PU↔taxa upstream produzem spreads impossíveis (ex: CRA02400ECU a
+    ~6,3 mi %) que detonam a média ponderada do indexador. A banda só decide se a
+    linha ENTRA na média do spread — o volume é sempre somado integralmente.
+
+    Faixas (calibradas sobre a distribuição real 09–19/06, ver vault/98 Backlog):
+      CDI+ / IPCA / PREFIXADO  → |spread| <= 15%
+      %CDI                     → 60% <= spread <= 180%  (multiplicador, bilateral)
+      indexador desconhecido   → não filtra (o grupo '?' não é plotado mesmo)
+    """
+    if vrSpread is None:
+        return False
+    if cdIndexador == "%CDI":
+        return 60.0 <= vrSpread <= 180.0
+    if cdIndexador in ("CDI+", "IPCA", "PREFIXADO"):
+        return abs(vrSpread) <= 15.0
+    return True
+
+
 @dataclass
 class LinhaNegocio:
     cdTicker: str
@@ -108,66 +132,16 @@ class LinhaNegocio:
 
 
 # ---------------------------------------------------------------------------
-# SQL — Visão Geral / Por Ticker / Duration (sem filtro de período)
+# SQL — Por Ticker / Duration (sem filtro de período)
 # ---------------------------------------------------------------------------
 
-# Banda de sanidade do spread — APENAS para as visões AGREGADAS por indexador
-# (Visão Geral). NÃO altera a base nem as visões por-ticker (Por Ativo,
-# Spread×Duration, Boletim): lá o usuário precisa enxergar o caso extremo.
-# Erros de PU↔taxa upstream produzem spreads impossíveis (ex: CRA02400ECU a
-# ~6,3 mi %) que detonam a média ponderada do indexador. A banda só decide se o
-# trade ENTRA no CASE do spread — o volume é sempre somado integralmente.
-# Faixas (calibradas sobre a distribuição real 09–19/06, ver vault/98 Backlog):
-#   CDI+ / IPCA / PREFIXADO  → |spread| <= 15%
-#   %CDI                     → 60% <= spread <= 180%  (multiplicador, banda bilateral)
-#   indexador desconhecido   → não filtra (grupo '?' não é plotado mesmo)
-BANDA_SPREAD = (
-    "((ia.cdIndexador = '%CDI' AND t.vrSpreadOver BETWEEN 60.0 AND 180.0) "
-    "OR (ia.cdIndexador IN ('CDI+','IPCA','PREFIXADO') AND ABS(t.vrSpreadOver) <= 15.0) "
-    "OR ia.cdIndexador IS NULL "
-    "OR ia.cdIndexador NOT IN ('%CDI','CDI+','IPCA','PREFIXADO'))"
-)
-
-SQL_DIARIO = f"""
-SELECT
-    t.dtLiquidacao,
-    SUM(t.vrVolume) / 1e6                                               AS vrVolumeM,
-    SUM(CASE WHEN COALESCE(ia.cdIndexador,'') != '%CDI'
-                  AND t.vrSpreadOver IS NOT NULL AND {BANDA_SPREAD}
-             THEN t.vrSpreadOver * 100.0 * t.vrVolume ELSE 0 END)
-    / NULLIF(SUM(CASE WHEN COALESCE(ia.cdIndexador,'') != '%CDI'
-                           AND t.vrSpreadOver IS NOT NULL AND {BANDA_SPREAD}
-                      THEN t.vrVolume ELSE 0 END), 0)   AS vrSpreadBps,
-    SUM(CASE WHEN COALESCE(ia.cdIndexador,'') = '%CDI'
-                  AND t.vrSpreadOver IS NOT NULL AND {BANDA_SPREAD}
-             THEN t.vrSpreadOver * t.vrVolume ELSE 0 END)
-    / NULLIF(SUM(CASE WHEN COALESCE(ia.cdIndexador,'') = '%CDI'
-                           AND t.vrSpreadOver IS NOT NULL AND {BANDA_SPREAD}
-                      THEN t.vrVolume ELSE 0 END), 0)   AS vrSpreadPctCdi
-FROM NegociosProcessados t
-LEFT JOIN InfoAtivos ia ON ia.cdTicker = t.cdTicker
-WHERE t.cdStatus = 'VALIDO'
-  AND t.dtLiquidacao <= ?
-GROUP BY t.dtLiquidacao
-ORDER BY t.dtLiquidacao
-"""
-
-SQL_DIARIO_IDX = f"""
-SELECT
-    t.dtLiquidacao,
-    COALESCE(ia.cdIndexador, '?')  AS cdIndexador,
-    SUM(t.vrVolume) / 1e6          AS vrVolumeM,
-    SUM(CASE WHEN t.vrSpreadOver IS NOT NULL AND {BANDA_SPREAD}
-             THEN t.vrSpreadOver * t.vrVolume ELSE 0 END)
-    / NULLIF(SUM(CASE WHEN t.vrSpreadOver IS NOT NULL AND {BANDA_SPREAD}
-                      THEN t.vrVolume ELSE 0 END), 0)   AS vrSpreadRaw
-FROM NegociosProcessados t
-LEFT JOIN InfoAtivos ia ON ia.cdTicker = t.cdTicker
-WHERE t.cdStatus = 'VALIDO'
-  AND t.dtLiquidacao <= ?
-GROUP BY t.dtLiquidacao, ia.cdIndexador
-ORDER BY t.dtLiquidacao
-"""
+# NOTA (12/08/2026) — a Visão Mercado NÃO tem mais SQL próprio.
+# Ela era alimentada por SQL_DIARIO/SQL_DIARIO_IDX, que filtravam
+# `cdStatus = 'VALIDO'` e por isso ignoravam todo o volume BROKER — divergindo
+# do Boletim Diário em ~35% do volume da base. Agora `DerivarDiario()` deriva a
+# aba do MESMO dado do Boletim (VALIDO + grupos BROKER agregados por
+# `idGrupoNegocio`, volume/2), o que faz os totais baterem por construção em vez
+# de por coincidência. Ver vault/09 - Progresso.
 
 SQL_TICKER = """
 SELECT
@@ -444,33 +418,75 @@ def EscolherFontePeso(conn) -> tuple[str, str]:
     return PESO_CTE_EMISSAO, "emissao"
 
 
-def CarregarDiario(conn, dtCorte: str) -> list[dict]:
-    rows = conn.execute(SQL_DIARIO, (dtCorte,)).fetchall()
-    return [
-        {
-            "dt":           r[0],
-            "volume":       round(r[1], 2) if r[1] is not None else 0.0,
-            "spreadBps":    round(r[2], 2) if r[2] is not None else None,
-            "spreadPctCdi": round(r[3], 4) if r[3] is not None else None,
-        }
-        for r in rows
-    ]
+def DerivarDiario(boletim: dict) -> tuple[list[dict], list[dict]]:
+    """
+    Deriva os dados da Visão Mercado a partir do MESMO dado do Boletim Diário —
+    isto é, VALIDO + grupos BROKER agregados por `idGrupoNegocio` (volume/2,
+    taxa (max+min)/2), já consolidados por ticker em `CarregarBoletim`.
 
+    Antes esta aba tinha SQL próprio filtrando `cdStatus = 'VALIDO'`, o que
+    deixava de fora ~35% do volume da base (todo o BROKER) e fazia as duas abas
+    do relatório mostrarem números diferentes para o mesmo pregão. Derivar do
+    boletim faz os totais baterem por construção.
 
-def CarregarDiarioIdx(conn, dtCorte: str) -> list[dict]:
-    """Volume e spread ponderado por volume, quebrados por (dia, indexador).
-    spreadRaw fica em % para CDI+/IPCA/PREFIXADO (multiplicar por 100 = bps no
-    template) e já é o spread direto para %CDI."""
-    rows = conn.execute(SQL_DIARIO_IDX, (dtCorte,)).fetchall()
-    return [
-        {
-            "dt":        r[0],
-            "indexador": r[1],
-            "volume":    round(r[2], 4) if r[2] is not None else 0.0,
-            "spreadRaw": round(r[3], 6) if r[3] is not None else None,
-        }
-        for r in rows
-    ]
+    Retorna `(diario, diarioIdx)`:
+      diario     — 1 linha por pregão. `volume` inclui TODOS os ativos, também os
+                   sem cadastro em InfoAtivos (indexador '?') — é o total que a
+                   pill "Volume Total" exibe e tem de casar com o Boletim.
+      diarioIdx  — 1 linha por (pregão, indexador), inclusive o balde '?'. O
+                   template plota só os 4 indexadores classificados; o '?' entra
+                   apenas no total (ver nota de rodapé da aba).
+
+    Unidades preservadas do formato antigo: volume em R$ MM; `spreadBps` já em
+    bps; `spreadRaw`/`spreadPctCdi` em % (o template multiplica por 100 nos
+    não-%CDI).
+    """
+    diario: list[dict] = []
+    diarioIdx: list[dict] = []
+
+    for dt in sorted(boletim.keys()):
+        tickers = boletim[dt]["tickers"]
+
+        porIdx: dict[str, dict] = {}
+        numBps = denBps = numCdi = denCdi = 0.0
+
+        for t in tickers:
+            cdIndexador = t["cdIndexador"]
+            idx         = cdIndexador or "?"
+            vrVolume    = t["vrVolumeTotal"] or 0.0
+            vrSpread    = t["vrSpreadOverMedio"]
+
+            acc = porIdx.setdefault(idx, {"volume": 0.0, "num": 0.0, "den": 0.0})
+            acc["volume"] += vrVolume
+
+            if not SpreadNaBanda(cdIndexador, vrSpread):
+                continue
+            acc["num"] += vrSpread * vrVolume
+            acc["den"] += vrVolume
+            if idx == "%CDI":
+                numCdi += vrSpread * vrVolume
+                denCdi += vrVolume
+            else:
+                numBps += vrSpread * vrVolume
+                denBps += vrVolume
+
+        diario.append({
+            "dt":           dt,
+            "volume":       round(sum(a["volume"] for a in porIdx.values()) / 1e6, 2),
+            "spreadBps":    round(numBps / denBps * 100.0, 2) if denBps else None,
+            "spreadPctCdi": round(numCdi / denCdi, 4)         if denCdi else None,
+        })
+
+        for idx in sorted(porIdx):
+            acc = porIdx[idx]
+            diarioIdx.append({
+                "dt":        dt,
+                "indexador": idx,
+                "volume":    round(acc["volume"] / 1e6, 4),
+                "spreadRaw": round(acc["num"] / acc["den"], 6) if acc["den"] else None,
+            })
+
+    return diario, diarioIdx
 
 
 def CarregarAnbimaIdx(conn, ctePeso: str, dtCorte: str) -> list[dict]:
@@ -1015,17 +1031,17 @@ def Principal() -> None:
                      "outstanding real (tabela Outstanding)" if pesoFonte == "outstanding"
                      else "quantidade de emissão (PROXY — Outstanding vazia)")
 
-            diario    = CarregarDiario(conn, dtCorte)
-            diarioIdx = CarregarDiarioIdx(conn, dtCorte)
             anbimaIdx = CarregarAnbimaIdx(conn, ctePeso, dtCorte)
             anbimaRef = CarregarAnbimaRef(conn, ctePeso, dtCorte)
             anbimaDur = CarregarAnbimaDur(conn, ctePeso, dtCorte)
             ticker    = CarregarTicker(conn, dtCorte)
             duration = CarregarDuration(conn, dtCorte)
-            log.info("%s: %d pregões | %d ticker-dias | %d duration-rows",
-                     NOME_SCRIPT, len(diario), len(ticker), len(duration))
             log.info("%s: carregando boletim por pregão...", NOME_SCRIPT)
             boletim  = CarregarBoletim(conn, log, dtCorte)
+            # Visão Mercado deriva do boletim (VALIDO + BROKER) — ver DerivarDiario
+            diario, diarioIdx = DerivarDiario(boletim)
+            log.info("%s: %d pregões | %d ticker-dias | %d duration-rows",
+                     NOME_SCRIPT, len(diario), len(ticker), len(duration))
             infoAtivos = CarregarInfoAtivos(conn, dtCorte)
             log.info("%s: %d ativos em Info Ativos", NOME_SCRIPT, len(infoAtivos))
         finally:

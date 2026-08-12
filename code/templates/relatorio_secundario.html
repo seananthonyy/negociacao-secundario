@@ -159,6 +159,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f4f5f7;color:#1a1a2e;fo
       <select id="g-end" class="fsel" onchange="renderGeral()"></select>
     </div>
     <div class="pills" id="pills-geral"></div>
+    <div class="disclaimer" id="nota-geral"></div>
     <div class="card">
       <div class="card-title">Volume Negociado (R$ MM) · Área Empilhada por Indexador</div>
       <div id="chart-geral-vol" style="height:360px"></div>
@@ -673,11 +674,16 @@ function renderGeral() {
   const s    = document.getElementById('g-start').value;
   const e    = document.getElementById('g-end').value;
   const KEYS  = new Set(GERAL_IDX.map(g => g.key));   // só indexadores classificados
-  const rows = DATA.diarioIdx.filter(r => r.dt >= s && r.dt <= e && KEYS.has(r.indexador));
-  if (!rows.length) {
+  // rowsAll = TUDO no período, inclusive o balde '?' (ativo sem cadastro em
+  // InfoAtivos). É o que alimenta o "Volume Total" — assim ele casa com o
+  // Boletim Diário. rows = só os 4 indexadores, para gráficos e quebra.
+  const rowsAll = DATA.diarioIdx.filter(r => r.dt >= s && r.dt <= e);
+  const rows    = rowsAll.filter(r => KEYS.has(r.indexador));
+  if (!rowsAll.length) {
     emptyChart('chart-geral-vol','Sem dados no período selecionado');
     GERAL_IDX.forEach(g => emptyChart(g.div,'Sem dados'));
     document.getElementById('pills-geral').innerHTML = '';
+    document.getElementById('nota-geral').innerHTML  = '';
     return;
   }
 
@@ -687,7 +693,10 @@ function renderGeral() {
   rows.forEach(r => { (byIdx[r.indexador] = byIdx[r.indexador] || {})[r.dt] = r; });
 
   // ── Pills (totais do período) ── Volume Total + quebra por indexador (volume + % do total)
-  const totVol = rows.reduce((a,r) => a + r.volume, 0);
+  const totVol       = rowsAll.reduce((a,r) => a + r.volume, 0);
+  const totVolClass  = rows.reduce((a,r) => a + r.volume, 0);
+  const volSemCad    = totVol - totVolClass;
+  const nrDts        = [...new Set(rowsAll.map(r => r.dt))].length;
   const volByIdx = GERAL_IDX
     .map(g => ({ label:g.label, color:g.color,
                  vol: dts.reduce((a,d) => a + (byIdx[g.key] && byIdx[g.key][d] ? byIdx[g.key][d].volume : 0), 0) }))
@@ -698,9 +707,20 @@ function renderGeral() {
     + `<div class="psub">${bFmt(totVol ? o.vol/totVol*100 : 0,1)}% do total</div></div>`
   ).join('');
   document.getElementById('pills-geral').innerHTML = `
-    <div class="pill"><div class="plabel">Volume Total</div><div class="pval">R$ ${bFmt(totVol,0)} MM</div><div class="psub">${dts.length} pregão(ões)</div></div>
+    <div class="pill"><div class="plabel">Volume Total *</div><div class="pval">R$ ${bFmt(totVol,0)} MM</div><div class="psub">${nrDts} pregão(ões)</div></div>
     ${breakdown}
   `;
+
+  // ── Nota de rodapé: por que a soma dos 4 indexadores não fecha com o total ──
+  document.getElementById('nota-geral').innerHTML =
+    `<b>*</b> O <b>Volume Total</b> segue as mesmas regras do <b>Boletim Diário</b>: negócios `
+    + `<b>VÁLIDOS</b> mais os de <b>corretagem (BROKER)</b>, estes agregados por grupo e com o volume `
+    + `dividido por 2 (as duas pontas são o mesmo negócio).<br>`
+    + `Ele inclui também <b>ativos sem cadastro de indexador</b> na base — tipicamente CRIs de código `
+    + `numérico que não constam da Anbima nem da B3 — que somam `
+    + `<b>R$ ${bFmt(volSemCad,0)} MM</b> (${bFmt(totVol ? volSemCad/totVol*100 : 0,1)}% do total) no período. `
+    + `Como esses negócios não têm indexador conhecido, <b>não entram nos gráficos e na quebra por `
+    + `indexador</b>: por isso CDI+ + % CDI + IPCA + Prefixado <b>não fecham</b> com o Volume Total.`;
 
   // ── Volume: área empilhada por indexador ──
   const volTraces = GERAL_IDX.filter(g => byIdx[g.key]).map(g => ({
