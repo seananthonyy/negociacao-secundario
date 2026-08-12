@@ -713,14 +713,9 @@ function renderGeral() {
 
   // ── Nota de rodapé: por que a soma dos 4 indexadores não fecha com o total ──
   document.getElementById('nota-geral').innerHTML =
-    `<b>*</b> O <b>Volume Total</b> segue as mesmas regras do <b>Boletim Diário</b>: negócios `
-    + `<b>VÁLIDOS</b> mais os de <b>corretagem (BROKER)</b>, estes agregados por grupo e com o volume `
-    + `dividido por 2 (as duas pontas são o mesmo negócio).<br>`
-    + `Ele inclui também <b>ativos sem cadastro de indexador</b> na base — tipicamente CRIs de código `
-    + `numérico que não constam da Anbima nem da B3 — que somam `
-    + `<b>R$ ${bFmt(volSemCad,0)} MM</b> (${bFmt(totVol ? volSemCad/totVol*100 : 0,1)}% do total) no período. `
-    + `Como esses negócios não têm indexador conhecido, <b>não entram nos gráficos e na quebra por `
-    + `indexador</b>: por isso CDI+ + % CDI + IPCA + Prefixado <b>não fecham</b> com o Volume Total.`;
+    `<b>*</b> O Volume Total inclui <b>R$ ${bFmt(volSemCad,0)} MM</b> de ativos sem cadastro de `
+    + `indexador, que não entram na quebra abaixo — por isso a soma dos quatro indexadores não `
+    + `fecha com o total.`;
 
   // ── Volume: área empilhada por indexador ──
   const volTraces = GERAL_IDX.filter(g => byIdx[g.key]).map(g => ({
