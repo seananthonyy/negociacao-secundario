@@ -37,8 +37,6 @@ negociacao-secundario/
 │   │   ├── scrape_di_bcb.py                 DI realizado → di.db/DiHistorico
 │   │   │
 │   │   │   ─── VALIDAÇÃO E CÁLCULO ───
-│   │   ├── validar_fluxos.py                Quais ativos a calc pode precificar + tripwire de saldo
-│   │   ├── conferir_pu.py                   ★ Portão de aceitação da precificação local
 │   │   ├── calc_taxa_negocios.py            Taxa por trade (Calc local → FI → B3)
 │   │   ├── filtrar_trades.py                VALIDO / FUNDO / BROKER / PF → cdStatus
 │   │   ├── calc_spread_anbima.py            Spread das indicativas Anbima

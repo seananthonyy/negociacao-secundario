@@ -52,8 +52,10 @@ Abra **`code/run_secundario.ipynb`** a partir de `code/` e dê **Run All**. Um b
 
 ```powershell
 cd code
-python scriptsun_diario.py --last 3            # últimos 3 dias úteis (padrão)
-python scriptsun_diario.py --start 2026-07-01 --end 2026-07-10   # intervalo
+python scripts
+un_diario.py --last 3            # últimos 3 dias úteis (padrão)
+python scripts
+un_diario.py --start 2026-07-01 --end 2026-07-10   # intervalo
 ```
 
 É o que vai no Task Scheduler (o Agendador não roda `.ipynb`).
@@ -71,10 +73,10 @@ O corpo de cada email é gravado em `data/emails/*.html` em vez de enviado. Úti
 **Rode o portão de aceitação:**
 
 ```powershell
-python scripts\conferir_pu.py --date 2026-07-10
+python scriptsalidar_calc_b3.py --dry-run
 ```
 
-Ele compara o PU da nossa calc com o da fonte, **no par e fora do par**, e escreve `data/pu_divergencias.csv`. Ver [[10 - Scripts/conferir_pu]].
+Ele compara o PU da nossa calc com o da B3 (e, se ela não cobrir, com a FI), **no par e fora do par**, em 3 datas. Com `--dry-run` só reporta; sem ele, promove e rebaixa `stFluxoValidado`. Ver [[10 - Scripts/validar_calc_b3]].
 
 ## Setup de uma máquina nova
 
@@ -102,6 +104,6 @@ Cada rodada de prévia cria um arquivo com timestamp no nome (para manter histó
 - **Email não envia / trava**: o COM do Outlook pendura (diálogo de permissão) e derruba rodadas em lote. Rode com `NEGSEC_SEM_EMAIL=1` — o corpo vai para `data/emails/*.html`.
 - **Taxa NULL no relatório**: nem FI Analytics nem B3 conseguiram calcular. Ver [[06 - Calculadoras/FI Analytics API]] e [[06 - Calculadoras/B3 Calculator API]].
 - **`cdReferencia` vazio para um ticker**: o `match_referencias.py` roda **sem argumentos**, idempotente sobre a base toda, a cada ciclo do pipeline. Se ficar vazio, o ativo provavelmente não tem `vrDuration` — ver [[98 - Backlog]] ("duration de corporates").
-- **PU errado num ativo**: rode `conferir_pu.py --tickers XXXX`. Se ele bate **no par** e erra **fora do par**, o problema é o **desconto**, não o fluxo. Ver [[14 - Rotinas da Calculadora]].
+- **PU errado num ativo**: rode `validar_calc_b3.py --tickers XXXX --dry-run`. Se ele bate **no par** e erra **fora do par**, o problema é o **desconto**, não o fluxo. Ver [[14 - Rotinas da Calculadora]].
 - **A calc ignora os eventos do fluxo de um IPCA**: `vrAniversario` errado ou NULL. A calc só aplica evento que caia **exatamente** no aniversário — dia 15 é convenção de NTN-B, não de debênture. Ver [[15 - Cadastro dos Ativos]].
 - **`scrape_fianalytics_planilha` grava 0 tickers**: ⚠️ **está quebrado** (seletor Tailwind morto desde 08/07). Ver [[98 - Backlog]].

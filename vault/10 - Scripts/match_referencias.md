@@ -41,7 +41,22 @@ Desconto na `vrTaxaEmissao`, as-of a data da curva de benchmark mais recente (gr
 
 ## O que não sobrescreve
 
-`match_referencias.py` **nunca** altera ativos com `cdFonteReferencia = 'Anbima'`. Refs definidas pelos scrapers de debentures ou CRI/CRA são consideradas definitivas.
+> ⚠️ **Mudou em 24/08/2026 — a precedência da Anbima virou um PRAZO.**
+
+Antes, `match_referencias.py` **nunca** alterava ativos com `cdFonteReferencia = 'Anbima'` — refs dos scrapers de debentures/CRI-CRA eram definitivas para sempre. O problema: papel que a Anbima **para de publicar** ficava preso a uma referência que ela nunca mais corrige. Foi o caso da **NTN-B 26** ao vencer — 27 ativos seguiam apontando para um benchmark morto, sem spread.
+
+Agora a precedência é ancorada em **`InfoAtivos.dtAtualizacaoReferencia`** (schema v4): a data em que **alguma** fonte reafirmou a referência pela última vez. Os scrapers da Anbima renovam essa data **todo dia** em que publicam o papel, mesmo repetindo o mesmo valor — é sinal de vida, não registro de mudança.
+
+| situação | o que acontece |
+|---|---|
+| Anbima publicando | data sempre fresca → o match **não encosta** (como antes) |
+| Anbima parou de publicar | data congela; passados `DIAS_REVALIDAR_REFERENCIA` (30d, `--revalidar-dias N`) o match **assume** |
+| referência **órfã** | aponta para benchmark ausente da curva mais recente → assume **na hora**, sem esperar o prazo |
+| sem referência | sempre elegível |
+
+Assumir significa: recalcular a duration as-of a curva **mais recente** e rebuscar a referência. O recálculo da duration é essencial — é o `dtAtualizacaoDuration` que define em que foto da curva o match procura candidatos; sem movê-lo, o match continuaria vendo o benchmark vencido.
+
+**`--force`** ignora o prazo e reprocessa todos os elegíveis (implementado por sentinela `CORTE_FORCE = "9999-12-31"`, sem duplicar SQL). Alcance medido na base local: default 30d → 653 ativos no match (3 assumidos de outra fonte); `--force` → 1.465 (815 assumidos).
 
 Só atua em ativos com:
 - `cdReferencia IS NULL`, ou

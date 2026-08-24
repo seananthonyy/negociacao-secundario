@@ -217,8 +217,6 @@ a Visão Anbima cai automaticamente no proxy `vrQuantidadeEmissao`.
 | Arquivo | Quem grava | Finalidade |
 |---|---|---|
 | `diagnosticos/validar_calc_b3.csv` | `validar_calc_b3.py` | Veredito do gate por ativo: erro de PU, oráculo que confirmou |
-| `diagnosticos/divergencias_fluxo.csv` | `validar_fluxos.py` | Agendas que divergem entre nossa base e a FI |
-| `diagnosticos/pu_divergencias.csv` | `conferir_pu.py` | PU da calc × APIs, ordenado por erro relativo |
 
 **Diretórios de saída** (todos gitignored e regeneráveis): `data/logs/`,
 `data/relatorios/`, `data/emails/`, `data/debug/`, `data/anbima_data_raw/`,

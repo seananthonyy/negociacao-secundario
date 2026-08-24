@@ -157,7 +157,7 @@ def ObterDetalhesAtivo(cdTicker: str) -> dict | None:
     Cadastro + agenda de eventos de um ativo, via GET /getBondDetails/{cdTicker}.
 
     Estático: não leva data nem taxa. Devolve o dict cru da B3 ou None se ela não
-    cobrir o ativo. Campos usados pelo validar_fluxos.py:
+    cobrir o ativo. Campos usados pelo validar_calc_b3.py:
       startingdate, issuedate, expiredate, yield (taxa de emissão), method
       (IPCA-I | IPCA | DI-PERC | DI-SPREAD | PRE), anniversaryday, vne, issuer,
       events: [{date, eventType, yield}] — 'A' = %amortização, 'J' = cupom

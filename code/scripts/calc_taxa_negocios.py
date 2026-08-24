@@ -9,7 +9,7 @@ A CALCULADORA LOCAL esta implementada como 1o degrau da cascata, para ativo com
 `stFluxoValidado = 1` — mas vem DESLIGADA ([calc].usarCalcTaxa = false).
 
 Por que desligada (13/07/2026): a calc reproduz o PU PAR das fontes (86% dos ativos
-batem a 1e-6 — ver conferir_pu), mas NAO reproduz a taxa implicita num PU fora do par.
+batem a 1e-6 — ver validar_calc_b3), mas NAO reproduz a taxa implicita num PU fora do par.
 Triangulando 4 negocios de 16/06/2026, FI Analytics e B3 concordam entre si (0 a 1,7
 bps) e a calc discorda das duas (+2,2 a +13,7 bps). Quando duas fontes independentes
 batem e a nossa diverge, o erro e nosso. Como os fluxos e o VNA estao certos (o PU par

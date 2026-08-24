@@ -7,10 +7,11 @@ se a B3 não confirmar, a **FI Analytics** — em PU/taxa e em VÁRIAS datas. Ba
 oráculo reproduzir a nossa calc (decisão do usuário 15/07: "se bater com a FI, também
 é válido"). O gate é BIDIRECIONAL: promove quem passa e rebaixa quem falha.
 
-Por que existe: o `validar_fluxos` marcava o fluxo da B3 como "nasce validado" (sem
-conferir se a calc precifica certo) e só reconferia o SALDO pela FI, que cobre a
-minoria. Resultado: ativos ficavam validados com a calc errando o PU 1-70%. Este
-gate fecha o buraco — validado passa a significar "a calc bate a B3 ou a FI".
+UNICO VALIDADOR (24/08/2026). O antigo `validar_fluxos` foi removido: ele comparava a
+agenda evento a evento contra a FI, teste que o PU ja cobre (PU no par valida
+fluxo+VNA; fora do par valida o desconto), e marcava o fluxo da B3 como "nasce
+validado" sem conferir se a calc precifica certo — ativos ficavam validados com a calc
+errando o PU 1-70%. Aqui, validado significa exatamente "a calc bate a B3 ou a FI".
 
 Testado em 3 datas: [8 pregões atrás, mais recente com curva, D+1]. O D+1 é uma data
 futura, sem curva própria — precificada por CARRY-FORWARD (a curva mais recente projeta

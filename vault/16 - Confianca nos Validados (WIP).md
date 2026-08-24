@@ -4,7 +4,7 @@
 
 > Este documento é atualizado **conforme o trabalho avança** (sobrevive ao limite de tokens). Log cronológico no fim.
 
-## Diagnóstico do validador atual (`validar_fluxos.py`)
+## Diagnóstico do validador antigo (`validar_fluxos.py`, removido em 24/08/2026)
 
 O modelo de confiança de hoje **não garante** que a calc precifica certo:
 
@@ -12,7 +12,7 @@ O modelo de confiança de hoje **não garante** que a calc precifica certo:
 2. O único teste independente é o **`ConferirSaldo`** (tripwire): compara o **VNA** da calc com o `adjustedFaceValue` da **FI**, tolerância 0,05%. Problemas:
    - Só confere o **VNA** (saldo devedor), não o **PU** cheio nem a **taxa**. Um ativo com VNA certo e desconto/cupom errado passa.
    - Só cobre os ativos que a **FI** tem (minoria). Quem a FI não cobre → `ConferirSaldo` devolve `None` (não-confirmável) e **continua validado** (a tripwire só desvalida em divergência, não em não-confirmável).
-3. Resultado medido (gate `conferir_pu`, 14/07): **68 de 3.047 validados erram o PU >1e-3** contra a B3 — ou seja, hoje "validado" inclui ativos que a calc erra.
+3. Resultado medido (gate da época, 14/07): **68 de 3.047 validados erram o PU >1e-3** contra a B3 — ou seja, hoje "validado" inclui ativos que a calc erra.
 
 **Conclusão:** o teste de confiança certo é **reproduzir a B3** (que é a fonte primária do cadastro). Se a calc bate a `calcPU`/`calcYield` da B3, usar a calc = usar a B3 = confiável. Se não bate, o ativo **não deve** estar validado (cai na cascata de API).
 
@@ -70,7 +70,7 @@ Depois de rever o `validar_calc_b3` com o usuário, o gate ficou assim (é a esp
 
 ## Log cronológico
 
-- **Início (madrugada 14→15/07):** li `validar_fluxos.py` (diagnóstico acima) e `calc_taxa_negocios.py`. Construí `harness.py` (calc × B3, PU par+fora + taxa round-trip, multi-data).
+- **Início (madrugada 14→15/07):** li o `validar_fluxos.py` de então (diagnóstico acima) e `calc_taxa_negocios.py`. Construí `harness.py` (calc × B3, PU par+fora + taxa round-trip, multi-data).
 - Amostra 320 (80/indexador, 5 datas): **299 PASS / 18 FAIL / 3 B3-vazio**. Calibrei o critério de confiança (acima). CDI+/PREF/%CDI sólidos; IPCA com cauda quebrada.
 - Confirmei relevância: ligar a calc move 112k trades / R$ 10,4 bi de FI/B3 para a calc local.
 - **Rodando:** harness na base validada inteira (auditoria definitiva) → classificar cada validado como confiável ou não.
@@ -80,12 +80,12 @@ Depois de rever o `validar_calc_b3` com o usuário, o gate ficou assim (é a esp
 
 ## Arquitetura de confiança (fluxo de validação revisado)
 
-Ordem no pipeline: `scrape_b3_bond_details` (cadastro fresco) → `validar_fluxos` (cross-check FI) → **`validar_calc_b3` (gate de confiança, NOVO)** → … → `calc_taxa_negocios` (usa a calc só nos validados).
+Ordem no pipeline (desde 24/08/2026, com o `validar_fluxos` removido): `scrape_b3_bond_details` (cadastro fresco, **não valida**) → **`validar_calc_b3`** (único validador) → … → `calc_taxa_negocios` (usa a calc só nos validados).
 
 | peça | papel | pega |
 |---|---|---|
 | `scrape_b3_bond_details` | cadastro/fluxo pela B3 (primária) | dado desatualizado — **MAS só re-scrapeia info faltando; fluxo que já existe deriva** (raiz aberta) |
-| `validar_fluxos` (FI) | tripwire de saldo vs FI | B3 **errada vs mercado** (FGEN13) |
+| ~~`validar_fluxos` (FI)~~ | tripwire de saldo vs FI | B3 **errada vs mercado** (FGEN13) — **removido em 24/08; este ponto cego voltou a existir** |
 | **`validar_calc_b3` (NOVO)** | calc reproduz **um oráculo** (B3 OU FI)? | **a calc não precifica certo** → rebaixa (era o buraco) |
 | `calc_taxa_negocios` | calc só p/ `stFluxoValidado=1` + indexador ligado | — |
 
@@ -148,7 +148,7 @@ Exemplo do backlog: CRA02300MJ7 calc 99,0308 vs B3 98,8934 → o doc registra **
 
 ## Integração no pipeline
 
-`ValidarCalcB3(negociados-dias=120)` entra em `RodarDia` e `RodarCadeiaDias` **depois** do `validar_fluxos`, **antes** do `calc_taxa`. Escopado aos validados que negociaram (a base toda leva ~13 min; os negociados são o que aparece no relatório). Refresh-on-fail cura a deriva; desvalida a falha genuína.
+`ValidarCalcB3()` entra em `RodarDia` e `RodarCadeiaDias` **antes** do `calc_taxa`. Desde 24/08 roda sobre a **base inteira** (sem `--negociados-dias`): o `--revalidar-dias 15` mantém a rodada incremental — só entra quem nunca passou ou cuja validação venceu. Refresh-on-fail cura a deriva; desvalida a falha genuína.
 
 ## Log (cont.)
 

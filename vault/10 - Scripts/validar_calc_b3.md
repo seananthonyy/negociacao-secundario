@@ -1,14 +1,14 @@
 # Script: validar_calc_b3.py
 
-> Ver também: [[../16 - Confianca nos Validados (WIP)]] | [[../10 - Scripts/calc_taxa_negocios]] | [[../10 - Scripts/validar_fluxos]] | [[../15 - Cadastro dos Ativos]]
+> Ver também: [[../16 - Confianca nos Validados (WIP)]] | [[../10 - Scripts/calc_taxa_negocios]] | [[../15 - Cadastro dos Ativos]]
 
-**Arquivo:** `code/scripts/validar_calc_b3.py` · **Pipeline:** passo 13 (entre `validar_fluxos` e `calc_taxa_negocios`)
+**Arquivo:** `code/scripts/validar_calc_b3.py` · **Pipeline:** passo 12 — **único validador** (antes de `calc_taxa_negocios`)
 
 ---
 
 ## O que faz
 
-**Gate de confiança da precificação local.** Responde: *"a NOSSA calc reproduz uma calculadora de mercado?"* Se sim, `stFluxoValidado=1` e a calc pode precificar o ativo no `calc_taxa`. É **bidirecional**: promove quem passa, rebaixa quem falha. Foi o que fechou o buraco do `validar_fluxos` (que marcava o fluxo da B3 como "nasce validado" sem nunca conferir se a calc precifica certo).
+**Gate de confiança da precificação local.** Responde: *"a NOSSA calc reproduz uma calculadora de mercado?"* Se sim, `stFluxoValidado=1` e a calc pode precificar o ativo no `calc_taxa`. É **bidirecional**: promove quem passa, rebaixa quem falha. Desde **24/08/2026 é o ÚNICO validador**: o `validar_fluxos` foi removido (comparava a agenda evento a evento contra a FI — teste que o PU já cobre) e o `scrape_b3_bond_details` deixou de marcar `stFluxoValidado = 1` por conta própria. Validado passa a significar exatamente "a nossa calc reproduz a B3 ou a FI".
 
 ## Como valida um ativo
 

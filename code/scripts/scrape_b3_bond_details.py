@@ -28,7 +28,7 @@ DUAS ARMADILHAS, ambas silenciosas:
 
 Fluxo vindo da B3 nasce VALIDADO (stFluxoValidado = 1): ele E a fonte, nao ha contra o
 que conferir. Quem confere se essa agenda continua valendo e o ConferirSaldo do
-validar_fluxos, contra o saldo devedor da FI — fonte tambem apodrece (o EMIV11 foi
+validar_calc_b3, contra a calcPU da B3/FI — fonte tambem apodrece (o EMIV11 foi
 aditado em fev/26 e a agenda velha continuou de pe).
 """
 
@@ -260,12 +260,11 @@ def GravarAtivo(conn, cdTicker: str, det: dict, agora: str) -> str:
         "dtAtualizacao) VALUES (?, ?, ?, ?, ?)",
         [(cdTicker, d, a, i, agora) for d, a, i in fluxo])
 
-    # Fluxo da B3 nasce validado: ela E a fonte. (O ConferirSaldo do validar_fluxos
-    # ainda pode desvalidar depois, se o saldo divergir da FI.)
-    conn.execute(
-        "UPDATE InfoAtivos SET stFluxoValidado = 1, dtValidacaoFluxo = ?, "
-        "  cdFonteValidacaoFluxo = 'B3', dtUltimaTentativa = ? WHERE cdTicker = ?",
-        (agora[:10], agora[:10], cdTicker))
+    # Este script NAO valida (24/08/2026). "Fluxo veio da B3" nao e o mesmo que "a calc
+    # precifica este ativo certo": marcar validado aqui liberava para a calc local ativo
+    # que nunca passou pelo gate, com erro de PU de ate 70%. Quem marca stFluxoValidado=1
+    # e SO o validar_calc_b3, e so depois de a nossa calc reproduzir a B3 (ou a FI).
+    # Ate la o ativo cai na cascata de API no calc_taxa, que e o comportamento seguro.
 
     return "inseridos" if (novo or not antes["stTemFluxo"]) else "atualizados"
 

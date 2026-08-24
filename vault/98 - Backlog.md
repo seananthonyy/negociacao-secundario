@@ -6,11 +6,31 @@
 
 ---
 
+## Ponto cego aberto em 24/08/2026 — ninguém mais audita a B3 contra a FI
+
+**Origem:** remoção do `validar_fluxos` (decisão do usuário, 24/08).
+
+**O que se perdeu:** o `ConferirSaldo` era o único teste que confrontava **B3 × FI** — duas
+fontes independentes. O `validar_calc_b3` pergunta "a nossa calc reproduz a B3?", usando o
+cadastro da B3: se a B3 tiver cadastro errado, a nossa calc reproduz o erro dela a 1e-5 e o
+ativo **passa no gate**. Só consulta a FI quando a B3 **não** confirma.
+
+**O caso conhecido:** FGEN13 — a B3 diz 1.280, a FI diz 508, o mercado negocia a 503.
+
+**Por que foi removido mesmo assim:** o teste de agenda evento a evento é redundante com o PU
+(no par valida fluxo+VNA, fora do par valida o desconto), e a cobertura da FI era magra (146
+de ~1.670 que a B3 não cobre). O que se perdeu foi só o cruzamento independente.
+
+**Opção se voltar a incomodar:** rodar o round-trip da FI **sempre**, não só quando a B3
+falha, e reportar (sem desvalidar) o desacordo B3×FI. Custa uma chamada FI por ativo/rodada.
+
+---
+
 ## 🔴 PRIORIDADE — a calc não reproduz a taxa fora do par (2 a 14 bps)
 
 **Origem:** 13/07/2026, na tentativa de trocar o `calc_taxa_negocios` pela calculadora local.
 
-**O que é:** a calc reproduz o **PU par** das fontes com precisão (**86,4%** dos 2.861 ativos validados batem a 1e-6 — rodar `scripts/conferir_pu.py`), mas **não reproduz a taxa implícita num PU fora do par**.
+**O que é:** a calc reproduz o **PU par** das fontes com precisão (**86,4%** dos 2.861 ativos validados batem a 1e-6 — medido com o gate da época), mas **não reproduz a taxa implícita num PU fora do par**.
 
 Triangulando 4 negócios de 16/06/2026:
 
@@ -29,7 +49,7 @@ Triangulando 4 negócios de 16/06/2026:
 
 **Estado (19/07):** a calc foi **LIGADA** (`config.toml [calc] usarCalcTaxa = true`) para **CDI+/IPCA/PREFIXADO** — mas o **%CDI ficou de fora exatamente por este bug** (erra o desconto fora do par). Ou seja: este item passou a ser **só sobre o %CDI** (os demais indexadores a calc reproduz a B3/FI e já precificam local). Ver [[16 - Confianca nos Validados (WIP)]].
 
-**O gate foi consertado (13/07) e a medição mudou tudo.** O `conferir_pu` agora testa em **duas** taxas: no par (valida o fluxo e o VNA) e a **100 bps do par** (valida o desconto). Rodando nos 3.023 validados:
+**O gate foi consertado (13/07) e a medição mudou tudo.** Ele passou a testar em **duas** taxas: no par (valida o fluxo e o VNA) e a **100 bps do par** (valida o desconto). Rodando nos 3.023 validados:
 
 | | ativos |
 |---|---|
@@ -54,7 +74,7 @@ Triangulando 4 negócios de 16/06/2026:
 
 ## 68 ativos ainda erram o PU acima de 1e-3 (era 114) — sem mais casos catastróficos
 
-**Origem:** 13/07/2026, atualizado 14/07. Rodar `python scripts/conferir_pu.py --date <dia útil>` → `data/pu_divergencias.csv`. **Contra a régua certa** (calcYield/calcPU da B3), não a taxa gravada na base. Rodar **só em data com curva DI na base**.
+**Origem:** 13/07/2026, atualizado 14/07. Rodar `python scripts/validar_calc_b3.py --dry-run` (o `conferir_pu` foi removido em 24/08; o gate faz a mesma medição). **Contra a régua certa** (calcYield/calcPU da B3), não a taxa gravada na base. Rodar **só em data com curva DI na base**.
 
 **14/07 — 114 → 68 (97,8% OK)** em duas frentes (detalhe em [[14 - Rotinas da Calculadora]]):
 1. **Faxina de cadastro** (só dado nosso): cupom errado 20 ativos (FI sobre B3; RED711 250 vs 2,5), indexador 4 (CRA02300MJ8 %CDI→CDI+ errava 565%), fluxo defasado/espúrio 19. Raízes corrigidas no código (scrapers viraram fill-only).
@@ -70,7 +90,7 @@ Triangulando 4 negócios de 16/06/2026:
 
 **Raiz de processo não fechada:** `scrape_b3_bond_details.py` só re-scrapeia quem tem info **faltando**; fluxo que já existe **nunca é atualizado** → deriva (foi o que causou os 19 fluxos defasados). Falta um refresh periódico do fluxo da B3.
 
-O `conferir_pu --desvalidar` tira a validação de quem erra acima de 1e-3 — eles caem na cascata de API e não são precificados pela calc. **Não está no pipeline por padrão**; decidir se entra (só faz sentido quando a calc for ligada).
+**Item fechado em 24/08/2026:** o `conferir_pu --desvalidar` foi removido junto com o script. O `validar_calc_b3` já faz isso por padrão e **está** no pipeline — desvalida quem não reproduz a B3/FI, e esses caem na cascata de API. Não há mais o que decidir.
 
 ---
 
@@ -155,7 +175,7 @@ Fecha metade do item "Auditar falha silenciosa nos demais scrapers" abaixo.
 
 **Origem:** 11/07/2026, ao ler a spec `D:\ItauBBA\calculadora-renda-fixa\PLANO_VALIDACAO_FLUXOS.md`.
 
-**✅ Atualização (12/07/2026):** o endpoint **já está ligado** — `lib/b3_calc_api.ObterDetalhesAtivo(cdTicker)` (com cache por ticker, reusando token/keepalive/retry-401). Quem o consome hoje é só o `validar_fluxos`. **O que falta é o outro uso:** virar **segunda fonte de cadastro** na cascata do `scrape_anbima_data_ativos` (Anbima → B3 → NULL), fechando o buraco de `InfoAtivos` descrito abaixo.
+**✅ Atualização (12/07/2026):** o endpoint **já está ligado** — `lib/b3_calc_api.ObterDetalhesAtivo(cdTicker)` (com cache por ticker, reusando token/keepalive/retry-401). Quem o consome hoje é o `validar_calc_b3` e o `scrape_b3_bond_details`. **O que falta é o outro uso:** virar **segunda fonte de cadastro** na cascata do `scrape_anbima_data_ativos` (Anbima → B3 → NULL), fechando o buraco de `InfoAtivos` descrito abaixo.
 
 **O que é:** endpoint da API da B3 que já temos token (`lib/b3_calc_api.py`):
 

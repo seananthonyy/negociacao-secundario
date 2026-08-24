@@ -63,8 +63,9 @@ ON CONFLICT(cdTicker, dtReferencia) DO UPDATE SET
 SQL_UPSERT_INFO = """
 INSERT INTO InfoAtivos (
     cdTicker, cdInstrumento, cdEmissor, dtVencimento,
-    vrDuration, dtAtualizacaoDuration, cdIndexador, cdReferencia, cdFonteReferencia, dtAtualizacao
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    vrDuration, dtAtualizacaoDuration, cdIndexador, cdReferencia, cdFonteReferencia,
+    dtAtualizacaoReferencia, dtAtualizacao
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 ON CONFLICT(cdTicker) DO UPDATE SET
     cdInstrumento    = excluded.cdInstrumento,
     cdEmissor        = excluded.cdEmissor,
@@ -76,6 +77,12 @@ ON CONFLICT(cdTicker) DO UPDATE SET
     cdIndexador      = COALESCE(excluded.cdIndexador,      cdIndexador),
     cdReferencia            = COALESCE(excluded.cdReferencia,            cdReferencia),
     cdFonteReferencia      = CASE WHEN excluded.cdReferencia IS NOT NULL THEN 'Anbima' ELSE cdFonteReferencia END,
+    -- Renova mesmo repetindo o mesmo valor: e "a Anbima ainda cobre este papel", nao
+    -- "a referencia mudou". Quando ela para de publicar, esta data congela e o
+    -- match_referencias assume o papel apos DIAS_REVALIDAR_REFERENCIA.
+    dtAtualizacaoReferencia = CASE WHEN excluded.cdReferencia IS NOT NULL
+                              THEN excluded.dtAtualizacaoReferencia
+                              ELSE dtAtualizacaoReferencia END,
     dtAtualizacao      = excluded.dtAtualizacao
 """
 
@@ -174,8 +181,10 @@ def AnalisarPlanilha(sh, dtRef: str) -> tuple[list, list]:
         cdFonteReferencia  = 'Anbima' if cdReferencia is not None else None
 
         anbimaRows.append((cdTicker, dtRef, vrTaxaAnbima))
+        dtUpsertRef = dtRef if cdReferencia is not None else None
         infoRows.append((cdTicker, 'DEB', cdEmissor, dtVencimento,
-                         vrDuration, dtUpsertDur, cdIndexador, cdReferencia, cdFonteReferencia))
+                         vrDuration, dtUpsertDur, cdIndexador, cdReferencia, cdFonteReferencia,
+                         dtUpsertRef))
 
     return anbimaRows, infoRows
 

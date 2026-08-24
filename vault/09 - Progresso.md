@@ -212,6 +212,18 @@ gerar_relatorio_credito       ← análise histórica (todos os pregões, sem ar
 
 ## Última atualização
 
+2026-08-24 — **Um só validador, timer na referência e faxina de código morto.**
+- **`validar_fluxos` REMOVIDO.** O `validar_calc_b3` é o **único validador**. Motivo: o teste de agenda evento a evento é redundante com o PU (no par valida fluxo+VNA, fora do par valida o desconto) e a cobertura da FI era magra (146 de ~1.670 que a B3 não cobre). **Pipeline: 19 → 18 passos.** O que se perdeu (cruzamento independente B3×FI, caso FGEN13) virou item no [[98 - Backlog]].
+- **`scrape_b3_bond_details` deixou de validar.** Ele marcava `stFluxoValidado = 1` sozinho ("o fluxo veio da B3, logo é válido"), o que liberava para a calc local ativo que nunca passou pelo gate. Agora só o `validar_calc_b3` concede validade; até lá o ativo cai na cascata de API, que é o comportamento seguro.
+- **`ValidarCalcB3` passou a rodar sobre a base INTEIRA** (sem `--negociados-dias`). Continua barato porque o `--revalidar-dias 15` só deixa entrar quem nunca passou ou cuja validação venceu.
+- **Timer da referência (`dtAtualizacaoReferencia`, schema v4).** A precedência da Anbima virou um **prazo**: os scrapers dela renovam a data todo dia em que publicam o papel, mesmo repetindo o mesmo valor. Parou de publicar ⇒ a data congela e, após `DIAS_REVALIDAR_REFERENCIA` (30d, `--revalidar-dias`), o `match_referencias` **assume** o papel — calcula duration nova as-of a curva de hoje e rebusca a referência. Antes, ref da Anbima era intocável para sempre. **O problema real:** papéis presos na **NTN-B 26** vencida — o match procurava candidatos em `dtReferencia = dtAtualizacaoDuration`, uma foto antiga da curva onde o papel vencido ainda existia. Gatilho extra de **referência órfã** (aponta para benchmark ausente da curva viva) entra na hora, sem esperar o prazo. Nova flag `--force` ignora o prazo (sentinela `9999-12-31`, sem duplicar SQL).
+- **`dtUltimaTentativa` removida** (era o throttle do validador antigo). Para isso o reconciliador de schema do `Bootstrap` ganhou a contrapartida do lado aditivo: `COLUNAS_REMOVIDAS` + `ColunasARemover()` + passo 4c com `ALTER TABLE DROP COLUMN`. Backup preventivo e conferência de linhas agora cobrem os dois lados. Em SQLite < 3.35 avisa e segue (coluna sobrando não quebra nada; bootstrap quebrado quebra o projeto).
+- **Armadilha que quase passou:** o trigger `trgInfoAtivosInvalidaFluxo` zerava `dtUltimaTentativa` via `SQL_ZERA_VALIDACAO`. O `DROP COLUMN` passa limpo e o trigger só explodiria em runtime, no primeiro `UPDATE` de taxa de emissão. Coluna tirada do `SQL_ZERA_VALIDACAO` antes do drop.
+- **Código morto apagado:** `conferir_pu.py` (substituído pelo `validar_calc_b3`) e `comparar_calcpu_b3.py` (ferramenta de fase, item já fechado). Célula do `conferir_pu` removida do `setup_teste.ipynb`; os 3 notebooks renumerados.
+- **Testado** em cópia do `trades.db` real: migração v3→v4 (add + drop) com zero linha perdida, `integrity_check`/`foreign_key_check` limpos, 2º bootstrap idempotente, trigger disparando certo depois do drop, e o gatilho de órfã pegando 18 dos 19 `MatchRef` presos na NTN-B 26 (simulada como vencida). **Nada foi rodado contra a base de produção.**
+
+## Última atualização (anterior)
+
 2026-08-12 — **Visão Mercado passa a seguir as regras do Boletim Diário (BROKER incluído) — as duas abas não divergem mais.**
 - **O bug:** a Visão Mercado tinha SQL próprio (`SQL_DIARIO`/`SQL_DIARIO_IDX`) filtrando `cdStatus = 'VALIDO'`, então **ignorava todo o volume BROKER** — 35% do volume da base (R$ 18,9 bi de R$ 53,3 bi). Não era decisão: é acidente de ordem de construção. O Boletim nasceu em 15/06 **copiado** do `gerar_relatorio_html.py` (por isso herdou VALIDO+BROKER); a Visão Geral foi escrita do zero com o filtro simples, e quando a convenção "taxa/spread médio sempre VALIDO + BROKER" foi formalizada em 22/06 ninguém voltou para retrofitá-la. Nenhuma nota do vault registrava a exclusão.
 - **Três totais circulavam para o mesmo período** (09/06→28/07): log/email/vault R$ 34.369 MM (`SQL_DIARIO` — VALIDO, com `'?'`), Visão Mercado no HTML R$ 28.779 MM (só os 4 indexadores), Boletim R$ 53.266 MM (VALIDO+BROKER). **Agora é um só: R$ 53.265,84 MM.**
@@ -295,7 +307,7 @@ A calculadora (`D:\ItauBBA\calculadora-renda-fixa`) vira **só a biblioteca de c
 - **Rede — 4 hosts novos a testar no banco:** `apisidra.ibge.gov.br`, `servicodados.ibge.gov.br`, `api.bcb.gov.br`, `www.anbima.com.br`. É o primeiro teste a fazer lá.
 - **Fora do escopo (decisão do usuário):** trocar a precificação (`calc_taxa_negocios`) pela calc local — item 5 do `MIGRACAO.md`, agora registrado em [[98 - Backlog]] com o que precisa ser decidido. **Bundle NÃO regerado** (a pedido — vem depois dessa troca).
 
-## Última atualização (anterior)
+## Sessões anteriores
 
 2026-07-11 — **Contrato de validação de fluxo implementado no ingestor (5 colunas + trigger de invalidação).**
 

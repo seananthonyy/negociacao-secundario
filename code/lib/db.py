@@ -11,7 +11,7 @@ from lib.config import cfg
 # ganhar coluna/tabela nova, para o banco de producao saber em que versao roda.
 #   1 = schema PT-BR base   2 = validacao de fluxo + cadastro B3
 #   3 = cdTipoAmortizacao + motor unificado (FASE 3)
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 DDL = """
@@ -78,6 +78,13 @@ CREATE TABLE IF NOT EXISTS InfoAtivos (
     cdTipoAmortizacao  TEXT NULL,
     cdReferencia       TEXT NULL,
     cdFonteReferencia  TEXT NULL,    -- 'Anbima' | 'MatchRef' | 'FiAnalytics'
+    -- Quando a cdReferencia foi (re)afirmada por alguma fonte. Renovada TODA vez que
+    -- uma fonte grava uma referencia, mesmo repetindo o mesmo valor -- e um "sinal de
+    -- vida", nao um registro de mudanca. Enquanto a Anbima publicar o papel, ela renova
+    -- diariamente; quando ela para de cobrir, a data congela e o match_referencias
+    -- assume depois de DIAS_REVALIDAR_REFERENCIA. Sem isto, ref da Anbima que deixou de
+    -- ser publicada fica presa para sempre (foi o caso dos papeis na NTN-B 26 vencida).
+    dtAtualizacaoReferencia TEXT NULL,
     vrTaxaEmissao        REAL NULL,
     vrVNE                REAL NULL,
     dtInicioRentabilidade TEXT NULL,
@@ -95,12 +102,11 @@ CREATE TABLE IF NOT EXISTS InfoAtivos (
     dtAtualizacao      TEXT NOT NULL,
     -- Validacao do fluxo (contrato com a calculadora de renda fixa).
     -- O INGESTOR (este projeto) so escreve stTemFluxo e ZERA as demais;
-    -- quem VALIDA (marca 1 / grava data / fonte) e o validar_fluxos.py.
+    -- quem VALIDA (marca 1 / grava data / fonte) e o validar_calc_b3.py.
     stTemFluxo            INTEGER NOT NULL DEFAULT 0,  -- 1 tem linha em FluxoAtivos
     stFluxoValidado       INTEGER NOT NULL DEFAULT 0,  -- 1 fluxo conferido contra a fonte
     dtValidacaoFluxo      TEXT NULL,                   -- ISO da validacao OK
-    cdFonteValidacaoFluxo TEXT NULL,                   -- 'B3' | 'FiAnalytics' | 'Manual'
-    dtUltimaTentativa     TEXT NULL                    -- ISO da ultima tentativa (validou ou nao)
+    cdFonteValidacaoFluxo TEXT NULL                    -- 'B3' | 'FiAnalytics'
 );
 -- idxInfoAtivosStFluxoValidado e criado no Bootstrap(), DEPOIS dos ALTER TABLE:
 -- numa base que ja existe, a coluna so aparece na migracao.
@@ -186,8 +192,7 @@ COLS_INVALIDAM_FLUXO = (
 SQL_ZERA_VALIDACAO = """
     stFluxoValidado       = 0,
     dtValidacaoFluxo      = NULL,
-    cdFonteValidacaoFluxo = NULL,
-    dtUltimaTentativa     = NULL
+    cdFonteValidacaoFluxo = NULL
 """
 
 # Trigger de invalidacao. Fica no BANCO (nao nos scrapers) porque as colunas de
@@ -336,6 +341,31 @@ def ColunasEsperadas(ddl: str) -> dict[str, list[tuple[str, str]]]:
 COLUNAS_ESPERADAS = ColunasEsperadas(DDL)
 
 
+# Colunas que a DDL NAO tem mais e que devem ser removidas do banco vivo. Contrapartida
+# do reconciliador aditivo: sem isto, coluna aposentada fica para sempre na base de
+# producao, sem ninguem escrevendo, confundindo quem le o schema.
+#   InfoAtivos.dtUltimaTentativa -- era o throttle do validar_fluxos (removido em
+#   24/08/2026); o validar_calc_b3 usa dtValidacaoFluxo.
+COLUNAS_REMOVIDAS: dict[str, list[str]] = {
+    "InfoAtivos": ["dtUltimaTentativa"],
+}
+
+
+def ColunasARemover(conn: sqlite3.Connection) -> dict[str, list[str]]:
+    """{tabela: [coluna]} que o banco vivo ainda tem e a DDL nao preve mais."""
+    existentes = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    sobrando: dict[str, list[str]] = {}
+    for tabela, cols in COLUNAS_REMOVIDAS.items():
+        if tabela not in existentes:
+            continue
+        atuais = {r[1] for r in conn.execute(f"PRAGMA table_info({tabela})")}
+        pend = [c for c in cols if c in atuais]
+        if pend:
+            sobrando[tabela] = pend
+    return sobrando
+
+
 def ColunasFaltantes(conn: sqlite3.Connection) -> dict[str, list[tuple[str, str]]]:
     """{tabela: [(coluna, def)]} que a DDL preve e o banco vivo NAO tem. So considera
     tabelas que JA existem — as ausentes o executescript(DDL) cria inteiras."""
@@ -402,18 +432,20 @@ def Bootstrap(conn: sqlite3.Connection) -> None:
     """
     # 1. Estado ANTES de tocar em nada.
     faltando   = ColunasFaltantes(conn)
+    sobrando   = ColunasARemover(conn)
     versaoAtual = LerVersaoSchema(conn)
     temTabelas = conn.execute(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()[0] > 0
-    precisaMigrar = bool(faltando) or versaoAtual < SCHEMA_VERSION
+    precisaMigrar = bool(faltando) or bool(sobrando) or versaoAtual < SCHEMA_VERSION
 
     # 2. Backup preventivo — so quando ha migracao real sobre um banco que ja tem dados.
     #    (Banco novo/vazio nao tem o que proteger; base ja atual nao migra.)
     backup = None
-    if faltando and temTabelas:
+    if (faltando or sobrando) and temTabelas:
         backup = BackupPreventivo(conn)
 
-    contagensAntes = ContarLinhas(conn, faltando.keys()) if faltando else {}
+    tabelasTocadas = set(faltando) | set(sobrando)
+    contagensAntes = ContarLinhas(conn, tabelasTocadas) if tabelasTocadas else {}
 
     # 3. Cria as TABELAS que faltam (aditivo, IF NOT EXISTS). Os indices ficam para
     #    depois dos ALTER — um indice pode citar coluna que ainda vamos adicionar.
@@ -442,6 +474,17 @@ def Bootstrap(conn: sqlite3.Connection) -> None:
                      THEN 1 ELSE 0 END
         """)
 
+    # Backfill do dtAtualizacaoReferencia: so na migracao. Semeia com o
+    # dtAtualizacaoDuration, que e a melhor procuracao disponivel — nas duas fontes que
+    # gravam referencia, ela foi escrita no MESMO upsert da duration (scrapers Anbima:
+    # dtRef do XLS; match_referencias: data da curva). Sem semear, toda a base nasceria
+    # "referencia vencida" e a 1a rodada tentaria recalcular ~2.200 ativos de uma vez.
+    if "InfoAtivos.dtAtualizacaoReferencia" in novas:
+        conn.execute("""
+            UPDATE InfoAtivos SET dtAtualizacaoReferencia = dtAtualizacaoDuration
+            WHERE  cdReferencia IS NOT NULL AND dtAtualizacaoDuration IS NOT NULL
+        """)
+
     # Trigger de invalidacao: DEPOIS dos ALTERs (o corpo referencia as colunas novas).
     # DROP antes do CREATE para que COLS_INVALIDAM_FLUXO seja sempre autoritativa
     # mesmo em base ja existente (CREATE IF NOT EXISTS sozinho nao atualizaria o
@@ -453,13 +496,26 @@ def Bootstrap(conn: sqlite3.Connection) -> None:
     # Remove indice redundante (coberto pela PK composta de FluxoAtivos).
     conn.execute("DROP INDEX IF EXISTS idxFluxoAtivosCdTicker")
 
-    # 5. Validacao de sanidade: migracao SO adiciona coluna, nunca mexe em linha.
+    # 4c. Remove as colunas aposentadas. ALTER TABLE DROP COLUMN existe desde o SQLite
+    #     3.35 (2021); em runtime mais velho, apenas registra e segue — coluna sobrando
+    #     nao quebra nada (ninguem escreve nela), enquanto abortar o bootstrap quebraria
+    #     o projeto inteiro. So mexe em COLUNA: nenhuma linha e tocada.
+    if sobrando and sqlite3.sqlite_version_info < (3, 35, 0):
+        print(f"[db] SQLite {sqlite3.sqlite_version} nao suporta DROP COLUMN — "
+              f"colunas aposentadas mantidas: {sobrando}")
+    elif sobrando:
+        for tabela, cols in sobrando.items():
+            for coluna in cols:
+                conn.execute(f"ALTER TABLE {tabela} DROP COLUMN {coluna}")
+                print(f"[db] coluna aposentada removida: {tabela}.{coluna}")
+
+    # 5. Validacao de sanidade: migracao SO mexe em COLUNA, nunca em linha.
     #    Provamos: nenhuma tabela migrada perdeu registro. Se perdeu, algo esta muito
     #    errado — aborta o commit e preserva o backup, sem gravar a versao.
-    if faltando:
-        contagensDepois = ContarLinhas(conn, faltando.keys())
+    if tabelasTocadas:
+        contagensDepois = ContarLinhas(conn, tabelasTocadas)
         perdas = {t: (contagensAntes[t], contagensDepois[t])
-                  for t in faltando if contagensDepois[t] < contagensAntes.get(t, 0)}
+                  for t in tabelasTocadas if contagensDepois[t] < contagensAntes.get(t, 0)}
         if perdas:
             conn.rollback()
             raise RuntimeError(
@@ -497,8 +553,8 @@ def ObterBanco(caminhoBanco: str | None = None) -> sqlite3.Connection:
 #
 # Este projeto (ingestor) NUNCA valida nada: so mantem stTemFluxo e ZERA a
 # validacao quando o fluxo do ativo muda. Quem marca stFluxoValidado = 1 e
-# grava dtValidacaoFluxo/cdFonteValidacaoFluxo/dtUltimaTentativa e o
-# validar_fluxos.py (hoje no projeto da calculadora, lendo o mesmo trades.db).
+# grava dtValidacaoFluxo/cdFonteValidacaoFluxo e o
+# validar_calc_b3.py, o unico validador.
 #
 # As 4 colunas de InfoAtivos que invalidam (COLS_INVALIDAM_FLUXO) sao cobertas
 # pelo trigger trgInfoAtivosInvalidaFluxo. O FluxoAtivos NAO da pra cobrir por
@@ -511,9 +567,10 @@ def ObterBanco(caminhoBanco: str | None = None) -> sqlite3.Connection:
 def InvalidarValidacaoFluxo(conn: sqlite3.Connection, cdTicker: str) -> None:
     """Marca o fluxo do ativo como nao-validado e limpa o resultado anterior.
 
-    dtUltimaTentativa tambem vai a NULL: o resultado da ultima tentativa virou
-    lixo no instante em que o fluxo mudou, entao o ativo volta pro topo da fila
-    do validador em vez de esperar a janela de throttle."""
+    dtValidacaoFluxo vai a NULL junto: o resultado da ultima validacao virou lixo
+    no instante em que o fluxo mudou. Como e essa data que o validar_calc_b3 usa
+    na janela de revalidacao (--revalidar-dias), zera-la devolve o ativo ao topo
+    da fila em vez de deixa-lo esperar o prazo vencer."""
     conn.execute(f"UPDATE InfoAtivos SET {SQL_ZERA_VALIDACAO} WHERE cdTicker = ?",
                  (cdTicker,))
 

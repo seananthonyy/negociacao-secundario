@@ -243,6 +243,6 @@ vna   = CalcularVnaAtivo(ativo, dtCalc)
 
 ### `CarregarAtivo` — por que existe
 
-Um lugar só monta os argumentos da calc a partir da nossa base. Sem isso, cada script (`calc_taxa`, `conferir_pu`, `validar_fluxos`) remontaria o mesmo dicionário — e a chance de um deles **esquecer o `vrAniversario`**, fazendo a calc **ignorar em silêncio todos os eventos do fluxo**, é alta demais. Ver [[15 - Cadastro dos Ativos]].
+Um lugar só monta os argumentos da calc a partir da nossa base. Sem isso, cada script (`calc_taxa`, `validar_calc_b3`, `match_referencias`) remontaria o mesmo dicionário — e a chance de um deles **esquecer o `vrAniversario`**, fazendo a calc **ignorar em silêncio todos os eventos do fluxo**, é alta demais. Ver [[15 - Cadastro dos Ativos]].
 
 Devolve `None` quando não dá para precificar (falta taxa de emissão, início de rentabilidade, fluxo ou indexador suportado).

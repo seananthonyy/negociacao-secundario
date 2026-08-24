@@ -1,6 +1,6 @@
 # Cadastro dos Ativos — B3 primária, Anbima fallback
 
-> **Mudou em 13/07/2026.** Antes, a Anbima Data era a fonte do cadastro e do fluxo, e o `validar_fluxos` conferia contra a B3. Agora **a B3 é a fonte primária** e a Anbima é o fallback. Motivo: medição, não preferência.
+> **Mudou em 13/07/2026.** Antes, a Anbima Data era a fonte do cadastro e do fluxo, e um validador separado conferia contra a B3. Agora **a B3 é a fonte primária** e a Anbima é o fallback. Motivo: medição, não preferência.
 
 ## Por que a B3 virou primária
 
@@ -50,7 +50,7 @@ boletim (NegociosBrutos)
    └─> scrape_anbima_data_ativos ← só o que a B3 não cobriu. COALESCE em tudo;
           (demanda-dirigido)        não toca no fluxo de ativo B3.
                 │
-                └─> validar_fluxos
+                └─> validar_calc_b3
                        ├─ valida o fluxo da Anbima, pela FI
                        └─ TRIPWIRE de saldo em TUDO que está validado
 ```

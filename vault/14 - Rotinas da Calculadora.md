@@ -21,7 +21,7 @@ Em `code/data/`, junto do `trades.db` — este projeto é quem os coleta; a calc
 | `data/ipca.db` | `IPCA`, `IPCAProjetado` | `scrape_ipca_ibge`, `scrape_ipca_projetado_anbima` | VNA de IPCA+ |
 | `data/di.db` | `DiHistorico`, `CurvaDi` | `scrape_di_bcb`, `scrape_b3_curva_di` | %CDI e CDI+ (realizado + projeção) |
 | `data/feriados_anbima.csv` | — | (estático) | régua de dias úteis — **fonte única**, a calc passou a ler a nossa |
-| `data/trades.db` | `InfoAtivos` (5 colunas de validação), `FluxoAtivos` | ingestor + `validar_fluxos` | a calc só precifica `stFluxoValidado = 1` |
+| `data/trades.db` | `InfoAtivos` (4 colunas de validação), `FluxoAtivos` | ingestor + `validar_calc_b3` | a calc só precifica `stFluxoValidado = 1` |
 
 Os schemas dessas 4 tabelas são **contrato com a calc** — por isso os nomes de coluna não seguem o prefixo `vr/cd/dt` do `trades.db`. Não renomear.
 
@@ -65,9 +65,9 @@ O script **já baixava** o CSV completo do produto `PRE` da B3 e **jogava fora t
 
 Isso importa porque **a B3 não guarda histórico**: a API só expõe ~20 pregões. Rodando todo dia, acumulamos os snapshots que ela descarta — é o que permite reprecificar uma data passada. **Data fora da janela é WARNING com exit 0** (é "a fonte não tem", não "o scraper quebrou"); qualquer outra falha é exit 1.
 
-### 5. `validar_fluxos` — quais ativos a calc pode precificar
+### 5. `validar_calc_b3` — quais ativos a calc pode precificar
 
-> ⚠️ **Mudou em 13/07/2026.** A cascata B3 → FI **acabou**: a B3 virou a fonte **primária do cadastro** e o fluxo dela **nasce validado**. O `validar_fluxos` agora (a) valida só o fluxo que veio da **Anbima**, pela FI, e (b) roda o **tripwire de saldo** em tudo que está validado. Ver **[[15 - Cadastro dos Ativos]]** — é lá que está a descrição corrente.
+> ⚠️ **Mudou em 24/08/2026.** O `validar_fluxos` foi **removido** e o `validar_calc_b3` é o **único validador**. Ele não compara a agenda evento a evento: pergunta se a **nossa calc reproduz a B3** (primária) ou a **FI** (se a B3 não cobrir), em PU no par e fora do par, em 3 datas. O PU no par já valida fluxo+VNA; fora do par valida o desconto — então o teste de agenda era redundante. O `scrape_b3_bond_details` também deixou de marcar `stFluxoValidado = 1` sozinho: "veio da B3" não é o mesmo que "a calc precifica certo". Ver **[[10 - Scripts/validar_calc_b3]]** e **[[15 - Cadastro dos Ativos]]**.
 
 O que continua valendo:
 
@@ -80,7 +80,7 @@ Estado em 13/07/2026: **3.027 validados** de 4.840 ativos (2.967 de fonte B3).
 
 ## Ordem no pipeline
 
-Passos **9–12** de [[11 - Pipeline de Execucao]]. Não dependem da liquidação X → rodam uma vez por ciclo, no bloco global do `pipeline_core`. O `validar_fluxos` vem **depois** do `scrape_anbima_data_ativos` (6): é ele quem mexe em `FluxoAtivos`/`InfoAtivos` e zera a validação quando o fluxo muda de verdade.
+Passos **9–12** de [[11 - Pipeline de Execucao]]. Não dependem da liquidação X → rodam uma vez por ciclo, no bloco global do `pipeline_core`. O `validar_calc_b3` vem **depois** do `scrape_anbima_data_ativos` (6): é ele quem mexe em `FluxoAtivos`/`InfoAtivos` e zera a validação quando o fluxo muda de verdade.
 
 ## Rede — hosts novos (conferir no banco)
 
@@ -100,7 +100,7 @@ A calc **não é repositório git** — há uma cópia de segurança em `calcula
 
 ## O gate de aceitação — e por que o PU par não bastava
 
-O `scripts/conferir_pu.py` compara o PU da calc com o da fonte em **duas** taxas:
+O `scripts/validar_calc_b3.py` compara o PU da calc com o da fonte em **duas** taxas:
 
 1. **no par** (taxa de negociação = taxa de emissão) → valida o **fluxo** e o **VNA**
 2. **a 100 bps do par** → valida o **desconto**
@@ -151,9 +151,9 @@ Ou seja: **não sobra bug catastrófico** — o resto é pró-rata fino do IPCA,
 
 ## ⚠️ O que ainda NÃO fecha: a taxa fora do par
 
-A calc reproduz o **PU par** das fontes com precisão (**86,4%** dos 2.861 ativos validados batem a 1e-6 — ver `scripts/conferir_pu.py`), mas **não reproduz a taxa implícita num PU fora do par**.
+A calc reproduz o **PU par** das fontes com precisão (**86,4%** dos 2.861 ativos validados batem a 1e-6 — medido com o gate da época), mas **não reproduz a taxa implícita num PU fora do par**.
 
-Triangulação em 4 negócios de 16/06/2026 (`--date` do `conferir_pu` não pega isso; foi teste manual):
+Triangulação em 4 negócios de 16/06/2026 (teste manual — o gate não pega isso):
 
 | ativo | calc | FI Analytics | B3 | calc − B3 | FI − B3 |
 |---|---|---|---|---|---|

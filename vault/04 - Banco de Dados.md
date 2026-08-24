@@ -120,7 +120,6 @@ Informações estáticas dos ativos, consolidadas de três fontes: planilha FI A
 | `stFluxoValidado` | INTEGER | ingestor zera / validador marca | `1` = fluxo conferido contra a fonte de verdade |
 | `dtValidacaoFluxo` | TEXT | validador | ISO da validação OK |
 | `cdFonteValidacaoFluxo` | TEXT | validador | `'B3'` / `'FiAnalytics'` / `'Manual'` |
-| `dtUltimaTentativa` | TEXT | validador | ISO da última tentativa (validou ou não) — base do throttle |
 
 #### ⚠️ O pacote indivisível: `vrVNE` + `dtInicioRentabilidade` + `FluxoAtivos`
 
@@ -170,8 +169,7 @@ CREATE TABLE IF NOT EXISTS InfoAtivos (
     stTemFluxo            INTEGER NOT NULL DEFAULT 0,
     stFluxoValidado       INTEGER NOT NULL DEFAULT 0,
     dtValidacaoFluxo      TEXT NULL,
-    cdFonteValidacaoFluxo TEXT NULL,
-    dtUltimaTentativa     TEXT NULL
+    cdFonteValidacaoFluxo TEXT NULL
 );
 CREATE INDEX IF NOT EXISTS idxInfoAtivosCdIndexador    ON InfoAtivos(cdIndexador);
 CREATE INDEX IF NOT EXISTS idxInfoAtivosStFluxoValidado ON InfoAtivos(stFluxoValidado);
@@ -183,15 +181,14 @@ A calculadora de renda fixa precifica lendo `InfoAtivos` + `FluxoAtivos`, mas es
 
 **Divisão de papéis — este projeto (ingestor) NUNCA valida nada:**
 
-| coluna | ingestor (este projeto) | validador (`validar_fluxos.py`) |
+| coluna | ingestor (este projeto) | validador (`validar_calc_b3.py`) |
 |---|---|---|
 | `stTemFluxo` | **mantém** (1/0 conforme tenha fluxo) | não toca |
 | `stFluxoValidado` | escreve **só `0`** | escreve `1` ao validar |
 | `dtValidacaoFluxo` | escreve **só `NULL`** | grava a data do OK |
 | `cdFonteValidacaoFluxo` | escreve **só `NULL`** | grava `B3`/`FiAnalytics`/`Manual` |
-| `dtUltimaTentativa` | escreve **só `NULL`** (na invalidação) | grava em toda tentativa |
 
-> **Atualizado em 19/07/2026:** há **dois** validadores que escrevem as 4 colunas de validação: `validar_fluxos.py` (passo 12 — tripwire de saldo vs FI) e o novo **`validar_calc_b3.py`** (passo 13 — o gate de confiança que verifica se a **calc reproduz a B3/FI em PU**; promove/rebaixa `stFluxoValidado`; `cdFonteValidacaoFluxo` = `'B3'`/`'FiAnalytics'`). O `validar_calc_b3` é o que dá fé para a calc precificar no `calc_taxa` — ver [[10 - Scripts/validar_calc_b3]] e [[16 - Confianca nos Validados (WIP)]]. A divisão de papéis (validadores escrevem, scrapers mantêm `stTemFluxo` e zeram) continua. Ver também [[14 - Rotinas da Calculadora]].
+> **Atualizado em 24/08/2026:** há **um** validador — **`validar_calc_b3.py`** (passo 12): verifica se a **calc reproduz a B3/FI em PU** (par e fora do par, em 3 datas); promove/rebaixa `stFluxoValidado`; `cdFonteValidacaoFluxo` = `'B3'`/`'FiAnalytics'`. O `validar_fluxos.py` foi removido (comparava a agenda evento a evento contra a FI — teste que o PU já cobre) e o `scrape_b3_bond_details` deixou de marcar `stFluxoValidado = 1` sozinho. A coluna `dtUltimaTentativa` saiu junto (era o throttle do validador antigo; o novo usa `dtValidacaoFluxo`) — schema v4. Ver [[10 - Scripts/validar_calc_b3]] e [[16 - Confianca nos Validados (WIP)]]. A divisão de papéis (validadores escrevem, scrapers mantêm `stTemFluxo` e zeram) continua. Ver também [[14 - Rotinas da Calculadora]].
 
 **Invalidação — só em mudança REAL de valor.** Cinco coisas invalidam o fluxo de um ativo:
 

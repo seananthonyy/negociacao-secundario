@@ -204,25 +204,19 @@ def DiBcb(inicio=None, fim=None, resultados=None) -> bool:
     args = ("--start", inicio, "--end", fim or inicio) if inicio else ()
     return RodarPasso("scrape_di_bcb", *args, resultados=resultados)
 
-def ValidarFluxos(limite=None, tickers=None, resultados=None) -> bool:
-    """Valida o fluxo dos ativos contra B3/FI e marca InfoAtivos.stFluxoValidado.
-    DEPOIS do anbima_data (que popula FluxoAtivos) — a fila tem throttle de 10 dias,
-    então rodar todo dia é barato. limite/tickers: só para smoke test."""
-    extra = []
-    if limite is not None:
-        extra += ["--limite", str(limite)]
-    if tickers:
-        extra += ["--tickers", tickers]
-    return RodarPasso("validar_fluxos", *extra, resultados=resultados)
+def ValidarCalcB3(negociadosDias=None, resultados=None) -> bool:
+    """ÚNICO validador: um ativo é `stFluxoValidado = 1` se a NOSSA calc reproduz a
+    calcPU da B3 (primária) ou, na falta dela, a FI Analytics — em várias datas. Não
+    reproduziu nenhuma das duas ⇒ inválido, cai na cascata de API no calc_taxa.
+    Bidirecional (promove e rebaixa); refresca o fluxo pela B3 antes de desvalidar.
 
-def ValidarCalcB3(negociadosDias=120, resultados=None) -> bool:
-    """Gate de CONFIANÇA: desvalida ativo cuja calc não reproduz a calcPU da B3 (em
-    várias datas), refrescando o fluxo pela B3 antes de desvalidar. É o que torna
-    stFluxoValidado confiável para a calc precificar no calc_taxa. Escopo: validados que
-    NEGOCIARAM nos últimos `negociadosDias` (o que aparece no relatório) — a base toda
-    levaria ~13 min. DEPOIS do validar_fluxos, ANTES do calc_taxa."""
-    return RodarPasso("validar_calc_b3", "--negociados-dias", str(negociadosDias),
-                      resultados=resultados)
+    Escopo padrão: a base INTEIRA — todo ativo com cadastro suficiente para calcular.
+    Quem CarregarAtivo não monta (falta fluxo/VNE/indexador/taxa) é pulado. Fica barato
+    porque o `--revalidar-dias` (default 15) pula quem foi validado há pouco: só entra
+    quem nunca passou ou cuja validação venceu. `negociadosDias` restringe aos que
+    negociaram na janela — use para uma rodada mais curta. ANTES do calc_taxa."""
+    extra = ["--negociados-dias", str(negociadosDias)] if negociadosDias else []
+    return RodarPasso("validar_calc_b3", *extra, resultados=resultados)
 
 def Outstanding(inicio, fim=None, resultados=None) -> bool:
     """Outstanding via Bloomberg — SÓ NO BANCO. Data única ou intervalo."""
@@ -290,7 +284,6 @@ def RodarDia(X: date | str, resultados: list | None = None,
     IpcaIbge(resultados=res)
     IpcaProjetado(resultados=res)
     DiBcb(resultados=res)
-    ValidarFluxos(resultados=res)
     ValidarCalcB3(resultados=res)   # gate de confiança: calc reproduz a B3? senão, desvalida
 
     CalcTaxa(X, resultados=res)
@@ -309,7 +302,7 @@ def RodarDia(X: date | str, resultados: list | None = None,
 def RodarCadeiaDias(dias: list[date], rotulo: str) -> list:
     """Roda a cadeia completa para uma lista de liquidações `dias` (cronológica) e
     gera o relatório 1× no fim. Passos globais (fianalytics, anbima_data, insumos da
-    calculadora, validar_fluxos, match_ref) rodam uma vez sobre a janela inteira.
+    calculadora, validar_calc_b3, match_ref) rodam uma vez sobre a janela inteira.
     Base das duas rotinas públicas: RodarUltimosN (padrão) e RodarIntervalo (range)."""
     if not dias:
         raise SystemExit("Sem dias úteis para processar — confira as datas.")
@@ -341,7 +334,6 @@ def RodarCadeiaDias(dias: list[date], rotulo: str) -> list:
     AnbimaData(Xant0, dias[-1], resultados=res)
     # Depois dos dois: eles atualizam InfoAtivos/FluxoAtivos e, quando o fluxo muda de
     # verdade, zeram a validação — o ativo volta pro topo da fila.
-    ValidarFluxos(resultados=res)
     ValidarCalcB3(resultados=res)   # gate de confiança: calc reproduz a B3? senão, desvalida
 
     for X in dias:
@@ -416,7 +408,6 @@ def RodarSetup(inicioBoletim: date | str,
     DiBcb(resultados=res)
     # Validação: o fluxo da B3 já nasce validado, então a fila aqui é só o que veio da
     # Anbima, mais o tripwire de saldo sobre tudo que está validado.
-    ValidarFluxos(resultados=res)
     # Gate de CONFIANÇA: a calc está LIGADA no calc_taxa, então a base montada pelo
     # setup precisa passar pelo mesmo gate do diário — senão precifica com fluxo
     # validado contra B3/FI mas não confirmado contra a calcPU da B3.

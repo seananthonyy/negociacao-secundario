@@ -117,7 +117,7 @@ def ChamarCompleto(cdTicker: str, dtIso: str, vrTaxa: float) -> dict | None:
 
     Enquanto ChamarPrimaria() extrai só o m2mRate, aqui devolvemos o dict inteiro:
     `cashFlowEvents` (a agenda), `issueRate`, `maturityDate`, `adjustedFaceValue`
-    (VNA) e `accruedInterest`. É o que o validar_fluxos.py precisa para conferir a
+    (VNA) e `accruedInterest`. É o que o validar_calc_b3.py precisa para conferir a
     agenda quando a B3 não cobre o ativo.
 
     Não recebe cdInstrumento: tenta o endpoint de debênture e, se não for, o de
