@@ -20,12 +20,33 @@ def GarantirEnv() -> None:
         envCarregado = True
 
 
+# Chaves de [paths] que NAO devem ser ancoradas na raiz. A calculadoraDir tem
+# resolucao propria em lib/calc.DirCalculadora (variavel de ambiente do banco tem
+# precedencia sobre o config, e ela aceita caminho relativo ou absoluto).
+PATHS_NAO_ANCORADOS = ("calculadoraDir",)
+
+
+def AncorarPaths(conf: dict) -> None:
+    """Torna cada [paths] absoluto, ancorado na RAIZ do projeto.
+
+    Sem isto os caminhos sao relativos ao CWD, e um script rodado de outra pasta
+    silenciosamente trabalha sobre outro lugar: o SQLite CRIA um banco vazio em
+    `data/` ali e o script termina com sucesso, sobre nada. Ancorado, o script
+    funciona rodado de qualquer diretorio. Caminho ja absoluto no config e
+    respeitado (RAIZ / absoluto devolve o absoluto)."""
+    for chave, valor in conf.get("paths", {}).items():
+        if chave in PATHS_NAO_ANCORADOS or not isinstance(valor, str):
+            continue
+        conf["paths"][chave] = str((RAIZ / valor).resolve())
+
+
 def GarantirCfg() -> None:
     global cfgCache
     if cfgCache is None:
         GarantirEnv()
         with open(RAIZ / "config.toml", "rb") as fh:
             cfgCache = tomllib.load(fh)
+        AncorarPaths(cfgCache)
         AplicarProxyEnv()  # _cfg já setado — ObterSegredo pode ser usado aqui
 
 

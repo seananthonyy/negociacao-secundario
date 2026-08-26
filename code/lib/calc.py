@@ -75,7 +75,7 @@ calcImportada = None  # cache do módulo calculadora_rf
 
 def DirArquivos() -> Path:
     """Pasta dos insumos da calc (code/data/). Absoluta."""
-    return (RAIZ / Path(cfg["paths"]["dadosDir"])).resolve()
+    return Path(cfg["paths"]["dadosDir"])
 
 
 def DirCalculadora() -> Path:
@@ -86,11 +86,11 @@ def DirCalculadora() -> Path:
 
 
 def CaminhoBancoIpca() -> Path:
-    return (RAIZ / Path(cfg["paths"]["ipcaDb"])).resolve()
+    return Path(cfg["paths"]["ipcaDb"])
 
 
 def CaminhoBancoDi() -> Path:
-    return (RAIZ / Path(cfg["paths"]["diDb"])).resolve()
+    return Path(cfg["paths"]["diDb"])
 
 
 def ObterBancoIpca() -> sqlite3.Connection:
