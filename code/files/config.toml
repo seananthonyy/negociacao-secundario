@@ -1,0 +1,107 @@
+# Todos os caminhos daqui sao ancorados na raiz do projeto (a pasta que contem
+# Helpers/, files/ e codigos/) por AncorarPaths, em Helpers/config.py — nao no
+# diretorio de onde o script foi chamado. Caminho absoluto tambem e aceito.
+[paths]
+codigosDir     = "codigos"
+# Dois arquivos de banco (schema 5): cadastro/mercado dos ativos separado dos negocios.
+dadosDir       = "files"
+dbAtivos       = "files/Database/ativos.db"
+dbTrades       = "files/Database/trades.db"
+relatoriosDir  = "files/relatorios"
+# Fallback de log: o normal e cair em codigos/<script>/logs (ver Helpers/logger.py).
+logsDir        = "files/logs"
+templatesDir   = "files/templates"
+anbimaDataRaw  = "files/anbima_data_raw"
+
+# Insumos da calculadora de renda fixa (ver Helpers/calc.py). Ficam junto dos demais
+# bancos — este projeto é quem os coleta; a calc só os lê.
+ipcaDb         = "files/Database/ipca.db"
+diDb           = "files/Database/di.db"
+
+# Onde a calculadora está instalada (biblioteca de cálculo — não versionada aqui).
+# Relativo à raiz do projeto ou absoluto. No banco pode ser sobrescrito pela variável de
+# ambiente mapeada em [env].calculadoraDir.
+calculadoraDir = "../../calculadora-renda-fixa"
+
+[env]
+# Mapeia cada segredo para os NOMES das variáveis de ambiente que o guardam
+# (apenas nomes — nunca valores; seguro para repositório público).
+# O resolver (lib.config.get_secret) tenta cada candidato na ordem e usa o
+# primeiro preenchido. PC pessoal: nomes canônicos no .env. Banco: variáveis da
+# conta. Os dois convivem porque ambos os nomes ficam na lista de candidatos.
+b3CalcToken        = ["token_calc_B3",        "B3_CALC_TOKEN"]
+fianalyticsApiKey  = ["token_fianalytics",    "FIANALYTICS_API_KEY"]
+fianalyticsUser    = ["user_fianalytics",     "FIANALYTICS_USER"]
+fianalyticsPass    = ["password_fianalytics", "FIANALYTICS_PASS"]
+httpProxy          = ["proxy_http",  "HTTP_PROXY",  "http_proxy"]
+httpsProxy         = ["proxy_https", "HTTPS_PROXY", "https_proxy"]
+outlookTo          = ["OUTLOOK_TO"]
+emailDestinatarios = ["EMAIL_DESTINATARIOS"]
+calculadoraDir     = ["CALCULADORA_DIR"]
+
+[filtro]
+# Filtro 1 — Passagem de Fundo
+# Condição: |PU_i - PU_j| <= fundoMaxReaisPorMilhao * PU_medio / 1_000_000
+# Equivale a: diferença financeira <= R$ fundoMaxReaisPorMilhao por R$1MM de notional
+fundoMaxReaisPorMilhao  = 100.0
+
+# Filtro 2 — Corretor
+# Par com mesma (ticker, qty) e diferença de taxa <= threshold → menor volume = VALIDO, outro = BROKER
+corretorMaxBps          = 2.5    # não-%CDI: threshold em bps (1 bps = 0,01 p.p.)
+corretorMaxPctCdi       = 0.25   # %CDI: threshold em unidades %CDI (ex: 100 → 100,25)
+
+# Filtro 3 — Pessoa Física
+# Par com mesma (ticker, qty) e diferença de taxa > threshold → mais próx. de referência = VALIDO, outro = PF
+pfMinBps                = 20.0   # não-%CDI: threshold em bps
+pfMinPctCdi             = 2.0    # %CDI: threshold em unidades %CDI (ex: 100 → 102)
+
+[calc]
+timeoutSeconds  = 15
+
+# Usar a calculadora LOCAL como 1o degrau da cascata de taxa (calc_taxa_negocios),
+# nos ativos com stFluxoValidado = 1 e indexador em `indexadores` (abaixo)?
+#
+# LIGADO em 15/07/2026, depois de:
+#  1. Faxina de cadastro (cupom/indexador/fluxo pela B3) + snap da amortizacao na calc
+#     (CalcularVna): erros grosseiros de PU zerados. Ver [[14 - Rotinas da Calculadora]].
+#  2. Validador reescrito em torno da B3 como oraculo (scripts/validar_calc_b3.py):
+#     `stFluxoValidado=1` passou a significar "a calc reproduz a calcPU/calcYield da B3
+#     em varias datas". Quem a calc nao reproduz foi DESVALIDADO.
+#  3. Verificacao em TRADES REAIS (15/07): calc vs B3 na taxa dos PUs negociados —
+#     CDI+/IPCA/PREFIXADO batem mediana 0,00 bps, max <0,4 bps.
+#
+# %CDI fica de FORA (ver `indexadores`): PU par perfeito, mas a taxa num PU de desconto
+# PROFUNDO ainda diverge da B3 ~15 bps (FI e B3 concordam, a calc nao). Cai na cascata.
+usarCalcTaxa    = true
+
+# Indexadores em que a calc precifica a TAXA (os demais validados caem na cascata FI->B3).
+indexadores     = ["CDI+", "IPCA", "PREFIXADO"]
+
+[alerta]
+volumeMinSemTaxa = 5_000_000
+
+[email]
+ativo          = true
+
+[scrape.b3]
+baseUrl              = "https://www.b3.com.br/pt_br/market-data-e-indices/servicos-de-dados/market-data/consultas/boletim-diario/boletim-diario-do-mercado/"
+instrumentosAceitos  = ["DEB", "CRI", "CRA"]
+
+[scrape.fianalytics]
+signinUrl   = "https://fi-analytics.com.br/signin"
+downloadUrl = "https://fi-analytics.com.br/analytics-hub/hub?type=deb"
+headless    = true
+
+[scrape.anbima]
+debXlsBaseUrl = "https://www.anbima.com.br/informacoes/merc-sec-debentures/arqs"
+cricraUrl     = "https://data.anbima.com.br/busca/certificado-de-recebiveis?view=precos"
+
+[api.fianalytics]
+baseUrl             = "https://endpoint.fi-analytics.com.br"
+debPath             = "/deb/debenturecalculator"
+cricraPath          = "/cr/cricracalculator"
+getUserBondsPath    = "/bb/bondbuildercalculator/getuserbonds"
+bondbuilderPath     = "/bb/bondbuildercalculator"
+
+[api.b3]
+baseUrl = "https://api.calculadorarendafixa.com.br"

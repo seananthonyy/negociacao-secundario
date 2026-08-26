@@ -2,24 +2,26 @@
 # Defesa em profundidade: repetimos aqui os segredos e binários grandes.
 
 # --- Segredos / config local (NUNCA versionar) ---
-code/.env
 .env
-code/destinatarios.py
+code/files/.env
+code/Helpers/destinatarios.py
 
 # --- Banco de dados e backups (grandes; regeneráveis) ---
 *.db
 *.db-journal
 *.db-wal
-code/data/*.db
+code/files/Database/
 
 # --- Saídas geradas / dados brutos (regeneráveis) ---
-code/data/logs/
-code/data/relatorios/
-code/data/anbima_data_raw/
-code/data/api_samples/
-code/data/debug/
-code/data/backups/
-code/data/diagnosticos/
+# O log de cada script cai na pasta do proprio script (ver Helpers/logger.py).
+code/codigos/*/logs/
+code/files/logs/
+code/files/relatorios/
+code/files/anbima_data_raw/
+code/files/api_samples/
+code/files/debug/
+code/files/diagnosticos/
+code/files/emails/
 
 # --- Ferramentas / editores ---
 .obsidian/
@@ -36,5 +38,5 @@ venv/
 pv.html
 
 # Artefatos ad-hoc de depuracao (respostas de API, coberturas) — nao versionar
-code/data/fianalytics_resposta.json
-code/data/cobertura_fontes.csv
+code/files/fianalytics_resposta.json
+code/files/cobertura_fontes.csv

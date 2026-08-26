@@ -17,10 +17,10 @@ import tempfile
 from datetime import date
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "Helpers"))
 
-from lib.calc import ImportarCalc, CarregarAtivo, CalcularPu, CalcularTaxa
-from lib.db import ObterBancoAvulso
+from calc import ImportarCalc, CarregarAtivo, CalcularPu, CalcularTaxa
+from db import ObterBancoAvulso
 
 C = ImportarCalc()   # modulo calculadora_rf, com CALCRF_FILES_DIR ja apontado p/ data/
 

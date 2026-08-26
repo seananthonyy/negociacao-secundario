@@ -1,24 +1,30 @@
 # --- Segredos e config local — NUNCA versionar ---
-.env
-destinatarios.py
+files/.env
+Helpers/destinatarios.py
 
 # --- Banco de dados e backups (regeneráveis; grandes) ---
-data/*.db
-data/*.db-journal
-data/*.db-wal
+files/Database/
 *.db
+*.db-journal
+*.db-wal
 
 # --- Saídas geradas / dados brutos (regeneráveis) ---
-data/logs/
-data/relatorios/
-data/anbima_data_raw/
-data/api_samples/
-data/debug/
-data/backups/
-data/divergencias_fluxo.csv
-data/carencia_conferir_pu.csv
-data/pu_divergencias.csv
-data/validar_calc_b3.csv
+# O log de cada script cai na pasta do próprio script (ver Helpers/logger.py).
+codigos/*/logs/
+files/logs/
+files/relatorios/
+files/anbima_data_raw/
+files/api_samples/
+files/debug/
+files/diagnosticos/
+files/emails/
+files/divergencias_fluxo.csv
+files/pu_divergencias.csv
+files/validar_calc_b3.csv
+files/cobertura_fontes.csv
+files/fianalytics_resposta.json
+files/*.bak-*
+files/*.csv.bak
 
 # --- Python ---
 __pycache__/
@@ -28,7 +34,3 @@ venv/
 
 # --- Playwright ---
 .playwright/
-data/*.bak-*
-data/*.csv.bak
-data/cobertura_fontes.csv
-data/emails/
