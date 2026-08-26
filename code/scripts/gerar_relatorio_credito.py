@@ -42,7 +42,7 @@ NOME_SCRIPT = "gerar_relatorio_credito"
 
 def CarregarFeriados() -> set[date]:
     """Feriados Anbima a partir de data/feriados_anbima.csv (set de date)."""
-    feriadosPath = Path(cfg["paths"]["dbFile"]).parent / "feriados_anbima.csv"
+    feriadosPath = Path(cfg["paths"]["dadosDir"]) / "feriados_anbima.csv"
     feriados: set[date] = set()
     if feriadosPath.exists():
         with feriadosPath.open(encoding="utf-8") as f:

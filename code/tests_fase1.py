@@ -20,7 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from lib.calc import ImportarCalc, CarregarAtivo, CalcularPu, CalcularTaxa
-from lib.db import ObterBanco
+from lib.db import ObterBancoAvulso
 
 C = ImportarCalc()   # modulo calculadora_rf, com CALCRF_FILES_DIR ja apontado p/ data/
 
@@ -130,7 +130,7 @@ def TestIntegracao() -> None:
     print("\n== #2b Integracao: coluna cdTipoAmortizacao + propagacao ==")
     with tempfile.TemporaryDirectory() as tmp:
         dbPath = str(Path(tmp) / "teste.db")
-        conn = ObterBanco(dbPath)
+        conn = ObterBancoAvulso(dbPath, "ativos")
         cols = {r[1] for r in conn.execute("PRAGMA table_info(InfoAtivos)")}
         Checar("schema tem cdTipoAmortizacao", "cdTipoAmortizacao" in cols)
 

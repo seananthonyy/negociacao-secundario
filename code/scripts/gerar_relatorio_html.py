@@ -80,7 +80,7 @@ def CalcularDMenos1(dtLiquidacao: str) -> str:
     import csv
     from datetime import date, timedelta
 
-    feriadosPath = Path(cfg["paths"]["dbFile"]).parent / "feriados_anbima.csv"
+    feriadosPath = Path(cfg["paths"]["dadosDir"]) / "feriados_anbima.csv"
     feriados: set[date] = set()
     if feriadosPath.exists():
         with feriadosPath.open(encoding="utf-8") as f:

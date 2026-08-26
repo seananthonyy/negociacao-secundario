@@ -260,7 +260,7 @@ def CarregarSkipTickers() -> set[str]:
     Um ticker por linha; linhas em branco e iniciadas por '#' são ignoradas;
     texto após a primeira vírgula (motivo) é descartado. Arquivo opcional —
     se não existir, retorna set vazio."""
-    skipPath = Path(cfg['paths']['dbFile']).parent / 'anbima_skip_tickers.csv'
+    skipPath = Path(cfg['paths']['dadosDir']) / 'anbima_skip_tickers.csv'
     skip: set[str] = set()
     if not skipPath.exists():
         return skip

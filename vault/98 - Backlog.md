@@ -6,6 +6,39 @@
 
 ---
 
+## Rotas em lote da B3 (`calcPUCSV` / `calcYieldCSV`) — investigar
+
+**Origem:** 25/08/2026, lendo a documentação oficial do Web Service da CALC (`Documentacao API.pdf`).
+
+**O que é:** a API da B3 tem versões **CSV/lote** dos dois métodos de cálculo que hoje chamamos
+um-por-um: `calcPUCSV` (§13 da doc) e `calcYieldCSV` (§15). Hoje o `calc_taxa_negocios` faz **uma
+requisição HTTP por trade** e o `validar_calc_b3` faz 2 a 4 por ativo — num pregão cheio isso é
+dezenas de milhares de chamadas, e cada uma paga handshake (pior atrás do proxy do banco).
+
+**Por que importa:**
+- **Velocidade.** A cascata de API é o passo mais lento do pipeline (~25 min/dia no banco, medido
+  em 13/07). Trocar N requisições por um punhado de POSTs de CSV muda a ordem de grandeza.
+- **Consumo.** As chamadas de cálculo são **contadas** pela B3 — existe a rota
+  `GET /consumo/pacotes/{dataInicial}/{dataFinal}` (§18), que devolve `quantidadeCalculos` por
+  tipo de ativo (DI / Debenture / Titulo Publico). Falta descobrir se o lote conta como **1** ou
+  como **N** cálculos. Se contar como 1, o ganho é duplo.
+
+**O que precisa ser decidido/feito:**
+- Ler §13 e §15 da doc: formato exato do CSV de entrada, limite de linhas por chamada, e o que
+  volta quando **uma** linha do lote falha (erro parcial vs. lote inteiro rejeitado).
+- Medir o consumo com `/consumo/pacotes` **antes e depois** de um lote de teste — é a única forma
+  de saber como a B3 contabiliza.
+- Onde entra primeiro: o `validar_calc_b3` é o candidato natural (roda a base inteira, PU em 3
+  datas + D+1, e é tolerante a latência). O `calc_taxa_negocios` vem depois — lá o cache por
+  `(ticker, dtLiquidacao, PU)` já corta 93% do trabalho, então o ganho marginal é menor.
+- Conferir se o lote respeita o mesmo contrato de erro que a `lib/b3_calc_api` já trata (token
+  expirado em 3h, 500 transitório, ativo sem cadastro).
+
+**Conversa com:** [[06 - Calculadoras/B3 Calculator API]], [[10 - Scripts/validar_calc_b3]] e
+[[10 - Scripts/calc_taxa_negocios]]. Doc oficial: `Documentacao API.pdf` (24 páginas, índice na p. 2).
+
+---
+
 ## Ponto cego aberto em 24/08/2026 — ninguém mais audita a B3 contra a FI
 
 **Origem:** remoção do `validar_fluxos` (decisão do usuário, 24/08).

@@ -74,8 +74,8 @@ calcImportada = None  # cache do módulo calculadora_rf
 
 
 def DirArquivos() -> Path:
-    """Pasta dos insumos da calc = a mesma do trades.db (code/data/). Absoluta."""
-    return (RAIZ / Path(cfg["paths"]["dbFile"])).resolve().parent
+    """Pasta dos insumos da calc (code/data/). Absoluta."""
+    return (RAIZ / Path(cfg["paths"]["dadosDir"])).resolve()
 
 
 def DirCalculadora() -> Path:

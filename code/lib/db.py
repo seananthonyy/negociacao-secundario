@@ -11,7 +11,9 @@ from lib.config import cfg
 # ganhar coluna/tabela nova, para o banco de producao saber em que versao roda.
 #   1 = schema PT-BR base   2 = validacao de fluxo + cadastro B3
 #   3 = cdTipoAmortizacao + motor unificado (FASE 3)
-SCHEMA_VERSION = 4
+#   4 = dtAtualizacaoReferencia (timer da referencia)
+#   5 = split em dois arquivos (ativos.db + trades.db)
+SCHEMA_VERSION = 5
 
 
 DDL = """
@@ -68,6 +70,15 @@ CREATE TABLE IF NOT EXISTS InfoAtivos (
     cdTicker           TEXT PRIMARY KEY,
     cdInstrumento      TEXT NULL,
     cdEmissor          TEXT NULL,
+    -- Cadastro vindo da Anbima Data (F17, 20/06/2026). Estavam FORA desta DDL ate
+    -- 26/08: entraram por um ALTER fixo que sumiu quando o reconciliador generico
+    -- substituiu a lista (23/07). Resultado: base nova nascia sem elas e o
+    -- scrape_anbima_data_ativos quebrava no upsert. vrQuantidadeEmissao e o PROXY
+    -- de outstanding que pesa a aba Visao Anbima enquanto a tabela Outstanding
+    -- estiver vazia (ver gerar_relatorio_credito).
+    cdISIN              TEXT NULL,
+    vrQuantidadeEmissao REAL NULL,
+    dtEmissao           TEXT NULL,
     dtVencimento       TEXT NULL,
     vrDuration         REAL NULL,
     dtAtualizacaoDuration TEXT NULL,
@@ -228,10 +239,53 @@ END;
 # ('convencao de NTN-B; a debenture...') e cortariam um CREATE TABLE no meio.
 DDL_SEM_COMENTARIOS = "\n".join(
     (linha[:linha.index("--")] if "--" in linha else linha) for linha in DDL.splitlines())
-DDL_TABELAS = ";\n".join(
-    s.strip() for s in DDL_SEM_COMENTARIOS.split(";") if "CREATE TABLE" in s.upper()) + ";"
-DDL_INDICES = ";\n".join(
-    s.strip() for s in DDL_SEM_COMENTARIOS.split(";") if "CREATE INDEX" in s.upper()) + ";"
+
+
+# ---------------------------------------------------------------------------
+# Dois arquivos de banco (schema 5)
+# ---------------------------------------------------------------------------
+# O cadastro/mercado dos ativos e os negocios passam a viver em arquivos separados:
+#   ativos.db  cadastro, agenda de fluxo, indicativas Anbima, MtM, outstanding
+#   trades.db  os negocios crus e processados
+# Sao dominios com ciclo de vida diferente: o ativos.db e pequeno, e o que a
+# calculadora e o add-in leem, e nao precisa arrastar centenas de MB de negocio junto.
+# A DDL continua UMA so (fonte unica da verdade); o que muda e o filtro por tabela.
+#
+# SchemaVersao vai nos DOIS: cada arquivo carrega a propria trilha de migracao.
+TABELAS_POR_DOMINIO: dict[str, tuple[str, ...]] = {
+    "ativos": ("InfoAtivos", "FluxoAtivos", "AnbimaIndicativos", "MtmAnbima",
+               "Outstanding", "SchemaVersao"),
+    "trades": ("NegociosBrutos", "NegociosProcessados", "SchemaVersao"),
+}
+
+DOMINIOS = tuple(TABELAS_POR_DOMINIO)
+
+# Tabela -> dominio (inverso do mapa acima). SchemaVersao fica de fora: e das duas.
+DOMINIO_DA_TABELA = {tab: dom for dom, tabs in TABELAS_POR_DOMINIO.items()
+                     for tab in tabs if tab != "SchemaVersao"}
+
+
+def TabelaDoComando(cmd: str) -> str | None:
+    """Nome da tabela que um CREATE TABLE / CREATE INDEX toca (None se nao der)."""
+    m = re.search(r"CREATE TABLE IF NOT EXISTS (\w+)", cmd, re.I)
+    if m:
+        return m.group(1)
+    # O covering index quebra a linha entre o nome e o ON -- precisa de re.S.
+    m = re.search(r"\bON\s+(\w+)\s*\(", cmd, re.I | re.S)
+    return m.group(1) if m else None
+
+
+def DdlDominio(dominio: str, tipo: str) -> str:
+    """Os comandos `CREATE {tipo}` da DDL que pertencem ao dominio, num script so."""
+    tabelas = TABELAS_POR_DOMINIO[dominio]
+    cmds = [s.strip() for s in DDL_SEM_COMENTARIOS.split(";")
+            if f"CREATE {tipo}" in s.upper()]
+    do = [c for c in cmds if TabelaDoComando(c) in tabelas]
+    return (";\n".join(do) + ";") if do else ""
+
+
+DDL_TABELAS = {d: DdlDominio(d, "TABLE") for d in DOMINIOS}
+DDL_INDICES = {d: DdlDominio(d, "INDEX") for d in DOMINIOS}
 
 
 # PRAGMAs de performance aplicados em toda conexao (leitura e escrita).
@@ -248,14 +302,17 @@ PRAGMAS_PERF = (
 )
 
 
-def ObterConexao(caminhoBanco: str | None = None) -> sqlite3.Connection:
+def CaminhoBanco(dominio: str) -> str:
+    """Caminho do arquivo de um dominio, lido do config ([paths] dbAtivos/dbTrades)."""
+    chave = {"ativos": "dbAtivos", "trades": "dbTrades"}[dominio]
+    return cfg["paths"][chave]
+
+
+def ObterConexao(caminhoBanco: str) -> sqlite3.Connection:
     """
     Abre conexao SQLite com WAL, foreign_keys e PRAGMAs de performance.
-    db_path padrao: cfg["paths"]["dbFile"].
     Cria o diretorio pai se nao existir.
     """
-    if caminhoBanco is None:
-        caminhoBanco = cfg["paths"]["dbFile"]
     os.makedirs(os.path.dirname(caminhoBanco) or ".", exist_ok=True)
     conn = sqlite3.connect(caminhoBanco)
     conn.row_factory = sqlite3.Row
@@ -291,7 +348,7 @@ def ObterConexaoLeitura(caminhoBanco: str | None = None) -> sqlite3.Connection:
     valem em qualquer linguagem (C#/.NET, VBA/ODBC etc.), nao so Python.
     """
     if caminhoBanco is None:
-        caminhoBanco = cfg["paths"]["dbFile"]
+        caminhoBanco = CaminhoBanco("ativos")   # InfoAtivos + FluxoAtivos moram la
     conn = sqlite3.connect(f"file:{caminhoBanco}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA query_only=ON")
@@ -351,13 +408,15 @@ COLUNAS_REMOVIDAS: dict[str, list[str]] = {
 }
 
 
-def ColunasARemover(conn: sqlite3.Connection) -> dict[str, list[str]]:
-    """{tabela: [coluna]} que o banco vivo ainda tem e a DDL nao preve mais."""
+def ColunasARemover(conn: sqlite3.Connection, dominio: str) -> dict[str, list[str]]:
+    """{tabela: [coluna]} que o banco vivo ainda tem e a DDL nao preve mais.
+    Restrito as tabelas do dominio: cada arquivo migra so o que e dele."""
+    doDominio = set(TABELAS_POR_DOMINIO[dominio])
     existentes = {r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
     sobrando: dict[str, list[str]] = {}
     for tabela, cols in COLUNAS_REMOVIDAS.items():
-        if tabela not in existentes:
+        if tabela not in existentes or tabela not in doDominio:
             continue
         atuais = {r[1] for r in conn.execute(f"PRAGMA table_info({tabela})")}
         pend = [c for c in cols if c in atuais]
@@ -366,14 +425,16 @@ def ColunasARemover(conn: sqlite3.Connection) -> dict[str, list[str]]:
     return sobrando
 
 
-def ColunasFaltantes(conn: sqlite3.Connection) -> dict[str, list[tuple[str, str]]]:
+def ColunasFaltantes(conn: sqlite3.Connection, dominio: str) -> dict[str, list[tuple[str, str]]]:
     """{tabela: [(coluna, def)]} que a DDL preve e o banco vivo NAO tem. So considera
-    tabelas que JA existem — as ausentes o executescript(DDL) cria inteiras."""
+    tabelas que JA existem — as ausentes o executescript(DDL) cria inteiras.
+    Restrito as tabelas do dominio: cada arquivo migra so o que e dele."""
+    doDominio = set(TABELAS_POR_DOMINIO[dominio])
     existentes = {r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
     faltando: dict[str, list[tuple[str, str]]] = {}
     for tabela, cols in COLUNAS_ESPERADAS.items():
-        if tabela not in existentes:
+        if tabela not in existentes or tabela not in doDominio:
             continue
         atuais = {r[1] for r in conn.execute(f"PRAGMA table_info({tabela})")}
         pend = [(n, d) for n, d in cols if n not in atuais]
@@ -421,7 +482,7 @@ def ContarLinhas(conn: sqlite3.Connection, tabelas) -> dict[str, int]:
     return {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tabelas}
 
 
-def Bootstrap(conn: sqlite3.Connection) -> None:
+def Bootstrap(conn: sqlite3.Connection, dominio: str) -> None:
     """Garante o schema no banco vivo, preservando 100% dos dados. Idempotente.
 
     Autonomo: rodar qualquer script (todos chamam ObterBanco) sobre um trades.db de
@@ -431,8 +492,8 @@ def Bootstrap(conn: sqlite3.Connection) -> None:
     versao em SchemaVersao. Numa base ja atual, e um no-op barato (so o diff de colunas).
     """
     # 1. Estado ANTES de tocar em nada.
-    faltando   = ColunasFaltantes(conn)
-    sobrando   = ColunasARemover(conn)
+    faltando   = ColunasFaltantes(conn, dominio)
+    sobrando   = ColunasARemover(conn, dominio)
     versaoAtual = LerVersaoSchema(conn)
     temTabelas = conn.execute(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()[0] > 0
@@ -449,7 +510,7 @@ def Bootstrap(conn: sqlite3.Connection) -> None:
 
     # 3. Cria as TABELAS que faltam (aditivo, IF NOT EXISTS). Os indices ficam para
     #    depois dos ALTER — um indice pode citar coluna que ainda vamos adicionar.
-    conn.executescript(DDL_TABELAS)
+    conn.executescript(DDL_TABELAS[dominio])
 
     # 4. Adiciona as colunas que faltam. Idempotente por construcao (so as ausentes).
     novas: set[str] = set()
@@ -462,7 +523,7 @@ def Bootstrap(conn: sqlite3.Connection) -> None:
                 pass  # corrida/coluna ja presente — segue
 
     # 4b. Agora que todas as colunas existem, cria os indices.
-    conn.executescript(DDL_INDICES)
+    conn.executescript(DDL_INDICES[dominio])
 
     # Backfill do stTemFluxo: so na migracao (uma passada). Dai em diante quem
     # mantem e o MarcarTemFluxo(), chamado por quem escreve em FluxoAtivos.
@@ -489,12 +550,13 @@ def Bootstrap(conn: sqlite3.Connection) -> None:
     # DROP antes do CREATE para que COLS_INVALIDAM_FLUXO seja sempre autoritativa
     # mesmo em base ja existente (CREATE IF NOT EXISTS sozinho nao atualizaria o
     # trigger ao adicionar uma coluna nova, ex.: cdTipoAmortizacao).
-    conn.execute("DROP TRIGGER IF EXISTS trgInfoAtivosInvalidaFluxo")
-    conn.executescript(DDL_TRIGGERS)
-    conn.execute("CREATE INDEX IF NOT EXISTS idxInfoAtivosStFluxoValidado "
-                 "ON InfoAtivos(stFluxoValidado)")
-    # Remove indice redundante (coberto pela PK composta de FluxoAtivos).
-    conn.execute("DROP INDEX IF EXISTS idxFluxoAtivosCdTicker")
+    if dominio == "ativos":
+        conn.execute("DROP TRIGGER IF EXISTS trgInfoAtivosInvalidaFluxo")
+        conn.executescript(DDL_TRIGGERS)
+        conn.execute("CREATE INDEX IF NOT EXISTS idxInfoAtivosStFluxoValidado "
+                     "ON InfoAtivos(stFluxoValidado)")
+        # Remove indice redundante (coberto pela PK composta de FluxoAtivos).
+        conn.execute("DROP INDEX IF EXISTS idxFluxoAtivosCdTicker")
 
     # 4c. Remove as colunas aposentadas. ALTER TABLE DROP COLUMN existe desde o SQLite
     #     3.35 (2021); em runtime mais velho, apenas registra e segue — coluna sobrando
@@ -541,10 +603,41 @@ def Bootstrap(conn: sqlite3.Connection) -> None:
         conn.commit()
 
 
-def ObterBanco(caminhoBanco: str | None = None) -> sqlite3.Connection:
-    """Helper principal: abre conexao e garante o schema. Scripts usam so essa."""
+def ObterBancoAvulso(caminhoBanco: str, dominio: str) -> sqlite3.Connection:
+    """Um arquivo so, sem anexar o outro dominio. Para teste e para ferramenta que
+    mexe num banco especifico (o migrador do split, por exemplo)."""
     conn = ObterConexao(caminhoBanco)
-    Bootstrap(conn)
+    Bootstrap(conn, dominio)
+    return conn
+
+
+def ObterBanco(dominio: str = "trades") -> sqlite3.Connection:
+    """Helper principal: abre conexao e garante o schema. Scripts usam so essa.
+
+    Desde o schema 5 o banco sao DOIS arquivos (ativos.db e trades.db). Esta funcao
+    abre um como `main` e ANEXA o outro, entao consulta que junta as duas metades
+    (calc_taxa, filtrar_trades, calc_spread_over, relatorio) segue funcionando SEM
+    qualificar nome de tabela — o SQLite resolve o nome no banco anexado.
+
+    `dominio` diz so quem fica como `main`; os dois ficam gravaveis. Na pratica cada
+    script escreve num dominio so, entao nenhuma transacao cruza os dois arquivos
+    (o que, com WAL nos dois, nao teria commit atomico).
+    """
+    # Schema garantido nos dois arquivos: um script de ativos que anexa um trades.db
+    # ainda inexistente veria um arquivo vazio e quebraria no primeiro JOIN. Numa base
+    # ja atual isto e so o diff de colunas — barato.
+    for dom in DOMINIOS:
+        conexao = ObterConexao(CaminhoBanco(dom))
+        try:
+            Bootstrap(conexao, dom)
+        finally:
+            conexao.close()
+
+    conn = ObterConexao(CaminhoBanco(dominio))
+    outro = next(d for d in DOMINIOS if d != dominio)
+    conn.execute(f"ATTACH DATABASE ? AS {outro}", (CaminhoBanco(outro),))
+    conn.execute(f"PRAGMA {outro}.journal_mode=WAL")
+    conn.execute(f"PRAGMA {outro}.synchronous=NORMAL")
     return conn
 
 

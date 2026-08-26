@@ -1,5 +1,8 @@
 [paths]
-dbFile         = "data/trades.db"
+# Dois arquivos de banco (schema 5): cadastro/mercado dos ativos separado dos negocios.
+dadosDir       = "data"
+dbAtivos       = "data/ativos.db"
+dbTrades       = "data/trades.db"
 relatoriosDir  = "data/relatorios"
 logsDir        = "data/logs"
 templatesDir   = "templates"
