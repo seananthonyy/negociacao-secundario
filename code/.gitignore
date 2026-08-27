@@ -12,6 +12,7 @@ files/Database/
 # O log de cada script cai na pasta do próprio script (ver Helpers/logger.py).
 codigos/*/logs/
 files/logs/
+files/backups/
 files/relatorios/
 files/anbima_data_raw/
 files/api_samples/

@@ -11,11 +11,11 @@ from relatorio_execucao import RelatorioExecucao
 EMAIL_TIMEOUT = 20  # segundos antes de desistir e logar warning
 
 # Com NEGSEC_SEM_EMAIL setado, nada vai para o Outlook: o corpo do email e gravado em
-# data/emails/ para conferencia. Existe porque o COM do Outlook trava (dialog de
+# files/emails/ para conferencia. Existe porque o COM do Outlook trava (dialog de
 # permissao) e derruba qualquer rodada em lote — e nao da para depurar o template
 # esperando 20s de timeout a cada script.
 ENV_SEM_EMAIL = "NEGSEC_SEM_EMAIL"
-DIR_EMAILS = Path("data/emails")
+DIR_EMAILS = Path(cfg["paths"]["dadosDir"]) / "emails"
 
 
 def EmailDesligado() -> bool:

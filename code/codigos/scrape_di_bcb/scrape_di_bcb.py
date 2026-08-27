@@ -1,7 +1,7 @@
 """
 scrape_di_bcb.py
 ================
-Taxa DI **realizada** (divulgada dia a dia pelo BCB) → `data/di.db`, tabela `DiHistorico`.
+Taxa DI **realizada** (divulgada dia a dia pelo BCB) → `files/Database/di.db`, tabela `DiHistorico`.
 
 É insumo da calculadora de renda fixa (%CDI e CDI+) — ver `lib/calc.py`.
 Migrado do `atualizar_di.py` do projeto `calculadora-renda-fixa` (handoff 12/07/2026).
@@ -110,7 +110,7 @@ def BuscarDiRealizado(client: httpx.Client, inicio: date, fim: date, log) -> lis
 
 def LerArgumentos() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Taxa DI realizada (BCB/SGS séries 4389 e 12) → di.db/DiHistorico."
+        description="Taxa DI realizada (BCB/SGS series 4389 e 12) -> di.db/DiHistorico."
     )
     parser.add_argument("--start", metavar="YYYY-MM-DD", help="início da janela (default: último dia gravado)")
     parser.add_argument("--end", metavar="YYYY-MM-DD", help="fim da janela (default: hoje)")

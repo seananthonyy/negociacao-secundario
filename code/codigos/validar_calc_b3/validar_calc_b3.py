@@ -52,26 +52,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "Helpers"))
 
-import importlib.util
-
 from calc import CarregarAtivo, CalcularPu, CalcularTaxa, ImportarCalc
 from b3_calc_api import CalcularPuGov, CalcularYield, ObterDetalhesAtivo
 from fianalytics_api import ChamarPrimaria
+from cadastro_b3 import GravarAtivo
+from config import cfg
 from db import ObterBanco
 from email_outlook import EnviarEmailConclusao
 from logger import ObterLogger
 from relatorio_execucao import RelatorioExecucao
 
 NOME_SCRIPT = "validar_calc_b3"
-
-# Reutiliza o refresh de cadastro/fluxo da B3 do scraper (mesma lógica do pacote).
-# Cada script mora na propria pasta, entao o irmao esta em codigos/<nome>/<nome>.py.
-CAMINHO_BOND_DETAILS = (Path(__file__).resolve().parents[1]
-                        / "scrape_b3_bond_details" / "scrape_b3_bond_details.py")
-specBondDetails = importlib.util.spec_from_file_location(
-    "scrape_b3_bond_details", str(CAMINHO_BOND_DETAILS))
-bondDetails = importlib.util.module_from_spec(specBondDetails)
-specBondDetails.loader.exec_module(bondDetails)
 
 
 def RefrescarCadastroB3(conn, cdTicker: str) -> dict | None:
@@ -82,7 +73,7 @@ def RefrescarCadastroB3(conn, cdTicker: str) -> dict | None:
     if not det:
         return None
     try:
-        bondDetails.GravarAtivo(conn, cdTicker, det, date.today().isoformat())
+        GravarAtivo(conn, cdTicker, det, date.today().isoformat())
         conn.commit()
     except Exception:
         conn.rollback()
@@ -115,7 +106,7 @@ def DiffTaxaEmBps(cdIndexador: str | None, delta: float) -> float:
 
 
 WORKERS = 10
-CSV_SAIDA = Path("data/diagnosticos/validar_calc_b3.csv")
+CSV_SAIDA = Path(cfg["paths"]["dadosDir"]) / "diagnosticos" / "validar_calc_b3.csv"
 
 C = ImportarCalc()
 
@@ -143,7 +134,7 @@ def SemearCurvaCarryForward(dHoje: str, dMais1: str) -> bool:
     porque `dMais1` é o DU seguinte ao dado mais recente: a série realizada de DI já cobre
     até `dHoje`, e só o trecho >= dMais1 é projetado."""
     import sqlite3
-    di = sqlite3.connect("data/di.db")
+    di = sqlite3.connect(cfg["paths"]["diDb"])
     try:
         vertices = di.execute(
             "SELECT du, vrTaxa FROM CurvaDi WHERE dtReferencia=? ORDER BY du", (dHoje,)).fetchall()
@@ -162,7 +153,7 @@ def DatasPadrao(conn) -> list[str]:
     por carry-forward (ver SemearCurvaCarryForward). Se não houver curva, cai no último
     DU sozinho."""
     import sqlite3
-    di = sqlite3.connect("data/di.db")
+    di = sqlite3.connect(cfg["paths"]["diDb"])
     try:
         datas = [r[0] for r in di.execute(
             "SELECT DISTINCT dtReferencia FROM CurvaDi ORDER BY dtReferencia DESC LIMIT 10")]

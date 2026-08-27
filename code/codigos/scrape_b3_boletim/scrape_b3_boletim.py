@@ -46,7 +46,7 @@ BASE_URL     = cfg["scrape"]["b3"]["baseUrl"]
 IFRAME_URL   = "https://arquivos.b3.com.br/bdi/tabelas?lang=pt-BR"
 INSTRUMENTOS: list[str] = cfg["scrape"]["b3"]["instrumentosAceitos"]
 
-DEBUG_DIR = Path("data/debug")
+DEBUG_DIR = Path(cfg["paths"]["dadosDir"]) / "debug"
 
 # ---------------------------------------------------------------------------
 # Mapeamento de colunas CSV → colunas internas

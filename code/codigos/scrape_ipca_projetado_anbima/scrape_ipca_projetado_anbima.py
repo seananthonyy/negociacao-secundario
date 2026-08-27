@@ -44,7 +44,7 @@ from playwright.sync_api import sync_playwright
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "Helpers"))
 
 from calc import CaminhoBancoIpca, ImportarCalc, ObterBancoIpca
-from config import ObterProxyPlaywright
+from config import cfg, ObterProxyPlaywright
 from email_outlook import EnviarEmailConclusao
 from relatorio_execucao import RelatorioExecucao
 from logger import ObterLogger
@@ -61,7 +61,7 @@ URL_ANBIMA = ("https://www.anbima.com.br/pt_br/informar/estatisticas/"
 RE_DATA = re.compile(r"^(\d{1,2})/(\d{1,2})/(\d{2})$")
 RE_NUM = re.compile(r"^-?\d{1,2},\d+$")
 
-DIR_BACKUP = Path("data/backups")
+DIR_BACKUP = Path(cfg["paths"]["dadosDir"]) / "backups"
 MAX_BACKUPS = 10
 
 SQL_UPSERT = """

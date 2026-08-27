@@ -39,6 +39,7 @@ import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "Helpers"))
 
 from calc import ObterBancoDi
+from config import cfg
 from db import ObterBanco
 from logger import ObterLogger
 from email_outlook import EnviarEmailConclusao
@@ -58,7 +59,7 @@ CONTRATOS = [
     "DI1F31", "DI1F32", "DI1F33", "DI1F34",
 ]
 
-FERIADOS_PATH = Path("data/feriados_anbima.csv")
+FERIADOS_PATH = Path(cfg["paths"]["dadosDir"]) / "feriados_anbima.csv"
 
 SQL_UPSERT = """
 INSERT INTO MtmAnbima (cdTicker, dtReferencia, vrTaxa, vrDuration)
