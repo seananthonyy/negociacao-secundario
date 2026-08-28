@@ -59,7 +59,7 @@ CONTRATOS = [
     "DI1F31", "DI1F32", "DI1F33", "DI1F34",
 ]
 
-FERIADOS_PATH = Path(cfg["paths"]["dadosDir"]) / "feriados_anbima.csv"
+FERIADOS_PATH = Path(cfg["paths"]["feriadosCsv"])
 
 SQL_UPSERT = """
 INSERT INTO MtmAnbima (cdTicker, dtReferencia, vrTaxa, vrDuration)

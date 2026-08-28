@@ -13,10 +13,13 @@ logsDir        = "files/logs"
 templatesDir   = "files/templates"
 anbimaDataRaw  = "files/anbima_data_raw"
 
-# Insumos da calculadora de renda fixa (ver Helpers/calc.py). Ficam junto dos demais
-# bancos — este projeto é quem os coleta; a calc só os lê.
+# Insumos da calculadora de renda fixa (ver Helpers/calc.py) — este projeto é quem os
+# coleta; a calc só os lê. Os TRÊS têm de ficar na MESMA pasta: a calculadora_rf lê os
+# três de CALCRF_FILES_DIR, pelo nome do arquivo (ipca.db, di.db, feriados_anbima.csv).
+# É por isso que o CSV de feriados mora no Database/ e não solto no files/.
 ipcaDb         = "files/Database/ipca.db"
 diDb           = "files/Database/di.db"
+feriadosCsv    = "files/Database/feriados_anbima.csv"
 
 # Onde a calculadora está instalada (biblioteca de cálculo — não versionada aqui).
 # Relativo à raiz do projeto ou absoluto. No banco pode ser sobrescrito pela variável de

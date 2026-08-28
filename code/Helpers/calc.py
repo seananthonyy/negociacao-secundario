@@ -74,8 +74,13 @@ calcImportada = None  # cache do módulo calculadora_rf
 
 
 def DirArquivos() -> Path:
-    """Pasta dos insumos da calc (code/data/). Absoluta."""
-    return Path(cfg["paths"]["dadosDir"])
+    """Pasta dos insumos da calc — a MESMA em que ipca.db e di.db moram.
+
+    A calculadora_rf le esses bancos por CALCRF_FILES_DIR (ela abre <dir>/ipca.db
+    pelo nome), entao esta pasta tem de ser a pasta dos .db, e nao a pasta de dados
+    em geral: apontar para o lugar errado nao da erro -- o SQLite CRIA um ipca.db
+    vazio la e a calc passa a rodar sem serie de IPCA nenhuma."""
+    return Path(cfg["paths"]["ipcaDb"]).parent
 
 
 def DirCalculadora() -> Path:

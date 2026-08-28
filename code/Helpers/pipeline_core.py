@@ -30,9 +30,11 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
+from config import cfg
+
 RAIZ = Path(__file__).resolve().parent.parent   # a pasta com Helpers/, files/, codigos/
 CODIGOS = RAIZ / "codigos"                      # um script por pasta: codigos/<n>/<n>.py
-FERIADOS_CSV = RAIZ / "files" / "feriados_anbima.csv"
+FERIADOS_CSV = Path(cfg["paths"]["feriadosCsv"])
 
 
 def CaminhoScript(script: str) -> Path:
