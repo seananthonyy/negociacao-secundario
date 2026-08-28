@@ -42,6 +42,12 @@ def AncorarPaths(conf: dict) -> None:
             continue
         conf["paths"][chave] = str((RAIZ / valor).resolve())
 
+    # [dados].raiz segue a mesma regra, com uma excecao: se for um bucket
+    # (s3://...) nao e caminho de disco e passa intacto.
+    bruto = conf.get("dados", {}).get("raiz")
+    if isinstance(bruto, str) and not bruto.startswith("s3://"):
+        conf["dados"]["raiz"] = str((RAIZ / bruto).resolve())
+
 
 def GarantirCfg() -> None:
     global cfgCache

@@ -138,7 +138,7 @@ def TaxaPelaCalc(trade: "NegocioBruto", log) -> Optional[float]:
 
 @dataclass
 class NegocioBruto:
-    idTrade: int
+    cdIdentificadorNegocio: str
     cdTicker: str
     cdEmissor: str
     cdInstrumento: str
@@ -174,7 +174,7 @@ class EstatisticasData:
 # ---------------------------------------------------------------------------
 
 SQL_BUSCAR_NEGOCIOS = """
-SELECT idTrade, cdTicker, cdEmissor, cdInstrumento,
+SELECT cdIdentificadorNegocio, cdTicker, cdEmissor, cdInstrumento,
        dtNegocio, dtLiquidacao, vrQuantidade, vrPU, vrVolume, vrTaxaNegocio
 FROM NegociosBrutos
 WHERE dtLiquidacao = ?
@@ -182,7 +182,7 @@ WHERE dtLiquidacao = ?
 """
 
 SQL_BUSCAR_EXISTENTES = """
-SELECT idTrade, vrTaxaCalculada, cdFonteTaxa
+SELECT cdIdentificadorNegocio, vrTaxaCalculada, cdFonteTaxa
 FROM NegociosProcessados
 WHERE dtLiquidacao = ?
   AND vrTaxaCalculada IS NOT NULL
@@ -190,15 +190,15 @@ WHERE dtLiquidacao = ?
 
 SQL_UPSERT = """
 INSERT INTO NegociosProcessados (
-    idTrade, cdTicker, cdEmissor, dtNegocio, dtLiquidacao,
+    cdIdentificadorNegocio, cdTicker, cdEmissor, dtNegocio, dtLiquidacao,
     vrQuantidade, vrPU, vrVolume, vrTaxaCalculada, cdFonteTaxa,
     vrDuration, vrSpreadOver, idGrupoNegocio, cdStatus, dtProcessamento
 ) VALUES (
-    :idTrade, :cdTicker, :cdEmissor, :dtNegocio, :dtLiquidacao,
+    :cdIdentificadorNegocio, :cdTicker, :cdEmissor, :dtNegocio, :dtLiquidacao,
     :vrQuantidade, :vrPU, :vrVolume, :vrTaxaCalculada, :cdFonteTaxa,
     NULL, NULL, NULL, 'VALIDO', CURRENT_TIMESTAMP
 )
-ON CONFLICT(idTrade) DO UPDATE SET
+ON CONFLICT(cdIdentificadorNegocio) DO UPDATE SET
     vrTaxaCalculada = excluded.vrTaxaCalculada,
     cdFonteTaxa    = excluded.cdFonteTaxa,
     dtProcessamento   = excluded.dtProcessamento
@@ -247,8 +247,8 @@ def AplicarCascata(trade: NegocioBruto, log, usarCalc: bool = True) -> tuple[Opt
         return taxa, "B3"
 
     log.warning(
-        "calc_taxa: todas as calculadoras falharam para idTrade=%d cdTicker=%s dtLiquidacao=%s",
-        trade.idTrade, trade.cdTicker, trade.dtLiquidacao,
+        "calc_taxa: todas as calculadoras falharam para cdIdentificadorNegocio=%s cdTicker=%s dtLiquidacao=%s",
+        trade.cdIdentificadorNegocio, trade.cdTicker, trade.dtLiquidacao,
     )
     return None, None
 
@@ -283,7 +283,7 @@ def ProcessarData(conn, dtLiquidacao: str, log, workers: int, force: bool,
 
     trades = [
         NegocioBruto(
-            idTrade=row["idTrade"],
+            cdIdentificadorNegocio=row["cdIdentificadorNegocio"],
             cdTicker=row["cdTicker"],
             cdEmissor=row["cdEmissor"],
             cdInstrumento=row["cdInstrumento"],
@@ -301,15 +301,15 @@ def ProcessarData(conn, dtLiquidacao: str, log, workers: int, force: bool,
     existing: dict[int, tuple[Optional[float], Optional[str]]] = {}
     if not force:
         for row in conn.execute(SQL_BUSCAR_EXISTENTES, (dtLiquidacao,)).fetchall():
-            existing[row["idTrade"]] = (row["vrTaxaCalculada"], row["cdFonteTaxa"])
+            existing[row["cdIdentificadorNegocio"]] = (row["vrTaxaCalculada"], row["cdFonteTaxa"])
 
     # Separa trades que já têm taxa (cached) dos que precisam de API
     cached:     list[tuple[NegocioBruto, Optional[float], Optional[str]]] = []
     aProcessar: list[NegocioBruto] = []
 
     for trade in trades:
-        if trade.idTrade in existing:
-            cached.append((trade, *existing[trade.idTrade]))
+        if trade.cdIdentificadorNegocio in existing:
+            cached.append((trade, *existing[trade.cdIdentificadorNegocio]))
         else:
             aProcessar.append(trade)
 
@@ -342,8 +342,8 @@ def ProcessarData(conn, dtLiquidacao: str, log, workers: int, force: bool,
                     taxa, source = future.result()
                 except Exception:
                     log.exception(
-                        "calc_taxa: erro inesperado para idTrade=%d cdTicker=%s",
-                        trade.idTrade, trade.cdTicker,
+                        "calc_taxa: erro inesperado para cdIdentificadorNegocio=%s cdTicker=%s",
+                        trade.cdIdentificadorNegocio, trade.cdTicker,
                     )
                     taxa, source = None, None
 
@@ -387,7 +387,7 @@ def ProcessarData(conn, dtLiquidacao: str, log, workers: int, force: bool,
     for trade, vrTaxaCalculada, cdFonteTaxa in resultadosApi:
         ContarEstatisticas(trade, vrTaxaCalculada, cdFonteTaxa)
         conn.execute(SQL_UPSERT, {
-            "idTrade":         trade.idTrade,
+            "cdIdentificadorNegocio":         trade.cdIdentificadorNegocio,
             "cdTicker":        trade.cdTicker,
             "cdEmissor":       trade.cdEmissor,
             "dtNegocio":       trade.dtNegocio,

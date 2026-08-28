@@ -6,6 +6,32 @@
 
 ---
 
+## Exibir as NTN-B divulgadas pela Anbima no relatorio
+
+**Origem:** 28/08/2026, pedido do usuario.
+
+**O que e:** dar um lugar no relatorio para as informacoes de NTN-B que a Anbima divulga
+e que ja estao na base -- hoje elas entram so como *insumo* (a referencia contra a qual o
+spread do papel IPCA e medido) e nunca aparecem como dado proprio.
+
+**O que ja temos:** `MtmAnbima` guarda `cdTicker` (`NTN-B 35`, `NTN-B 37`, ...),
+`dtReferencia`, `vrTaxa` e `vrDuration`, alimentada diariamente pelo `scrape_anbima_ntnb`.
+A aba **Visao Anbima** ja desenha a *curva* de spread por vertice de NTN-B, mas nao mostra
+a taxa nominal nem a duration de cada vertice de forma direta.
+
+**O que precisa ser decidido:**
+- Onde: aba propria ("Curva NTN-B"), um bloco dentro da Visao Anbima, ou uma tabela no topo
+  do Boletim (as poucas linhas do dia).
+- O que exibir: so a taxa indicativa do dia, ou a serie historica com grafico; incluir
+  duration; incluir variacao vs. D-1.
+- Se entra o vertice inteiro que a Anbima publica ou so os que tem papel casado por
+  `match_referencias`.
+
+**Conversa com:** [[10 - Scripts/scrape_anbima_ntnb]], [[08 - Match de Referencia]] e a aba
+Visao Anbima em [[10 - Scripts/gerar_relatorio_credito]].
+
+---
+
 ## Rotas em lote da B3 (`calcPUCSV` / `calcYieldCSV`) — investigar
 
 **Origem:** 25/08/2026, lendo a documentação oficial do Web Service da CALC (`Documentacao API.pdf`).

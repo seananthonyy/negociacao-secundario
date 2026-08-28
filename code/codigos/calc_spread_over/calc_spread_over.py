@@ -41,7 +41,7 @@ from relatorio_execucao import RelatorioExecucao
 NOME_SCRIPT = "calc_spread_over"
 
 SQL_BUSCAR_NEGOCIOS = """
-    SELECT tp.idTrade,
+    SELECT tp.cdIdentificadorNegocio,
            tp.cdTicker,
            tp.dtNegocio,
            tp.dtLiquidacao,
@@ -64,7 +64,7 @@ SQL_BUSCAR_TAXA = """
 SQL_ATUALIZAR_SPREAD = """
     UPDATE NegociosProcessados
     SET    vrSpreadOver = ?
-    WHERE  idTrade = ?
+    WHERE  cdIdentificadorNegocio = ?
 """
 
 
@@ -153,7 +153,7 @@ def ProcessarData(conn, dtLiquidacao: str, log) -> EstatisticasData:
             log             = log,
             stats           = stats,
         )
-        updates.append((vrSpread, trade["idTrade"]))
+        updates.append((vrSpread, trade["cdIdentificadorNegocio"]))
 
     conn.executemany(SQL_ATUALIZAR_SPREAD, updates)
     conn.commit()

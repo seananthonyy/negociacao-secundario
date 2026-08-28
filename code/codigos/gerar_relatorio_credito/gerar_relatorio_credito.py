@@ -310,8 +310,8 @@ ORDER BY dtLiquidacao
 # em que o negócio foi fechado). Simétrico ao MtM de calc_spread_over.
 SQL_BUSCAR_VALIDO = """
 WITH AnbimaMatch AS (
-    SELECT tp.idTrade AS idTrade, ai.vrTaxaAnbima, ai.vrSpreadAnbima,
-           ROW_NUMBER() OVER (PARTITION BY tp.idTrade ORDER BY ai.dtReferencia DESC) AS rn
+    SELECT tp.cdIdentificadorNegocio AS cdIdentificadorNegocio, ai.vrTaxaAnbima, ai.vrSpreadAnbima,
+           ROW_NUMBER() OVER (PARTITION BY tp.cdIdentificadorNegocio ORDER BY ai.dtReferencia DESC) AS rn
     FROM NegociosProcessados tp
     JOIN AnbimaIndicativos ai
       ON ai.cdTicker = tp.cdTicker AND ai.dtReferencia <= tp.dtNegocio
@@ -322,16 +322,16 @@ SELECT tp.cdTicker, ia.cdEmissor, tr.cdInstrumento,
        ia.cdIndexador, ia.cdReferencia, ia.vrDuration, ia.dtVencimento,
        am.vrTaxaAnbima, am.vrSpreadAnbima
 FROM NegociosProcessados tp
-JOIN NegociosBrutos tr ON tr.idTrade = tp.idTrade
+JOIN NegociosBrutos tr ON tr.cdIdentificadorNegocio = tp.cdIdentificadorNegocio
 LEFT JOIN InfoAtivos ia ON ia.cdTicker = tp.cdTicker
-LEFT JOIN AnbimaMatch am ON am.idTrade = tp.idTrade AND am.rn = 1
+LEFT JOIN AnbimaMatch am ON am.cdIdentificadorNegocio = tp.cdIdentificadorNegocio AND am.rn = 1
 WHERE tp.dtLiquidacao = ? AND tp.cdStatus = 'VALIDO' AND tr.cdSituacao != 'Cancelado'
 """
 
 SQL_BUSCAR_BROKER = """
 WITH AnbimaMatch AS (
-    SELECT tp.idTrade AS idTrade, ai.vrTaxaAnbima, ai.vrSpreadAnbima,
-           ROW_NUMBER() OVER (PARTITION BY tp.idTrade ORDER BY ai.dtReferencia DESC) AS rn
+    SELECT tp.cdIdentificadorNegocio AS cdIdentificadorNegocio, ai.vrTaxaAnbima, ai.vrSpreadAnbima,
+           ROW_NUMBER() OVER (PARTITION BY tp.cdIdentificadorNegocio ORDER BY ai.dtReferencia DESC) AS rn
     FROM NegociosProcessados tp
     JOIN AnbimaIndicativos ai
       ON ai.cdTicker = tp.cdTicker AND ai.dtReferencia <= tp.dtNegocio
@@ -342,9 +342,9 @@ SELECT tp.cdTicker, ia.cdEmissor, tr.cdInstrumento, tp.idGrupoNegocio, tp.dtNego
        ia.cdIndexador, ia.cdReferencia, ia.vrDuration, ia.dtVencimento,
        am.vrTaxaAnbima, am.vrSpreadAnbima
 FROM NegociosProcessados tp
-JOIN NegociosBrutos tr ON tr.idTrade = tp.idTrade
+JOIN NegociosBrutos tr ON tr.cdIdentificadorNegocio = tp.cdIdentificadorNegocio
 LEFT JOIN InfoAtivos ia ON ia.cdTicker = tp.cdTicker
-LEFT JOIN AnbimaMatch am ON am.idTrade = tp.idTrade AND am.rn = 1
+LEFT JOIN AnbimaMatch am ON am.cdIdentificadorNegocio = tp.cdIdentificadorNegocio AND am.rn = 1
 WHERE tp.dtLiquidacao = ? AND tp.cdStatus = 'BROKER'
   AND tp.idGrupoNegocio IS NOT NULL AND tr.cdSituacao != 'Cancelado'
 """

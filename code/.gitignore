@@ -4,6 +4,7 @@ Helpers/destinatarios.py
 
 # --- Banco de dados e backups (regeneráveis; grandes) ---
 files/Database/
+files/Parquet/
 *.db
 *.db-journal
 *.db-wal

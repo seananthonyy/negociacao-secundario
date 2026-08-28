@@ -2,3 +2,10 @@
 # Este arquivo existe só para `pip install -r requirements.txt` continuar
 # funcionando de dentro de code/, como manda o INSTALACAO_BANCO.md.
 -r ../requirements.txt
+
+# --- Armazenamento em Parquet (Helpers/dados.py) ---
+# duckdb: motor de consulta SQL sobre os parquets. E biblioteca, nao servidor.
+# pyarrow: leitura/escrita do formato. awswrangler: so quando a raiz for s3://.
+duckdb>=1.0
+pyarrow>=15
+awswrangler>=3.9

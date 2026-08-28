@@ -1,6 +1,14 @@
 # Todos os caminhos daqui sao ancorados na raiz do projeto (a pasta que contem
 # Helpers/, files/ e codigos/) por AncorarPaths, em Helpers/config.py — nao no
 # diretorio de onde o script foi chamado. Caminho absoluto tambem e aceito.
+# ---------------------------------------------------------------------------
+# Onde os dados moram. Uma pasta local ou um bucket: "s3://meu-bucket/negociacao".
+# O codigo e o mesmo nos dois -- so esta linha muda. Ver Helpers/dados.py.
+# No S3 as credenciais vem das variaveis de ambiente da sessao (nao ficam aqui).
+# ---------------------------------------------------------------------------
+[dados]
+raiz           = "files/Parquet"
+
 [paths]
 codigosDir     = "codigos"
 # Dois arquivos de banco (schema 5): cadastro/mercado dos ativos separado dos negocios.

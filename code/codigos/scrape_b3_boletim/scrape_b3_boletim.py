@@ -381,20 +381,20 @@ def SoftCancelAusentes(conn, dataStr: str, idsBaixados: set, log) -> int:
     Retorna count de trades cancelados.
     """
     cursor = conn.execute(
-        "SELECT idTrade, cdIdentificadorNegocio FROM NegociosBrutos "
+        "SELECT cdIdentificadorNegocio FROM NegociosBrutos "
         "WHERE dtNegocio = ? AND cdSituacao != 'Cancelado'",
         (dataStr,),
     )
-    aCancelar = [(row[0], row[1]) for row in cursor if row[1] not in idsBaixados]
+    # A chave e uma so desde a migracao para Parquet (era idTrade + identificador).
+    aCancelar = [row[0] for row in cursor if row[0] not in idsBaixados]
 
     if not aCancelar:
         return 0
 
-    idsTradeCancelar  = [r[0] for r in aCancelar]
-    idsNegocioCancelar  = [r[1] for r in aCancelar]
-    ph = ",".join("?" * len(idsTradeCancelar))
+    idsNegocioCancelar = aCancelar
+    ph = ",".join("?" * len(aCancelar))
 
-    conn.execute(f"DELETE FROM NegociosProcessados WHERE idTrade IN ({ph})", idsTradeCancelar)
+    conn.execute(f"DELETE FROM NegociosProcessados WHERE cdIdentificadorNegocio IN ({ph})", aCancelar)
     conn.execute(
         f"UPDATE NegociosBrutos SET cdSituacao = 'Cancelado', dtAtualizacao = CURRENT_TIMESTAMP "
         f"WHERE cdIdentificadorNegocio IN ({ph})",

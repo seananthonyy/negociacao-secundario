@@ -165,7 +165,7 @@ SELECT
     al.vrTaxaAnbima,
     al.vrSpreadAnbima
 FROM NegociosProcessados tp
-JOIN NegociosBrutos tr ON tr.idTrade = tp.idTrade
+JOIN NegociosBrutos tr ON tr.cdIdentificadorNegocio = tp.cdIdentificadorNegocio
 LEFT JOIN InfoAtivos ia ON ia.cdTicker = tp.cdTicker
 LEFT JOIN AnbimaLatest al ON al.cdTicker = tp.cdTicker AND al.rn = 1
 WHERE tp.dtLiquidacao = ?
@@ -198,7 +198,7 @@ SELECT
     al.vrTaxaAnbima,
     al.vrSpreadAnbima
 FROM NegociosProcessados tp
-JOIN NegociosBrutos tr ON tr.idTrade = tp.idTrade
+JOIN NegociosBrutos tr ON tr.cdIdentificadorNegocio = tp.cdIdentificadorNegocio
 LEFT JOIN InfoAtivos ia ON ia.cdTicker = tp.cdTicker
 LEFT JOIN AnbimaLatest al ON al.cdTicker = tp.cdTicker AND al.rn = 1
 WHERE tp.dtLiquidacao = ?

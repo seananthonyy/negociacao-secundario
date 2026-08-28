@@ -73,7 +73,7 @@ from relatorio_execucao import RelatorioExecucao
 
 @dataclass
 class Negocio:
-    idTrade: int
+    cdIdentificadorNegocio: str
     cdTicker: str
     dtLiquidacao: str
     vrQuantidade: int
@@ -102,11 +102,11 @@ class EstatisticasData:
 # ---------------------------------------------------------------------------
 
 SQL_BUSCAR_NEGOCIOS = """
-SELECT tp.idTrade, tp.cdTicker, tp.dtLiquidacao,
+SELECT tp.cdIdentificadorNegocio, tp.cdTicker, tp.dtLiquidacao,
        tp.vrQuantidade, tp.vrVolume, tp.vrTaxaCalculada,
        ia.cdIndexador
 FROM NegociosProcessados tp
-JOIN NegociosBrutos tr ON tr.idTrade = tp.idTrade
+JOIN NegociosBrutos tr ON tr.cdIdentificadorNegocio = tp.cdIdentificadorNegocio
 LEFT JOIN InfoAtivos ia ON ia.cdTicker = tp.cdTicker
 WHERE tp.dtLiquidacao = ?
   AND tr.cdSituacao != 'Cancelado'
@@ -123,7 +123,7 @@ SQL_ATUALIZAR_STATUS = """
 UPDATE NegociosProcessados
 SET cdStatus     = ?,
     idGrupoNegocio = ?
-WHERE idTrade = ?
+WHERE cdIdentificadorNegocio = ?
 """
 
 
@@ -597,7 +597,7 @@ def ProcessarData(
 
     trades = [
         Negocio(
-            idTrade=row["idTrade"],
+            cdIdentificadorNegocio=row["cdIdentificadorNegocio"],
             cdTicker=row["cdTicker"],
             dtLiquidacao=row["dtLiquidacao"],
             vrQuantidade=row["vrQuantidade"],
@@ -649,7 +649,7 @@ def ProcessarData(
             stats.pf += 1
 
     # UPDATE atômico: um executemany para todos os trades da data
-    updates = [(t.cdStatus, t.idGrupoNegocio, t.idTrade) for t in trades]
+    updates = [(t.cdStatus, t.idGrupoNegocio, t.cdIdentificadorNegocio) for t in trades]
     conn.executemany(SQL_ATUALIZAR_STATUS, updates)
     conn.commit()
 
