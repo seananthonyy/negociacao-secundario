@@ -1,5 +1,10 @@
 # Pipeline de Execução — Relatório de Liquidação X
 
+> ℹ️ **29/08/2026 — a ORDEM dos 18 passos continua exatamente esta.** O que mudou foi onde
+> os scripts moram (`codigos/<nome>/<nome>.py`) e o armazenamento (Parquet, não SQLite).
+> O `pipeline_core` já resolve o caminho novo. Ver [[17 - Armazenamento Parquet e AWS]].
+
+
 > Ordem canônica para gerar o relatório de uma data de liquidação. Fonte da verdade do **fluxo operacional**. Ver também [[09 - Progresso]] (histórico de cargas) e [[04 - Banco de Dados]] (schema).
 
 ## Conceito

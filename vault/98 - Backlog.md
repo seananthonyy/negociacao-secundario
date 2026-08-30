@@ -6,6 +6,67 @@
 
 ---
 
+## AWS — o que falta liberar e decidir (29/08/2026)
+
+**Origem:** decisao do usuario de 28/08 — os dados precisam viver na AWS, e o acesso
+disponivel e bucket S3 + Athena (sem banco SQL). Ver [[17 - Armazenamento Parquet e AWS]].
+
+**Bloqueado por terceiros:** o PC do banco precisa que Quant/TI configurem o acesso a AWS
+antes de qualquer teste. **Nada foi testado contra a AWS de verdade.**
+
+**O que precisa ser confirmado, em ordem de importancia:**
+1. **Escrever no bucket.** E o unico requisito real. Se isso funciona, o resto e detalhe.
+2. **Registrar tabela no Glue/Athena.** Se o usuario nao puder, os parquets vao para o S3
+   do mesmo jeito e outra equipe registra depois — nao bloqueia o desenvolvimento.
+3. Ao registrar: **coluna de particao declarada como `string`** (o mesmo motivo do
+   `hive_types` no DuckDB — senao `2026-07-28` vira DATE e a comparacao com as outras datas
+   quebra), e **partition projection** em vez de crawler (dispensa `MSCK REPAIR TABLE` a
+   cada carga, e exige menos permissao).
+
+**Fora de escopo por decisao do usuario:** o **add-in do Excel** da calculadora, que le
+`InfoAtivos`/`FluxoAtivos` em SQLite por ticker. O usuario resolve num codigo a parte.
+
+**O relatorio HTML** vai para um dashboard que o time de Quant ja tem e liberou espaco.
+Enquanto nao sobe, o `gerar_relatorio_credito` segue gerando o HTML local, lendo dos
+parquets.
+
+---
+
+## Capturar o campo `note` do getBondDetails da B3
+
+**Origem:** 28/08/2026, investigando o OVTL15 a pedido do usuario.
+
+**O que e:** a B3 devolve, no `getBondDetails`, um campo `note` em texto livre com ressalvas
+sobre o fluxo do papel. O OVTL15 traz:
+
+> `"Eventuais amortizacoes extraordinarias nao estao sendo consideradas no fluxo."`
+
+Hoje **descartamos esse campo**. Ele e a propria fonte dizendo onde o dado dela e incompleto
+— exatamente o tipo de coisa que explica divergencia de PU depois.
+
+**O que precisa ser decidido:**
+- Gravar em `InfoAtivos` (coluna nova, ex.: `cdNotaCadastro`) ou so reportar no log/email do
+  `scrape_b3_bond_details`?
+- Se vale alimentar o `validar_calc_b3`: papel com ressalva de amortizacao extraordinaria
+  talvez nao devesse ser promovido a validado sem conferencia humana.
+- Levantar quantos ativos da base tem `note` nao-vazio e quantos valores distintos existem
+  (pode ser um punhado de frases padrao, e ai da para classificar).
+
+**Conversa com:** [[15 - Cadastro dos Ativos]] e [[10 - Scripts/scrape_b3_bond_details]].
+
+---
+
+## ✅ RESOLVIDO (29/08/2026) — flag `--sem-email` para execucoes em lote
+
+Ja existia e ninguem tinha registrado: **`NEGSEC_SEM_EMAIL=1`** no ambiente faz qualquer
+script pular o Outlook e gravar o corpo do email em `files/emails/`. Cobre o caminho de erro
+tambem. Usado o tempo todo nas rodadas de validacao desta sessao.
+
+Fica valendo como convencao: **usar sempre em teste e em rodada de lote** — evita o spam e o
+gotcha da instancia COM orfa do Outlook.
+
+---
+
 ## Exibir as NTN-B divulgadas pela Anbima no relatorio
 
 **Origem:** 28/08/2026, pedido do usuario.
@@ -336,7 +397,7 @@ Conversa direto com o item "Calcular duration de corporates" (a calc também exp
 
 ---
 
-## Flag `--sem-email` para execuções em lote e validação
+## ~~Flag `--sem-email` para execuções em lote e validação~~ — ver o RESOLVIDO acima (29/08)
 
 **Origem:** 23/07/2026, no fechamento da FASE 3.
 

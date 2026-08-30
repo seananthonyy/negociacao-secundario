@@ -2,6 +2,20 @@
 
 > Ver também: [[00 - Inicio]] | [[03 - Estrutura de Pastas]] | [[07 - Filtro de Duplicados]] | [[14 - Rotinas da Calculadora]]
 
+> 🚧 **29/08/2026 — o armazenamento mudou.** Não é mais um SQLite: as tabelas viraram
+> **Parquet**, consultadas por **DuckDB** (`Helpers/dados.py`), porque os dados precisam
+> viver na AWS e lá só há bucket S3 + Athena. **Os nomes de tabela e coluna continuam os
+> mesmos** e o SQL também — as views do DuckDB se chamam como as tabelas antigas. O que
+> mudou:
+> - **`idTrade` não existe mais** (era `AUTOINCREMENT` do SQLite). A chave é
+>   `cdIdentificadorNegocio`.
+> - **Não há trigger.** `trgInfoAtivosInvalidaFluxo` precisa virar código Python.
+> - **Não há UPDATE em disco:** reescreve-se a partição do dia, ou a tabela inteira.
+> - `ipca.db` e `di.db` **seguem SQLite** — são contrato com a calculadora.
+>
+> Detalhe em [[17 - Armazenamento Parquet e AWS]]. O texto abaixo descreve o `main` e
+> continua valendo como **dicionário de dados** (colunas, tipos, semântica).
+
 Um único arquivo SQLite em `code/data/trades.db`. O módulo `lib/db.py` faz o bootstrap automático do DDL na primeira execução de qualquer script — não é preciso criar o banco manualmente.
 
 ## Os outros dois bancos (insumos da calculadora — 12/07/2026)

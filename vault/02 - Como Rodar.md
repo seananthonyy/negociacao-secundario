@@ -1,5 +1,10 @@
 # Como Rodar
 
+> 🚧 **29/08/2026:** estrutura de pastas e armazenamento mudaram no branch
+> `refactor/split-bases` (SQLite → Parquet + DuckDB; `lib/`+`scripts/`+`data/` →
+> `Helpers/`+`codigos/`+`files/`). **Leia [[17 - Armazenamento Parquet e AWS]] primeiro.**
+
+
 > Ver também: [[00 - Inicio]] | [[03 - Estrutura de Pastas]] | [[99 - Credenciais e Links]]
 
 ## Pré-requisitos

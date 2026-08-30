@@ -8,6 +8,18 @@
 > uma tarefa mencionar fonte, tabela ou script que não está aqui, provavelmente
 > não existe no projeto — confirme antes de assumir. Ver §8 (o que NÃO existe).
 
+> 🚧 **DESATUALIZADO desde 29/08/2026 quanto a ESTRUTURA e ARMAZENAMENTO.** O branch
+> `refactor/split-bases` mudou três coisas que atravessam este documento inteiro:
+> 1. **Pastas:** `lib/` → `Helpers/`, `scripts/` → `codigos/<nome>/<nome>.py`, `data/` →
+>    `files/`. Imports achatados (`from db import X`).
+> 2. **Armazenamento:** SQLite → **Parquet + DuckDB** (`Helpers/dados.py`), local ou
+>    `s3://`. Os dados vão para a AWS, onde só há bucket + Athena.
+> 3. **Chave dos negócios:** `idTrade` morreu; virou `cdIdentificadorNegocio`.
+>
+> **A lógica de negócio, o dicionário de dados e o motor de cálculo continuam válidos** —
+> nomes de tabela e coluna não mudaram. O que mudou foi onde os bytes moram e como se
+> chega neles. Ler `vault/17 - Armazenamento Parquet e AWS.md` junto com este arquivo.
+
 ---
 
 ## 1. O que o sistema faz

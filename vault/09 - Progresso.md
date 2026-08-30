@@ -4,6 +4,8 @@
 
 ## Estado atual
 
+> ⚠️ **29/08/2026 — em obras.** O branch `refactor/split-bases` reorganizou a estrutura de pastas e trocou o armazenamento por **Parquet + DuckDB** (os dados vão para a AWS). A fundação está pronta; os scripts ainda não foram convertidos. Ler [[17 - Armazenamento Parquet e AWS]] **antes** de mexer em qualquer código. O texto abaixo descreve o estado do `main`.
+
 **Pipeline operacional end-to-end, com 19 passos.** Em 13/07/2026 o **cadastro dos ativos inverteu**: a **B3** (`getBondDetails`) virou a fonte **primária** de cadastro e fluxo, e a Anbima Data virou fallback, puxada **por demanda** (só o que negociou). Ver [[15 - Cadastro dos Ativos]]. Desde 12/07 o pipeline também roda as **rotinas de dados da calculadora de renda fixa** (IPCA, projeção de IPCA, DI realizado, curva DI arquivada) e a **validação de fluxo**; ver [[14 - Rotinas da Calculadora]]. Desde 15–19/07 a **calc local está LIGADA** como degrau 2 da cascata de taxa (CDI+/IPCA/PREFIXADO validados), com a confiança garantida pelo gate `validar_calc_b3`; ver [[16 - Confianca nos Validados (WIP)]]. Relatório histórico interativo (`relatorio_secundario.html`) com 6 abas (Boletim, Visão Mercado, Por Ativo, Spread×Duration, Info Ativos, Visão Anbima). **Última rodada (29/07/2026): 09/06→28/07, 34 pregões, 2.567 ativos, R$ 34.369,07 MM.** Todas as fases F0–F17 concluídas; o trabalho corrente é a **migração para o PC do banco** (ver `docs/RUNBOOK_MIGRACAO_BANCO.md`) e os itens de [[98 - Backlog]]. Banco SQLite com **migração autônoma de schema** (v3, backup preventivo, reconciliador genérico) e otimizado para lookups por ticker do add-in externo da calculadora.
 
 ## Checklist de implementação
@@ -211,6 +213,87 @@ gerar_relatorio_credito       ← análise histórica (todos os pregões, sem ar
   - **Dica:** o add-in deve reutilizar **uma única conexão** (abrir/fechar por lookup domina o tempo). Queries ideais e mapeamento de campos em [[04 - Banco de Dados]]; detalhes do módulo em [[10 - Scripts/libs]].
 
 ## Última atualização
+
+2026-08-29 — **Reorganização da estrutura + Parquet/AWS como armazenamento (EM CURSO).**
+
+> **Branch `refactor/split-bases`, 6 commits, NÃO mergeado.** A fundação está pronta e
+> testada; **os 21 scripts ainda falam SQLite**. Detalhe vivo em
+> [[17 - Armazenamento Parquet e AWS]].
+
+**O pedido, em três etapas que mudaram no caminho:** (1) separar a base de ativos da de
+trades; (2) organizar cada código na própria pasta, para o PC do banco; (3) — decisão de
+28/08 — **os dados precisam viver na AWS**, e o acesso disponível é bucket S3 + Athena, sem
+banco SQL. A (3) reescreve o destino da (1).
+
+**1. `trades.db` quebrado em `ativos.db` + `trades.db` (schema 5).** Cadastro/mercado
+(`InfoAtivos`, `FluxoAtivos`, `AnbimaIndicativos`, `MtmAnbima`, `Outstanding`) de um lado,
+negócios do outro. A DDL continuou **uma só** (`TABELAS_POR_DOMINIO` + `DdlDominio()`
+filtram por domínio); `ObterBanco()` anexa o outro banco, então **nenhum SQL precisou
+mudar** — o SQLite resolve o nome da tabela no banco anexado. 256.230 linhas movidas com
+contagem conferida.
+
+**2. Estrutura nova, no formato que vai para o banco:**
+```
+code/                     <- "z antoniooliveira" no PC do banco
+├── Helpers/              os módulos compartilhados (era lib/) + pipeline_core
+├── files/                config.toml, .env, Database/, templates/, relatorios/
+└── codigos/<script>/<script>.py + logs/
+```
+`data/` deixou de existir. Imports achatados (`from db import ObterBanco`), log de cada
+script caindo na **própria pasta**, `[paths]` ancorados na raiz (antes eram relativos ao
+cwd — rodar de outra pasta criava banco vazio e o script "passava"). **Cada código roda
+sozinho, de qualquer diretório**: 23/23 respondem a `--help`.
+
+**3. Parquet + DuckDB no lugar do SQLite.** O medo era reescrever todo o SQL em pandas.
+Não precisa: o **DuckDB roda SQL sobre Parquet e é biblioteca, não servidor** — não esbarra
+na restrição de "sem base SQL". A consulta mais pesada do relatório, com o **mesmo texto**,
+devolveu as mesmas 5.149 linhas e o mesmo volume ao centavo, **129 ms contra 1.412 ms**.
+Novo `Helpers/dados.py` (tipos explícitos, `Consultar`/`GravarDia`/`GravarTudo`/`Upsert`);
+local ou `s3://` é **uma linha do config**. Base real migrada: **1.582.200 linhas, 23 s,
+388 MB → 41,6 MB**.
+
+**`idTrade` morreu.** Era `AUTOINCREMENT` — existia porque o SQLite o dava de graça. A
+chave virou `cdIdentificadorNegocio`, que a B3 manda e é única nas 680.651 linhas.
+
+### Cinco bugs encontrados no caminho (nenhum causado pelo refactor, exceto o 4)
+
+1. **`InfoAtivos.cdISIN`, `vrQuantidadeEmissao` e `dtEmissao` não estavam na DDL** —
+   entraram por um `ALTER` fixo (20/06) que sumiu quando o reconciliador genérico
+   substituiu a lista (23/07). **Base nova nascia sem elas**: o `scrape_anbima_data_ativos`
+   quebraria no upsert e a aba Visão Anbima perderia o peso (4.519 linhas preenchidas).
+   Pegou porque o migrador **aborta** se acha coluna no banco vivo que a DDL não prevê.
+2. **`validar_calc_b3` carregava o arquivo do `scrape_b3_bond_details`** por caminho, para
+   reusar o `GravarAtivo`. Virou `Helpers/cadastro_b3.py`, importado pelos dois.
+3. **Caminhos `data/...` hardcoded** em 5 arquivos, relativos ao cwd. Os dois
+   `sqlite3.connect("data/di.db")` do `validar_calc_b3` eram o pior caso: rodado de outra
+   pasta, o SQLite **cria** um `di.db` vazio, `CurvaDi` volta sem vértice e o gate conclui
+   "sem curva" em vez de falhar.
+4. **`CALCRF_FILES_DIR` apontando para a pasta errada** (bug do refactor). A
+   `calculadora_rf` lê `ipca.db`, `di.db` **e** `feriados_anbima.csv` dessa pasta, pelo
+   nome. Sobrou um `files/ipca.db` de **0 byte** e a calc rodou com série de IPCA vazia —
+   sem exceção, só conta errada. **Contaminou a rodada de `match_referencias` de 27/08**,
+   já refeita (55 s, com os 565 meses de IPCA carregando).
+5. **`scrape_di_bcb --help` quebrava** com `UnicodeEncodeError`: tinha um `→` no texto do
+   argparse e o console do banco é cp1252.
+
+### Achado útil
+
+**`NEGSEC_SEM_EMAIL=1` já existe** e roda qualquer script sem tocar no Outlook, gravando o
+corpo em `files/emails/`. O item de backlog "flag `--sem-email`" já estava resolvido por
+variável de ambiente.
+
+### Onde parou
+
+Fundação pronta. **Falta converter os 21 scripts** de `ObterBanco()` para `dados.py` —
+`filtrar_trades` e `calc_taxa_negocios` são os que dão trabalho (os `UPDATE` viram
+ler → alterar em pandas → regravar o dia). **Atenção ao trigger
+`trgInfoAtivosInvalidaFluxo`, que não existe mais no Parquet e precisa virar código
+Python** — esquecer isso faz a calc precificar com fluxo velho, em silêncio.
+
+Teste de aceitação de cada etapa: o relatório geral tem de sair **34 pregões, 2.567 ativos,
+R$ 53.265,83 MM** (bateu em todas as etapas até aqui).
+
+## Última atualização (anterior)
 
 2026-08-24 — **Um só validador, timer na referência e faxina de código morto.**
 - **`validar_fluxos` REMOVIDO.** O `validar_calc_b3` é o **único validador**. Motivo: o teste de agenda evento a evento é redundante com o PU (no par valida fluxo+VNA, fora do par valida o desconto) e a cobertura da FI era magra (146 de ~1.670 que a B3 não cobre). **Pipeline: 19 → 18 passos.** O que se perdeu (cruzamento independente B3×FI, caso FGEN13) virou item no [[98 - Backlog]].

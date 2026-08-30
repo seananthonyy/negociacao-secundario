@@ -2,6 +2,27 @@
 
 > Ver também: [[00 - Inicio]] | [[04 - Banco de Dados]] | [[02 - Como Rodar]]
 
+> ⚠️ **DESATUALIZADA desde 29/08/2026.** O branch `refactor/split-bases` reorganizou tudo:
+> `lib/` virou **`Helpers/`**, `scripts/` virou **`codigos/<nome>/<nome>.py`** (uma pasta por
+> código, com o log dentro), `data/` virou **`files/`**, e os paths deixaram de ser relativos
+> ao cwd — passaram a ser **ancorados na raiz**, então cada código roda de qualquer diretório.
+> O armazenamento também mudou (SQLite → Parquet + DuckDB).
+> **A estrutura vigente está em [[17 - Armazenamento Parquet e AWS]]**; o texto abaixo descreve
+> o `main` e vale como registro histórico até esta nota ser reescrita.
+
+```
+code/                     <- a pasta "z antoniooliveira" no PC do banco
+├── Helpers/              módulos compartilhados (era lib/) + pipeline_core + dados.py
+├── files/
+│   ├── config.toml, .env
+│   ├── Database/         ipca.db, di.db, feriados_anbima.csv (os 3 que a calc lê)
+│   ├── Parquet/          <- a base de verdade agora ([dados] raiz; vira s3:// no banco)
+│   ├── templates/, relatorios/, anbima_data_raw/, logs/, emails/
+└── codigos/<script>/<script>.py + logs/
+```
+
+---
+
 Todo o projeto Python fica dentro de `code/`. Os paths internos dos scripts são sempre relativos ao cwd (pasta `code/`), para facilitar a migração entre máquinas.
 
 ## A calculadora fica FORA daqui

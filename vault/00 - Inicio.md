@@ -1,5 +1,10 @@
 # Início — Relatório Secundário de Crédito Privado
 
+> 🚧 **29/08/2026:** estrutura de pastas e armazenamento mudaram no branch
+> `refactor/split-bases` (SQLite → Parquet + DuckDB; `lib/`+`scripts/`+`data/` →
+> `Helpers/`+`codigos/`+`files/`). **Leia [[17 - Armazenamento Parquet e AWS]] primeiro.**
+
+
 Sistema Python local que gera relatórios HTML diários consolidando negócios secundários de Debêntures, CRIs e CRAs da B3, com taxa, spread sobre referência, e filtro de duplicados.
 
 > **Onde estou no projeto?** → [[09 - Progresso]]

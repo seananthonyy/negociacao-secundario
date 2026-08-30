@@ -2,6 +2,13 @@
 
 Este projeto gera relatórios HTML diários de negócios de crédito privado brasileiro (Debêntures, CRIs, CRAs) consolidando dados da B3, FI Analytics e Anbima.
 
+> 🚧 **LEIA PRIMEIRO — obra em curso (29/08/2026).** O branch **`refactor/split-bases`**
+> reorganizou a estrutura de pastas e trocou o armazenamento de SQLite por **Parquet + DuckDB**
+> (os dados vão para a AWS: bucket S3 + Athena, sem banco SQL). A fundação está pronta e testada;
+> **os 21 scripts ainda não foram convertidos**. **Leia `vault/17 - Armazenamento Parquet e AWS.md`
+> antes de tocar em qualquer código.** As seções "Estrutura" e "Convenções" abaixo já refletem o
+> branch; partes do vault ainda descrevem o `main` e estão marcadas.
+
 > **Instalando/migrando para o PC do banco?** Se o usuário pedir "me diga o que fazer" / "como instalo isto", siga o runbook **`INSTALACAO_BANCO.md`** (raiz) — passo a passo de pastas, dependências, segredos, teste de fluxos e montagem da base. Contexto da migração em `vault/13 - Migracao Banco.md`.
 
 ## Documento mestre
@@ -14,27 +21,42 @@ Este projeto gera relatórios HTML diários de negócios de crédito privado bra
 
 ```
 negociacao-secundario/
-├── code/                    Projeto Python (todos os paths internos relativos a esta pasta)
-│   ├── scripts/             Scripts executáveis independentes (CLI)
-│   ├── lib/                 Módulos compartilhados
-│   ├── data/                trades.db + ipca.db/di.db (insumos da calc), logs/, relatorios/
-│   ├── templates/           Jinja2 do relatório HTML
-│   ├── config.toml          Configurações
-│   ├── .env                 Secrets (não versionar)
+├── code/                    <- é a pasta "z antoniooliveira" no PC do banco
+│   ├── Helpers/             Módulos compartilhados (era lib/). Achatado: `from db import X`
+│   │   ├── dados.py         ★ A CAMADA DE DADOS: Parquet + DuckDB (substitui o db.py)
+│   │   ├── config.py        Lê files/config.toml; ANCORA todo [paths] na raiz
+│   │   ├── cadastro_b3.py   Leitura do getBondDetails (dois donos: scraper e validador)
+│   │   ├── pipeline_core.py Orquestrador (resolve codigos/<n>/<n>.py)
+│   │   └── calc.py, logger.py, email_outlook.py, b3_calc_api.py, fianalytics_api.py
+│   ├── files/
+│   │   ├── config.toml, .env
+│   │   ├── Database/        ipca.db, di.db, feriados_anbima.csv — os 3 que a CALC lê,
+│   │   │                    e ela exige os três na MESMA pasta (CALCRF_FILES_DIR)
+│   │   ├── Parquet/         ★ A BASE. [dados] raiz — vira "s3://bucket/..." no banco
+│   │   ├── templates/, relatorios/, anbima_data_raw/, logs/, emails/
+│   ├── codigos/<script>/    Uma pasta por código: <script>.py + logs/ dentro
 │   └── requirements.txt
 ├── vault/                   Obsidian — fonte da verdade viva do projeto
 └── .claude/agents/          Subagents customizados (coder, documenter)
 ```
 
+**Cada código roda sozinho, de qualquer diretório.** Nenhum script importa outro; o que é
+compartilhado vive em `Helpers/`. Os `[paths]` são ancorados na raiz do projeto, não no cwd.
+
 ## Calculadora de renda fixa (projeto vizinho)
 
 `D:\ItauBBA\calculadora-renda-fixa` é a **biblioteca de cálculo** (precifica: VNA, PU Par, PU de operação, duration). **Não modificar `calculadora_rf.py` sem permissão explícita do usuário.**
 
-Desde 12/07/2026, **este** projeto roda as rotinas de dados que ela consome (IPCA, projeção de IPCA, DI, curva DI) e valida o fluxo dos ativos que ela pode precificar. Os bancos `data/ipca.db` e `data/di.db` são nossos; o schema deles é **contrato com a calc** (não segue o prefixo `vr/cd/dt` — não renomear). Import via `lib/calc.py`. Ver **[[14 - Rotinas da Calculadora]]** no vault.
+Desde 12/07/2026, **este** projeto roda as rotinas de dados que ela consome (IPCA, projeção de IPCA, DI, curva DI) e valida o fluxo dos ativos que ela pode precificar. Os bancos `files/Database/ipca.db` e `di.db` são nossos; o schema deles é **contrato com a calc** (não segue o prefixo `vr/cd/dt` — não renomear). Import via `Helpers/calc.py`. Ver **[[14 - Rotinas da Calculadora]]** no vault.
+
+⚠️ **`ipca.db`, `di.db` e `feriados_anbima.csv` têm de ficar na MESMA pasta** — a calc lê os
+três de `CALCRF_FILES_DIR`, pelo nome do arquivo. Apontar para o lugar errado **não dá erro**:
+o SQLite cria um `ipca.db` vazio lá e a calc passa a rodar sem série de IPCA. Já aconteceu
+(29/08) e contaminou uma rodada inteira de `match_referencias`.
 
 ## Agentes customizados
 
-- **coder** — implementa scripts em `code/scripts/` e módulos em `code/lib/`. Lê o vault para contexto.
+- **coder** — implementa scripts em `code/codigos/<nome>/` e módulos em `code/Helpers/`. Lê o vault para contexto.
 - **documenter** — mantém o vault Obsidian sincronizado com o código atual. Atualiza notas em `vault/` conforme o coder progride.
 
 Use `/agents` no Claude Code pra ver/invocar.
@@ -42,11 +64,28 @@ Use `/agents` no Claude Code pra ver/invocar.
 ## Convenções fechadas (não revisitar sem motivo forte)
 
 - **Python 3.11+**, sem venv, sem tests automatizados
-- **SQLite** em `code/data/trades.db` — mais `ipca.db` e `di.db` (insumos da calculadora; schema é **contrato**, não segue o prefixo `vr/cd/dt`)
-- **Paths relativos ao cwd** (projeto vai ser migrado entre PC pessoal e PC trabalho)
+- **Armazenamento: Parquet + DuckDB** (`Helpers/dados.py`), em `files/Parquet/` ou num
+  `s3://` — é **uma linha** do `config.toml` (`[dados] raiz`). O SQLite saiu: os dados
+  precisam viver na AWS e lá só há bucket + Athena. Ver [[17 - Armazenamento Parquet e AWS]].
+  - **O SQL continua o mesmo** — as views do DuckDB têm o nome das tabelas antigas.
+  - Tabela **SÉRIE** (particionada por data) reescreve o dia inteiro; tabela **ESTADO**
+    (`InfoAtivos`, `FluxoAtivos`) reescreve o arquivo inteiro. Não existe UPDATE em disco.
+  - **Tipo de coluna é declarado, nunca inferido** (`ESQUEMA` em `dados.py`): coluna toda
+    NULL num dia seria inferida como tipo `null` e quebraria a leitura das outras partições.
+  - `ipca.db` e `di.db` seguem SQLite — são **contrato com a calculadora**, não nossos.
+- **Chave dos negócios: `cdIdentificadorNegocio`** (a que a B3 manda). O `idTrade`
+  (`AUTOINCREMENT`) morreu com o SQLite — fora dele ninguém gera esse número.
+- **Paths ancorados na raiz do projeto**, nunca no cwd (`AncorarPaths` em `Helpers/config.py`).
+  Antes eram relativos ao cwd: rodar um script de outra pasta fazia o SQLite criar um banco
+  vazio ali e o script terminava "com sucesso", sobre nada.
 - **Tabelas SQLite**: PascalCase e **em português** (`NegociosBrutos`, `NegociosProcessados`, `InfoAtivos`, `FluxoAtivos`)
 - **Colunas SQLite**: camelCase com prefixos `vr` (valor), `cd` (código/categoria), `dt` (data/hora), `id` (identificador)
 - **Nomes de arquivo de script**: snake_case, sem prefixo numérico (`scrape_b3_boletim.py`, não `01_scrape_...`). Nome de arquivo é a **única** coisa em snake_case.
+- **Um código, uma pasta**: `codigos/<nome>/<nome>.py`, com o `logs/` dentro. Cada um roda
+  sozinho, de qualquer diretório. **Nenhum script importa outro** — o que dois precisam vai
+  para `Helpers/` (foi o caso do `cadastro_b3.py`).
+- **Email**: `NEGSEC_SEM_EMAIL=1` no ambiente roda qualquer script sem tocar no Outlook,
+  gravando o corpo em `files/emails/`. Usar sempre em teste e em rodada de lote.
 - **Python funções e classes**: PascalCase, **em português** (`LerArgumentos`, `ProcessarData`, `MontarUrl`, `AnalisarCsv`, `Principal`)
 - **Python variáveis e parâmetros**: camelCase, em português (`dtRef`, `cdTicker`, `anbimaRows`, `limiteTrades`)
 - **Constantes de módulo**: UPPER_SNAKE (`SQL_UPSERT`, `MESES_PT`) — o `_` **interno** é permitido
@@ -63,6 +102,19 @@ Use `/agents` no Claude Code pra ver/invocar.
 - **Relatório agrupa por `dtLiquidacao`**, não `dtNegocio`
 
 ## Estado atual
+
+**Em obras no branch `refactor/split-bases` (6 commits, não mergeado).** O que já está feito
+e testado, e o que falta, está em **`vault/17 - Armazenamento Parquet e AWS.md`** — leia antes
+de continuar. Resumo: a camada de dados nova (`Helpers/dados.py`) existe, a base real já foi
+migrada para Parquet (1.582.200 linhas, 388 MB → 41,6 MB), mas **os 21 scripts ainda chamam
+`ObterBanco()` e falam SQLite**.
+
+Duas armadilhas ao converter:
+1. **O trigger `trgInfoAtivosInvalidaFluxo` não existe no Parquet.** Ele zerava
+   `stFluxoValidado` quando uma coluna do fluxo mudava. Tem de virar código Python em quem
+   escreve `InfoAtivos` — esquecer faz a calc precificar com fluxo velho, **em silêncio**.
+2. **Teste de aceitação de cada etapa:** o relatório geral tem de sair **34 pregões,
+   2.567 ativos, R$ 53.265,83 MM**.
 
 Veja `vault/09 - Progresso.md` para saber em que fase está a implementação e o que falta.
 

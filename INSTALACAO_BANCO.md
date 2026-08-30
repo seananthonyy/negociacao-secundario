@@ -1,5 +1,17 @@
 # Instalação no ambiente do Banco (Itaú BBA)
 
+> 🚧 **PARADO PARA REESCRITA (29/08/2026).** Este runbook descreve a instalação do `main`
+> (pastas `lib/`, `scripts/`, `data/`; base SQLite). O branch `refactor/split-bases` mudou a
+> estrutura e o armazenamento — **não siga estes passos até ele ser mergeado e o runbook,
+> reescrito.** O que muda na instalação:
+> - a árvore vira `Helpers/` + `files/` + `codigos/<nome>/`;
+> - entram três dependências: `duckdb`, `pyarrow` e `awswrangler`;
+> - a base deixa de ser `.db` e vira Parquet — `[dados] raiz` no `config.toml` aponta para a
+>   pasta local ou para o `s3://` do banco;
+> - `ipca.db`, `di.db` e `feriados_anbima.csv` têm de ficar juntos em `files/Database/`;
+> - **falta liberar acesso à AWS** no PC do banco (Quant/TI) — ver `vault/17`.
+
+
 > **Claude: se o usuário pedir "me diga o que fazer" / "como instalo isto", siga este runbook e conduza-o passo a passo.**
 > Contexto completo da migração: `vault/13 - Migracao Banco.md`. Pipeline: `vault/11 - Pipeline de Execucao.md`. Segredos: `vault/99 - Credenciais e Links.md`. Visão geral: `CLAUDE.md` e `PLANEJAMENTO_v5.md`.
 
