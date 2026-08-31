@@ -27,15 +27,16 @@ import io
 import re
 import sys
 import traceback
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "Helpers"))
 
+import pandas as pd
 from playwright.async_api import async_playwright, Page
 
+import dados as D
 from config import cfg, ObterProxyPlaywright
-from db import ObterBanco
 from logger import ObterLogger
 from email_outlook import EnviarEmailConclusao
 from relatorio_execucao import RelatorioExecucao
@@ -44,38 +45,35 @@ from relatorio_execucao import RelatorioExecucao
 # Constantes
 # ---------------------------------------------------------------------------
 
-SQL_UPSERT_ANBIMA = """
-INSERT INTO AnbimaIndicativos (cdTicker, dtReferencia, vrTaxaAnbima, vrSpreadAnbima)
-VALUES (?, ?, ?, NULL)
-ON CONFLICT(cdTicker, dtReferencia) DO UPDATE SET
-    vrTaxaAnbima = excluded.vrTaxaAnbima
-"""
+# Politicas de mesclagem — o que era o `ON CONFLICT DO UPDATE SET` de cada tabela.
+#
+# Em AnbimaIndicativos so a taxa e reescrita; vrSpreadAnbima nao entra no DataFrame
+# (quem o calcula e o calc_spread_anbima) e por isso sobrevive intacto.
+POLITICA_ANBIMA = {"vrTaxaAnbima": D.SOBRESCREVER, "dtCriacao": D.PREFERIR_ATUAL}
 
-SQL_UPSERT_INFO = """
-INSERT INTO InfoAtivos (
-    cdTicker, cdInstrumento, cdEmissor, dtVencimento,
-    vrDuration, dtAtualizacaoDuration, cdIndexador, cdReferencia, cdFonteReferencia,
-    dtAtualizacaoReferencia, dtAtualizacao
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-ON CONFLICT(cdTicker) DO UPDATE SET
-    cdInstrumento    = excluded.cdInstrumento,
-    cdEmissor        = excluded.cdEmissor,
-    dtVencimento     = excluded.dtVencimento,
-    vrDuration       = COALESCE(excluded.vrDuration,       vrDuration),
-    dtAtualizacaoDuration = CASE WHEN excluded.vrDuration IS NOT NULL
-                            THEN excluded.dtAtualizacaoDuration
-                            ELSE dtAtualizacaoDuration END,
-    cdIndexador      = COALESCE(cdIndexador,      excluded.cdIndexador),
-    cdReferencia            = COALESCE(excluded.cdReferencia,            cdReferencia),
-    cdFonteReferencia      = CASE WHEN excluded.cdReferencia IS NOT NULL THEN 'Anbima' ELSE cdFonteReferencia END,
-    -- Renova mesmo repetindo o mesmo valor: e "a Anbima ainda cobre este papel", nao
-    -- "a referencia mudou". Quando ela para de publicar, esta data congela e o
-    -- match_referencias assume o papel apos DIAS_REVALIDAR_REFERENCIA.
-    dtAtualizacaoReferencia = CASE WHEN excluded.cdReferencia IS NOT NULL
-                              THEN excluded.dtAtualizacaoReferencia
-                              ELSE dtAtualizacaoReferencia END,
-    dtAtualizacao      = excluded.dtAtualizacao
-"""
+# Em InfoAtivos a Anbima e dona da identificacao do papel e a reescreve sempre.
+#
+# cdIndexador e a excecao, e e DE PROPOSITO: aqui a politica e PREFERIR_ATUAL (era
+# `COALESCE(cdIndexador, excluded.cdIndexador)`, na ordem inversa da usada no
+# scrape_anbima_debentures). O motivo e o `or 'PREFIXADO'` do AnalisarLinha: quando o
+# CSV nao traz indice, este scraper chuta PREFIXADO — um palpite que nao pode passar
+# por cima do indexador que outra fonte ja tenha apurado.
+#
+# dtAtualizacaoDuration, cdFonteReferencia e dtAtualizacaoReferencia eram um
+# `CASE WHEN excluded.<outra> IS NOT NULL`. Nao precisam de politica: AnalisarLinha ja
+# os deixa NULOS quando a coluna de que dependem veio nula, e PREFERIR_NOVO da o mesmo
+# resultado.
+#
+# dtAtualizacaoReferencia se renova mesmo repetindo o mesmo valor: e "a Anbima ainda
+# cobre este papel", nao "a referencia mudou". Quando ela para de publicar, esta data
+# congela e o match_referencias assume o papel apos DIAS_REVALIDAR_REFERENCIA.
+POLITICA_INFO = {
+    "cdInstrumento": D.SOBRESCREVER,
+    "cdEmissor":     D.SOBRESCREVER,
+    "dtVencimento":  D.SOBRESCREVER,
+    "dtAtualizacao": D.SOBRESCREVER,
+    "cdIndexador":   D.PREFERIR_ATUAL,
+}
 
 # ---------------------------------------------------------------------------
 # Helpers de parsing (compartilhados com scrape_anbima_debentures)
@@ -147,7 +145,7 @@ def DerivarRef(cdIndexador: str | None, rawRefNtnb) -> str | None:
 # Parsing do CSV
 # ---------------------------------------------------------------------------
 
-def AnalisarLinha(row: dict, dtRef: str) -> tuple[tuple, tuple] | None:
+def AnalisarLinha(row: dict, dtRef: str) -> tuple[dict, dict] | None:
     """Converte uma linha do CSV em (anbimaRow, infoRow). None se o ticker for inválido."""
     cdTicker = (row.get('Código') or row.get('Codigo') or '').strip()
     if not cdTicker or ' ' in cdTicker:
@@ -168,11 +166,16 @@ def AnalisarLinha(row: dict, dtRef: str) -> tuple[tuple, tuple] | None:
     cdFonteReferencia = 'Anbima' if cdReferencia is not None else None
     dtUpsertRef       = dtRef if cdReferencia is not None else None
 
+    agora = datetime.now().isoformat(sep=' ', timespec='seconds')
     return (
-        (cdTicker, dtRef, vrTaxaAnbima),
-        (cdTicker, cdInstrumento, cdEmissor, dtVencimento,
-         vrDuration, dtUpsertDur, cdIndexador, cdReferencia, cdFonteReferencia,
-         dtUpsertRef),
+        {'cdTicker': cdTicker, 'dtReferencia': dtRef,
+         'vrTaxaAnbima': vrTaxaAnbima, 'dtCriacao': agora},
+        {'cdTicker': cdTicker, 'cdInstrumento': cdInstrumento, 'cdEmissor': cdEmissor,
+         'dtVencimento': dtVencimento,
+         'vrDuration': vrDuration, 'dtAtualizacaoDuration': dtUpsertDur,
+         'cdIndexador': cdIndexador,
+         'cdReferencia': cdReferencia, 'cdFonteReferencia': cdFonteReferencia,
+         'dtAtualizacaoReferencia': dtUpsertRef, 'dtAtualizacao': agora},
     )
 
 
@@ -273,10 +276,10 @@ async def BaixarCsv(page: Page, log) -> bytes:
 # Processamento por data
 # ---------------------------------------------------------------------------
 
-def GravarNoBanco(conn, anbimaRows: list, infoRows: list, dtStr: str, log) -> tuple[int, int]:
-    conn.executemany(SQL_UPSERT_ANBIMA, anbimaRows)
-    conn.executemany(SQL_UPSERT_INFO,   infoRows)
-    conn.commit()
+def Gravar(anbimaRows: list, infoRows: list, dtStr: str, log) -> tuple[int, int]:
+    D.Mesclar("AnbimaIndicativos", pd.DataFrame(anbimaRows),
+              politica=POLITICA_ANBIMA, data=dtStr)
+    D.Mesclar("InfoAtivos", pd.DataFrame(infoRows), politica=POLITICA_INFO)
     log.info("anbima_cricra: %s — %d AnbimaIndicativos, %d InfoAtivos",
              dtStr, len(anbimaRows), len(infoRows))
     return len(anbimaRows), len(infoRows)
@@ -292,38 +295,34 @@ async def PrincipalAsync(args: argparse.Namespace, log) -> tuple[list[tuple[str,
     datas   = MontarIntervaloDatas(args)
     pageUrl = cfg["scrape"]["anbima"]["cricraUrl"]
     results: list[tuple[str, int, int]] = []
-    conn    = ObterBanco()
 
-    try:
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch(headless=args.headless, proxy=ObterProxyPlaywright())
-            context = await browser.new_context(
-                accept_downloads=True,
-                viewport={"width": 1400, "height": 900},
-                ignore_https_errors=True,
-            )
-            page = await context.new_page()
-            try:
-                log.info("anbima_cricra: navegando para %s", pageUrl)
-                await page.goto(pageUrl, wait_until="domcontentloaded", timeout=45_000)
-                content = await BaixarCsv(page, log)
-            finally:
-                await browser.close()
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=args.headless, proxy=ObterProxyPlaywright())
+        context = await browser.new_context(
+            accept_downloads=True,
+            viewport={"width": 1400, "height": 900},
+            ignore_https_errors=True,
+        )
+        page = await context.new_page()
+        try:
+            log.info("anbima_cricra: navegando para %s", pageUrl)
+            await page.goto(pageUrl, wait_until="domcontentloaded", timeout=45_000)
+            content = await BaixarCsv(page, log)
+        finally:
+            await browser.close()
 
-        porData = AnalisarCsv(content, log)   # {dtRef: (anbimaRows, infoRows)}
+    porData = AnalisarCsv(content, log)   # {dtRef: (anbimaRows, infoRows)}
 
-        for d in datas:
-            dtStr = d.isoformat()
-            if dtStr not in porData:
-                log.warning("anbima_cricra: %s — não está no CSV (o portal só publica os "
-                            "~5 últimos pregões; disponíveis: %s)", dtStr, ", ".join(sorted(porData)))
-                results.append((dtStr, 0, 0))
-                continue
-            anbimaRows, infoRows = porData[dtStr]
-            nAnbima, nInfo       = GravarNoBanco(conn, anbimaRows, infoRows, dtStr, log)
-            results.append((dtStr, nAnbima, nInfo))
-    finally:
-        conn.close()
+    for d in datas:
+        dtStr = d.isoformat()
+        if dtStr not in porData:
+            log.warning("anbima_cricra: %s — não está no CSV (o portal só publica os "
+                        "~5 últimos pregões; disponíveis: %s)", dtStr, ", ".join(sorted(porData)))
+            results.append((dtStr, 0, 0))
+            continue
+        anbimaRows, infoRows = porData[dtStr]
+        nAnbima, nInfo       = Gravar(anbimaRows, infoRows, dtStr, log)
+        results.append((dtStr, nAnbima, nInfo))
 
     return results, sorted(porData)
 

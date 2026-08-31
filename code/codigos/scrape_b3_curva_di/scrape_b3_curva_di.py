@@ -35,12 +35,13 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import httpx
+import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "Helpers"))
 
+import dados as D
 from calc import ObterBancoDi
 from config import cfg
-from db import ObterBanco
 from logger import ObterLogger
 from email_outlook import EnviarEmailConclusao
 from relatorio_execucao import RelatorioExecucao
@@ -61,13 +62,11 @@ CONTRATOS = [
 
 FERIADOS_PATH = Path(cfg["paths"]["feriadosCsv"])
 
-SQL_UPSERT = """
-INSERT INTO MtmAnbima (cdTicker, dtReferencia, vrTaxa, vrDuration)
-VALUES (?, ?, ?, ?)
-ON CONFLICT(cdTicker, dtReferencia) DO UPDATE SET
-    vrTaxa     = excluded.vrTaxa,
-    vrDuration = excluded.vrDuration
-"""
+# O que era `ON CONFLICT(cdTicker, dtReferencia) DO UPDATE SET vrTaxa = excluded.vrTaxa,
+# vrDuration = excluded.vrDuration`. Aqui as duas SOBRESCREVEM (diferente do
+# scrape_anbima_ntnb, que preserva a duration existente): o DI1 nao depende de API
+# externa — a duration sai do proprio vertice, e sempre vem.
+POLITICA_MTM = {"vrTaxa": D.SOBRESCREVER, "vrDuration": D.SOBRESCREVER}
 
 # Curva completa (di.db) — schema é contrato com a calculadora, ver lib/calc.py.
 SQL_UPSERT_CURVA = """
@@ -207,7 +206,8 @@ def ProcessarDuMap(
 
         vrTaxa     = duMap[du]
         vrDuration = round(du / 252, 6)
-        upsertRows.append((ticker, dtStr, vrTaxa, vrDuration))
+        upsertRows.append({"cdTicker": ticker, "dtReferencia": dtStr,
+                           "vrTaxa": vrTaxa, "vrDuration": vrDuration})
         log.debug("curva_di: %s — %s: du=%d taxa=%.4f%% duration=%.4f", dtStr, ticker, du, vrTaxa, vrDuration)
 
     return upsertRows, semMatch
@@ -288,16 +288,11 @@ def Principal() -> None:
         duMap = {du: taxa for du, _dc, taxa in vertices}
         upsertRows, semMatch = ProcessarDuMap(duMap, dtRef, feriados, dtStr, log)
 
-        conn = ObterBanco()
-        try:
-            if upsertRows:
-                conn.executemany(SQL_UPSERT, upsertRows)
-                conn.commit()
-            log.info("curva_di: %s — %d contratos salvos em MtmAnbima", dtStr, len(upsertRows))
-        finally:
-            conn.close()
+        if upsertRows:
+            D.Mesclar("MtmAnbima", pd.DataFrame(upsertRows), politica=POLITICA_MTM)
+        log.info("curva_di: %s — %d contratos salvos em MtmAnbima", dtStr, len(upsertRows))
 
-        taxas   = {row[0]: row[2] for row in upsertRows}
+        taxas   = {row["cdTicker"]: row["vrTaxa"] for row in upsertRows}
         summary = MontarResumo(dtStr, len(upsertRows), semMatch, taxas, nVertices)
         log.info("curva_di: concluido.\n%s", summary)
 

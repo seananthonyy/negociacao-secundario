@@ -37,7 +37,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "Helpers"))
 
-from db import ObterBanco
+import pandas as pd
+
+import dados as D
 from logger import ObterLogger
 from email_outlook import EnviarEmailConclusao
 from relatorio_execucao import RelatorioExecucao
@@ -72,12 +74,11 @@ WHERE dtOutstanding = ?
   AND vrOutstanding IS NOT NULL
 """
 
-SQL_UPSERT = """
-INSERT INTO Outstanding (cdTicker, dtOutstanding, vrOutstanding)
-VALUES (?, ?, ?)
-ON CONFLICT(cdTicker, dtOutstanding) DO UPDATE SET
-    vrOutstanding = excluded.vrOutstanding
-"""
+# O que era `ON CONFLICT(cdTicker, dtOutstanding) DO UPDATE SET
+# vrOutstanding = excluded.vrOutstanding`: o valor da Bloomberg do dia sempre manda,
+# inclusive quando vem vazio (papel sem AMT_OUTSTANDING grava NULL, e isso e a
+# resposta, nao ausencia de resposta).
+POLITICA_OUTSTANDING = {"vrOutstanding": D.SOBRESCREVER}
 
 
 # ---------------------------------------------------------------------------
@@ -89,12 +90,12 @@ def ExcluiTicker(cdTicker: str) -> bool:
     return cdTicker.upper().startswith(PREFIXOS_EXCLUIDOS)
 
 
-def TickersDaData(conn, d: date, log) -> set[str]:
+def TickersDaData(d: date, log) -> set[str]:
     """Tickers negociados + divulgados pela Anbima na data d (NTN-B/DI1 fora)."""
     dStr = d.isoformat()
 
-    negociados = {r[0] for r in conn.execute(SQL_TICKERS_NEGOCIADOS, (dStr,))}
-    anbima     = {r[0] for r in conn.execute(SQL_TICKERS_ANBIMA, (dStr,))}
+    negociados = set(D.Consultar(SQL_TICKERS_NEGOCIADOS, (dStr,)).iloc[:, 0])
+    anbima     = set(D.Consultar(SQL_TICKERS_ANBIMA, (dStr,)).iloc[:, 0])
 
     tickers = {t for t in (negociados | anbima) if t and not ExcluiTicker(t)}
 
@@ -105,9 +106,9 @@ def TickersDaData(conn, d: date, log) -> set[str]:
     return tickers
 
 
-def FiltrarJaGravados(conn, d: date, tickers: set[str], log) -> set[str]:
+def FiltrarJaGravados(d: date, tickers: set[str], log) -> set[str]:
     """Remove tickers que ja tem outstanding gravado nessa data."""
-    gravados = {r[0] for r in conn.execute(SQL_JA_GRAVADOS, (d.isoformat(),))}
+    gravados = set(D.Consultar(SQL_JA_GRAVADOS, (d.isoformat(),)).iloc[:, 0])
     pendentes = tickers - gravados
     if gravados:
         log.info(
@@ -171,30 +172,30 @@ def BuscarOutstanding(tickers: list[str], d: date, log) -> dict[str, float | Non
 # Processamento por data
 # ---------------------------------------------------------------------------
 
-def ProcessarData(conn, d: date, force: bool, log) -> tuple[int, int, int]:
+def ProcessarData(d: date, force: bool, log) -> tuple[int, int, int]:
     """
     Processa uma data: monta tickers, busca outstanding, grava.
     Retorna (tickers_alvo, gravados_com_valor, sem_valor).
     """
-    tickers = TickersDaData(conn, d, log)
+    tickers = TickersDaData(d, log)
     nAlvo = len(tickers)
     if not tickers:
         return 0, 0, 0
 
     if not force:
-        tickers = FiltrarJaGravados(conn, d, tickers, log)
+        tickers = FiltrarJaGravados(d, tickers, log)
     if not tickers:
         return nAlvo, 0, 0
 
     valores = BuscarOutstanding(sorted(tickers), d, log)
 
     dStr = d.isoformat()
-    upsertRows = [(t, dStr, v) for t, v in valores.items()]
+    upsertRows = [{"cdTicker": t, "dtOutstanding": dStr, "vrOutstanding": v}
+                  for t, v in valores.items()]
     nComValor = sum(1 for v in valores.values() if v is not None)
     nSemValor = len(valores) - nComValor
 
-    conn.executemany(SQL_UPSERT, upsertRows)
-    conn.commit()
+    D.Mesclar("Outstanding", pd.DataFrame(upsertRows), politica=POLITICA_OUTSTANDING)
 
     log.info("outstanding: %s — %d gravados (%d com valor, %d sem)",
              dStr, len(upsertRows), nComValor, nSemValor)
@@ -259,7 +260,6 @@ def MontarResumo(results: list[tuple[str, int, int, int]]) -> str:
 def Principal() -> None:
     log     = ObterLogger(NOME_SCRIPT)
     args    = LerArgumentos()
-    conn    = ObterBanco()
     rel     = RelatorioExecucao(NOME_SCRIPT)
     erro    = None
     summary = ""
@@ -273,7 +273,7 @@ def Principal() -> None:
                  len(datas), datas[0], datas[-1])
 
         for d in datas:
-            nAlvo, nCom, nSem = ProcessarData(conn, d, args.force, log)
+            nAlvo, nCom, nSem = ProcessarData(d, args.force, log)
             results.append((d.isoformat(), nAlvo, nCom, nSem))
 
         summary = MontarResumo(results)
@@ -286,7 +286,6 @@ def Principal() -> None:
         log.exception("outstanding: erro inesperado")
 
     finally:
-        conn.close()
         if summary:
             rel.Secao("Resumo", ["saida"], [[l] for l in summary.splitlines() if l.strip()])
         EnviarEmailConclusao(NOME_SCRIPT, success, rel, tracebackErro=erro, logger=log)

@@ -26,15 +26,16 @@ import csv
 import io
 import sys
 import traceback
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "Helpers"))
 
+import pandas as pd
 from playwright.async_api import async_playwright
 
+import dados as D
 from config import cfg, ObterSegredo, ObterProxyPlaywright
-from db import ObterBanco
 from logger import ObterLogger
 from email_outlook import EnviarEmailConclusao
 from relatorio_execucao import RelatorioExecucao
@@ -45,25 +46,27 @@ from relatorio_execucao import RelatorioExecucao
 
 NOME_SCRIPT = "scrape_fianalytics_planilha"
 
-SQL_UPSERT_INFO = """
-INSERT INTO InfoAtivos (
-    cdTicker, cdInstrumento, cdEmissor, dtVencimento,
-    vrDuration, dtAtualizacaoDuration, cdIndexador, cdReferencia, cdFonteReferencia, vrTaxaEmissao, dtAtualizacao
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-ON CONFLICT(cdTicker) DO UPDATE SET
-    cdInstrumento    = excluded.cdInstrumento,
-    cdEmissor        = excluded.cdEmissor,
-    dtVencimento     = excluded.dtVencimento,
-    vrDuration       = COALESCE(excluded.vrDuration,       vrDuration),
-    dtAtualizacaoDuration = CASE WHEN excluded.vrDuration IS NOT NULL
-                            THEN excluded.dtAtualizacaoDuration
-                            ELSE dtAtualizacaoDuration END,
-    cdIndexador      = COALESCE(cdIndexador,      excluded.cdIndexador),
-    cdReferencia            = COALESCE(excluded.cdReferencia,            cdReferencia),
-    cdFonteReferencia      = CASE WHEN excluded.cdReferencia IS NOT NULL THEN 'FiAnalytics' ELSE cdFonteReferencia END,
-    vrTaxaEmissao   = COALESCE(vrTaxaEmissao,   excluded.vrTaxaEmissao),
-    dtAtualizacao      = excluded.dtAtualizacao
-"""
+# O que era o `ON CONFLICT(cdTicker) DO UPDATE SET` de InfoAtivos.
+#
+# A FI Analytics reescreve sempre a identificacao do papel (instrumento, emissor,
+# vencimento) e a duration quando ela vem. Ja cdIndexador e vrTaxaEmissao sao
+# PREFERIR_ATUAL (era o COALESCE na ordem inversa, `COALESCE(cdIndexador,
+# excluded.cdIndexador)`): a FI so preenche o buraco que a Anbima ou a B3 deixaram,
+# nunca sobrescreve o que elas ja apuraram.
+#
+# dtAtualizacaoDuration era um `CASE WHEN excluded.vrDuration IS NOT NULL`: nao precisa
+# de politica, o AnalisarCsv ja o deixa nulo quando nao ha duration.
+#
+# cdReferencia/cdFonteReferencia continuam saindo nulos daqui — a FI Analytics nao
+# fornece referencia. Como sao PREFERIR_NOVO, entrar nulo nao apaga o que ja existe.
+POLITICA_INFO = {
+    "cdInstrumento": D.SOBRESCREVER,
+    "cdEmissor":     D.SOBRESCREVER,
+    "dtVencimento":  D.SOBRESCREVER,
+    "dtAtualizacao": D.SOBRESCREVER,
+    "cdIndexador":   D.PREFERIR_ATUAL,
+    "vrTaxaEmissao": D.PREFERIR_ATUAL,
+}
 
 # ---------------------------------------------------------------------------
 # Helpers de parsing
@@ -286,7 +289,7 @@ def AnalisarCsv(
     def Cell(row, idx):
         return row[idx] if (idx is not None and idx < len(row)) else None
 
-    infoRows: list[tuple] = []
+    infoRows: list[dict] = []
     for row in rows[headerRowIdx + 1:]:
         if not row or all((c or '').strip() == '' for c in row):
             continue
@@ -304,10 +307,15 @@ def AnalisarCsv(
         vrTaxaEmissao = AnalisarFloat(Cell(row, idxTaxaEmissao))
 
         # cdReferencia = None — FI Analytics não fornece esta informação
-        infoRows.append((
-            cdTicker, cdInstrumento, cdEmissor, dtVencimento,
-            vrDuration, dtUpsertDur, cdIndexador, None, None, vrTaxaEmissao,
-        ))
+        infoRows.append({
+            'cdTicker': cdTicker, 'cdInstrumento': cdInstrumento,
+            'cdEmissor': cdEmissor, 'dtVencimento': dtVencimento,
+            'vrDuration': vrDuration, 'dtAtualizacaoDuration': dtUpsertDur,
+            'cdIndexador': cdIndexador,
+            'cdReferencia': None, 'cdFonteReferencia': None,
+            'vrTaxaEmissao': vrTaxaEmissao,
+            'dtAtualizacao': datetime.now().isoformat(sep=' ', timespec='seconds'),
+        })
 
     log.info("fia_planilha: %s — %d tickers parseados", tipo, len(infoRows))
     return infoRows
@@ -317,13 +325,12 @@ def AnalisarCsv(
 # Persistência
 # ---------------------------------------------------------------------------
 
-def GravarNoBanco(conn, infoRows: list[tuple], tipo: str, log) -> int:
-    """Executa UPSERT em InfoAtivos e retorna número de linhas processadas."""
+def Gravar(infoRows: list[dict], tipo: str, log) -> int:
+    """Mescla em InfoAtivos e retorna número de linhas processadas."""
     if not infoRows:
         log.warning("fia_planilha: %s — nenhum ticker para salvar", tipo)
         return 0
-    conn.executemany(SQL_UPSERT_INFO, infoRows)
-    conn.commit()
+    D.Mesclar("InfoAtivos", pd.DataFrame(infoRows), politica=POLITICA_INFO)
     log.info("fia_planilha: %s — %d registros em InfoAtivos", tipo, len(infoRows))
     return len(infoRows)
 
@@ -357,45 +364,40 @@ def MontarResumo(results: list[tuple[str, int]]) -> str:
 async def PrincipalAsync(args: argparse.Namespace, log) -> list[tuple[str, int]]:
     """Orquestra login, downloads e UPSERTs. Retorna lista (planilha, nTickers).
     Fluxo novo: login → lista de debêntures (Exportar) → menu 'Lista' → CRI/CRA (Exportar)."""
-    conn    = ObterBanco()
     results: list[tuple[str, int]] = []
 
-    try:
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch(headless=args.headless, proxy=ObterProxyPlaywright())
-            context = await browser.new_context(
-                accept_downloads=True,
-                viewport={"width": 1400, "height": 900},
-                ignore_https_errors=True,
-            )
-            page = await context.new_page()
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=args.headless, proxy=ObterProxyPlaywright())
+        context = await browser.new_context(
+            accept_downloads=True,
+            viewport={"width": 1400, "height": 900},
+            ignore_https_errors=True,
+        )
+        page = await context.new_page()
 
-            await Autenticar(page, log)          # o login cai na lista de debêntures
-            await page.wait_for_timeout(2_500)
+        await Autenticar(page, log)          # o login cai na lista de debêntures
+        await page.wait_for_timeout(2_500)
 
-            # 1) DEBÊNTURES — exporta direto da lista onde o login caiu.
-            content = await BaixarViaExportar(page, "deb", log)
+        # 1) DEBÊNTURES — exporta direto da lista onde o login caiu.
+        content = await BaixarViaExportar(page, "deb", log)
+        if content:
+            infoRows = AnalisarCsv(content, "deb", "DEB", log)
+            results.append(("deb", Gravar(infoRows, "deb", log)))
+        else:
+            results.append(("deb", 0))
+
+        # 2) CRI/CRA — abre a lista pelo menu 'Lista' e exporta.
+        if await IrParaCriCra(page, log):
+            content = await BaixarViaExportar(page, "cri_cra", log)
             if content:
-                infoRows = AnalisarCsv(content, "deb", "DEB", log)
-                results.append(("deb", GravarNoBanco(conn, infoRows, "deb", log)))
-            else:
-                results.append(("deb", 0))
-
-            # 2) CRI/CRA — abre a lista pelo menu 'Lista' e exporta.
-            if await IrParaCriCra(page, log):
-                content = await BaixarViaExportar(page, "cri_cra", log)
-                if content:
-                    infoRows = AnalisarCsv(content, "cri_cra", None, log)
-                    results.append(("cri_cra", GravarNoBanco(conn, infoRows, "cri_cra", log)))
-                else:
-                    results.append(("cri_cra", 0))
+                infoRows = AnalisarCsv(content, "cri_cra", None, log)
+                results.append(("cri_cra", Gravar(infoRows, "cri_cra", log)))
             else:
                 results.append(("cri_cra", 0))
+        else:
+            results.append(("cri_cra", 0))
 
-            await browser.close()
-
-    finally:
-        conn.close()
+        await browser.close()
 
     return results
 

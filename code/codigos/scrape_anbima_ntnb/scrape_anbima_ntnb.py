@@ -29,12 +29,13 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import httpx
+import pandas as pd
 import xlrd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "Helpers"))
 
+import dados as D
 from config import cfg, ObterSegredo
-from db import ObterBanco
 from logger import ObterLogger
 from email_outlook import EnviarEmailConclusao
 from relatorio_execucao import RelatorioExecucao
@@ -62,13 +63,11 @@ FIA_BASE_URL   = "https://endpoint.fi-analytics.com.br"
 FIA_ISIN_PATH  = "/financialutil/gov/getgovbondisin"
 FIA_CALC_PATH  = "/gov/govbondcalculator"
 
-SQL_UPSERT = """
-INSERT INTO MtmAnbima (cdTicker, dtReferencia, vrTaxa, vrDuration)
-VALUES (?, ?, ?, ?)
-ON CONFLICT(cdTicker, dtReferencia) DO UPDATE SET
-    vrTaxa     = excluded.vrTaxa,
-    vrDuration = COALESCE(excluded.vrDuration, vrDuration)
-"""
+# O que era `ON CONFLICT(cdTicker, dtReferencia) DO UPDATE SET vrTaxa = excluded.vrTaxa,
+# vrDuration = COALESCE(excluded.vrDuration, vrDuration)`: a taxa do dia sempre manda;
+# a duration so e trocada quando vem preenchida (a cascata FI->B3 pode devolver None, e
+# nesse caso a que ja estava na base tem de sobreviver).
+POLITICA_MTM = {"vrTaxa": D.SOBRESCREVER, "vrDuration": D.PREFERIR_NOVO}
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +299,7 @@ def AnalisarPlanilha(sh, wb, dtRef: date, log) -> list[tuple]:
     return rows
 
 
-def ProcessarData(conn, d: date, log, workers: int, force: bool = False) -> tuple[int, int]:
+def ProcessarData(d: date, log, workers: int, force: bool = False) -> tuple[int, int]:
     content = BaixarXls(d, log)
     if content is None:
         return 0, 0
@@ -329,9 +328,9 @@ def ProcessarData(conn, d: date, log, workers: int, force: bool = False) -> tupl
     dtRefStr0 = d.isoformat()
     jaFeitos: set = set()
     if not force:
-        jaFeitos = {r[0] for r in conn.execute(
+        jaFeitos = set(D.Consultar(
             "SELECT cdTicker FROM MtmAnbima WHERE dtReferencia = ? AND vrDuration IS NOT NULL",
-            (dtRefStr0,)).fetchall()}
+            (dtRefStr0,))["cdTicker"])
 
     log.info("ntnb: %s — %d NTN-Bs (%d ja c/ duration, %d workers)...",
              d, len(rows), len(jaFeitos), workers)
@@ -348,12 +347,12 @@ def ProcessarData(conn, d: date, log, workers: int, force: bool = False) -> tupl
     with ThreadPoolExecutor(max_workers=workers) as executor:
         results = list(executor.map(CalcularLinha, rows))
 
-    upsertRows   = [(r[0], r[1], r[2], r[3]) for r in results]
+    upsertRows   = [{"cdTicker": r[0], "dtReferencia": r[1],
+                     "vrTaxa": r[2], "vrDuration": r[3]} for r in results]
     nSkip        = sum(1 for r in results if r[4])
     nSemDuration = sum(1 for r in results if not r[4] and r[3] is None)
 
-    conn.executemany(SQL_UPSERT, upsertRows)
-    conn.commit()
+    D.Mesclar("MtmAnbima", pd.DataFrame(upsertRows), politica=POLITICA_MTM)
 
     log.info("ntnb: %s — %d upserts (%d pulados, %d sem duration)",
              d, len(upsertRows), nSkip, nSemDuration)
@@ -406,7 +405,6 @@ def MontarIntervaloDatas(args: argparse.Namespace) -> list[date]:
 def Principal() -> None:
     log     = ObterLogger(NOME_SCRIPT)
     args    = LerArgumentos()
-    conn    = ObterBanco()
     rel     = RelatorioExecucao("scrape_anbima_ntnb", args=vars(args))
     erro    = None
     success = True
@@ -418,7 +416,7 @@ def Principal() -> None:
         log.info("ntnb: processando %d data(s): %s ... %s", len(datas), datas[0], datas[-1])
 
         for d in datas:
-            nUp, nSem = ProcessarData(conn, d, log, args.workers, args.force)
+            nUp, nSem = ProcessarData(d, log, args.workers, args.force)
             results.append((d.isoformat(), nUp, nSem))
 
         rel.PorData("Resultado por data", ['data', 'MtmAnbima', 'duration'], results)
@@ -431,7 +429,6 @@ def Principal() -> None:
         log.exception("ntnb: erro inesperado")
 
     finally:
-        conn.close()
         EnviarEmailConclusao(NOME_SCRIPT, success, rel, tracebackErro=erro, logger=log)
 
     if not success:

@@ -18,16 +18,17 @@ import argparse
 import re
 import sys
 import traceback
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import httpx
+import pandas as pd
 import xlrd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "Helpers"))
 
+import dados as D
 from config import cfg
-from db import ObterBanco
 from logger import ObterLogger
 from email_outlook import EnviarEmailConclusao
 from relatorio_execucao import RelatorioExecucao
@@ -53,38 +54,30 @@ COL_REF_NTNB        = 14
 
 LINHA_INICIO_DADOS = 9
 
-SQL_UPSERT_ANBIMA = """
-INSERT INTO AnbimaIndicativos (cdTicker, dtReferencia, vrTaxaAnbima, vrSpreadAnbima)
-VALUES (?, ?, ?, NULL)
-ON CONFLICT(cdTicker, dtReferencia) DO UPDATE SET
-    vrTaxaAnbima = excluded.vrTaxaAnbima
-"""
+# Politicas de mesclagem — o que era o `ON CONFLICT DO UPDATE SET` de cada tabela.
+#
+# Em AnbimaIndicativos so a taxa e reescrita; vrSpreadAnbima nao entra no DataFrame
+# (quem o calcula e o calc_spread_anbima) e por isso sobrevive intacto.
+POLITICA_ANBIMA = {"vrTaxaAnbima": D.SOBRESCREVER, "dtCriacao": D.PREFERIR_ATUAL}
 
-SQL_UPSERT_INFO = """
-INSERT INTO InfoAtivos (
-    cdTicker, cdInstrumento, cdEmissor, dtVencimento,
-    vrDuration, dtAtualizacaoDuration, cdIndexador, cdReferencia, cdFonteReferencia,
-    dtAtualizacaoReferencia, dtAtualizacao
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-ON CONFLICT(cdTicker) DO UPDATE SET
-    cdInstrumento    = excluded.cdInstrumento,
-    cdEmissor        = excluded.cdEmissor,
-    dtVencimento     = excluded.dtVencimento,
-    vrDuration       = COALESCE(excluded.vrDuration,       vrDuration),
-    dtAtualizacaoDuration = CASE WHEN excluded.vrDuration IS NOT NULL
-                            THEN excluded.dtAtualizacaoDuration
-                            ELSE dtAtualizacaoDuration END,
-    cdIndexador      = COALESCE(excluded.cdIndexador,      cdIndexador),
-    cdReferencia            = COALESCE(excluded.cdReferencia,            cdReferencia),
-    cdFonteReferencia      = CASE WHEN excluded.cdReferencia IS NOT NULL THEN 'Anbima' ELSE cdFonteReferencia END,
-    -- Renova mesmo repetindo o mesmo valor: e "a Anbima ainda cobre este papel", nao
-    -- "a referencia mudou". Quando ela para de publicar, esta data congela e o
-    -- match_referencias assume o papel apos DIAS_REVALIDAR_REFERENCIA.
-    dtAtualizacaoReferencia = CASE WHEN excluded.cdReferencia IS NOT NULL
-                              THEN excluded.dtAtualizacaoReferencia
-                              ELSE dtAtualizacaoReferencia END,
-    dtAtualizacao      = excluded.dtAtualizacao
-"""
+# Em InfoAtivos a Anbima e dona da identificacao do papel (instrumento, emissor,
+# vencimento) e a reescreve sempre. Duration, indexador e referencia so entram quando
+# vem preenchidos — dai o PREFERIR_NOVO, que e o COALESCE(excluded.x, x) do SQL.
+#
+# dtAtualizacaoDuration, cdFonteReferencia e dtAtualizacaoReferencia eram um
+# `CASE WHEN excluded.<outra> IS NOT NULL`. Nao precisam de politica: AnalisarPlanilha
+# ja os deixa NULOS quando a coluna de que dependem veio nula, e PREFERIR_NOVO da o
+# mesmo resultado.
+#
+# dtAtualizacaoReferencia se renova mesmo repetindo o mesmo valor: e "a Anbima ainda
+# cobre este papel", nao "a referencia mudou". Quando ela para de publicar, esta data
+# congela e o match_referencias assume o papel apos DIAS_REVALIDAR_REFERENCIA.
+POLITICA_INFO = {
+    "cdInstrumento": D.SOBRESCREVER,
+    "cdEmissor":     D.SOBRESCREVER,
+    "dtVencimento":  D.SOBRESCREVER,
+    "dtAtualizacao": D.SOBRESCREVER,
+}
 
 # ---------------------------------------------------------------------------
 # Helpers de parsing
@@ -162,8 +155,9 @@ def DerivarRef(cdIndexador: str | None, rawRefNtnb) -> str | None:
 # ---------------------------------------------------------------------------
 
 def AnalisarPlanilha(sh, dtRef: str) -> tuple[list, list]:
-    anbimaRows: list[tuple] = []
-    infoRows:   list[tuple] = []
+    anbimaRows: list[dict] = []
+    infoRows:   list[dict] = []
+    agora = datetime.now().isoformat(sep=' ', timespec='seconds')
 
     for rowIdx in range(LINHA_INICIO_DADOS, sh.nrows):
         cdTicker = str(sh.cell_value(rowIdx, COL_TICKER)).strip()
@@ -180,11 +174,17 @@ def AnalisarPlanilha(sh, dtRef: str) -> tuple[list, list]:
         cdReferencia        = DerivarRef(cdIndexador, sh.cell_value(rowIdx, COL_REF_NTNB))
         cdFonteReferencia  = 'Anbima' if cdReferencia is not None else None
 
-        anbimaRows.append((cdTicker, dtRef, vrTaxaAnbima))
+        anbimaRows.append({'cdTicker': cdTicker, 'dtReferencia': dtRef,
+                           'vrTaxaAnbima': vrTaxaAnbima, 'dtCriacao': agora})
         dtUpsertRef = dtRef if cdReferencia is not None else None
-        infoRows.append((cdTicker, 'DEB', cdEmissor, dtVencimento,
-                         vrDuration, dtUpsertDur, cdIndexador, cdReferencia, cdFonteReferencia,
-                         dtUpsertRef))
+        infoRows.append({
+            'cdTicker': cdTicker, 'cdInstrumento': 'DEB', 'cdEmissor': cdEmissor,
+            'dtVencimento': dtVencimento,
+            'vrDuration': vrDuration, 'dtAtualizacaoDuration': dtUpsertDur,
+            'cdIndexador': cdIndexador,
+            'cdReferencia': cdReferencia, 'cdFonteReferencia': cdFonteReferencia,
+            'dtAtualizacaoReferencia': dtUpsertRef, 'dtAtualizacao': agora,
+        })
 
     return anbimaRows, infoRows
 
@@ -210,7 +210,7 @@ def BaixarXls(d: date, log) -> bytes | None:
     return resp.content
 
 
-def ProcessarData(conn, d: date, log) -> tuple[int, int]:
+def ProcessarData(d: date, log) -> tuple[int, int]:
     dtRef   = d.isoformat()
     content = BaixarXls(d, log)
     if content is None:
@@ -239,9 +239,9 @@ def ProcessarData(conn, d: date, log) -> tuple[int, int]:
         log.warning("anbima_deb: %s — nenhum ticker extraído", dtRef)
         return 0, 0
 
-    conn.executemany(SQL_UPSERT_ANBIMA, allAnbima)
-    conn.executemany(SQL_UPSERT_INFO,   allInfo)
-    conn.commit()
+    D.Mesclar("AnbimaIndicativos", pd.DataFrame(allAnbima),
+              politica=POLITICA_ANBIMA, data=dtRef)
+    D.Mesclar("InfoAtivos", pd.DataFrame(allInfo), politica=POLITICA_INFO)
 
     log.info("anbima_deb: %s — %d AnbimaIndicativos, %d InfoAtivos", dtRef, len(allAnbima), len(allInfo))
     return len(allAnbima), len(allInfo)
@@ -288,7 +288,6 @@ def MontarIntervaloDatas(args: argparse.Namespace) -> list[date]:
 def Principal() -> None:
     log     = ObterLogger("scrape_anbima_debentures")
     args    = LerArgumentos()
-    conn    = ObterBanco()
     rel     = RelatorioExecucao("scrape_anbima_debentures", args=vars(args))
     erro    = None
     success = True
@@ -301,7 +300,7 @@ def Principal() -> None:
                  len(datas), datas[0], datas[-1])
 
         for d in datas:
-            nAnbima, nInfo = ProcessarData(conn, d, log)
+            nAnbima, nInfo = ProcessarData(d, log)
             results.append((d.isoformat(), nAnbima, nInfo))
 
         rel.PorData("Resultado por data", ['data', 'Anbima', 'InfoAtivos'], results)
@@ -314,7 +313,6 @@ def Principal() -> None:
         log.exception("anbima_deb: erro inesperado")
 
     finally:
-        conn.close()
         EnviarEmailConclusao("scrape_anbima_debentures", success, rel, tracebackErro=erro, logger=log)
 
     if not success:
