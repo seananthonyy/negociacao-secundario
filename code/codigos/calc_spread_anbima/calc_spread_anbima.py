@@ -38,7 +38,9 @@ from typing import Optional
 # Garante que code/ esteja no sys.path ao rodar como script
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "Helpers"))
 
-from db import ObterBanco
+import pandas as pd
+
+import dados as D
 from logger import ObterLogger
 from email_outlook import EnviarEmailConclusao
 from relatorio_execucao import RelatorioExecucao
@@ -59,19 +61,19 @@ LEFT JOIN InfoAtivos ia ON ia.cdTicker = ai.cdTicker
 WHERE ai.dtReferencia = ?
 """
 
-SQL_BUSCAR_TAXA = """
-SELECT vrTaxa
+# Antes era uma consulta por ticker (`WHERE cdTicker = ? AND dtReferencia = ?`), o que
+# no SQLite custava um acerto de indice. No DuckDB cada consulta reabre os parquets, e
+# sao ~1.300 tickers por dia: le-se o dia inteiro de uma vez e resolve-se em memoria.
+SQL_BUSCAR_MTM = """
+SELECT cdTicker, vrTaxa
 FROM MtmAnbima
-WHERE cdTicker = ?
-  AND dtReferencia = ?
+WHERE dtReferencia = ?
 """
 
-SQL_ATUALIZAR_SPREAD = """
-UPDATE AnbimaIndicativos
-SET vrSpreadAnbima = ?
-WHERE cdTicker = ?
-  AND dtReferencia = ?
-"""
+# O que era `UPDATE AnbimaIndicativos SET vrSpreadAnbima = ? WHERE cdTicker = ? AND
+# dtReferencia = ?`. SOBRESCREVER porque o UPDATE tambem gravava NULL: "nao deu para
+# calcular" e um resultado, e tem de apagar o spread velho.
+POLITICA_SPREAD = {"vrSpreadAnbima": D.SOBRESCREVER}
 
 
 # ---------------------------------------------------------------------------
@@ -99,7 +101,7 @@ def CalcularSpread(
     dtReferencia: str,
     vrTaxaAnbima: Optional[float],
     cdReferencia: Optional[str],
-    conn,
+    taxasRef: dict,
     log,
     stats: "EstatisticasData",
 ) -> Optional[float]:
@@ -136,18 +138,16 @@ def CalcularSpread(
         stats.funding += 1
         return vrTaxaAnbima
 
-    # 4. Busca taxa de referencia em MtmAnbima
-    row = conn.execute(SQL_BUSCAR_TAXA, (cdReferencia, dtReferencia)).fetchone()
+    # 4. Busca taxa de referencia no MtmAnbima do dia (ja em memoria)
+    vrTaxa = taxasRef.get(cdReferencia)
 
-    if row is None:
+    if vrTaxa is None:
         log.debug(
             "spread: %s/%s — cdReferencia=%s nao encontrado em MtmAnbima, spread=NULL",
             cdTicker, dtReferencia, cdReferencia,
         )
         stats.nullSemMtm += 1
         return None
-
-    vrTaxa = row["vrTaxa"]
 
     # Spread over: ((1 + taxa_ativo/100) / (1 + taxa_ref/100) - 1) * 100
     vrSpread = ((1.0 + vrTaxaAnbima / 100.0) / (1.0 + vrTaxa / 100.0) - 1.0) * 100.0
@@ -164,14 +164,14 @@ def CalcularSpread(
 # Processamento por data
 # ---------------------------------------------------------------------------
 
-def ProcessarData(conn, dtReferencia: str, log, force: bool) -> EstatisticasData:
+def ProcessarData(dtReferencia: str, log, force: bool) -> EstatisticasData:
     """
     Processa todos os tickers de uma dtReferencia em AnbimaIndicativos
     e atualiza vrSpreadAnbima.
     """
     stats = EstatisticasData(dtReferencia=dtReferencia)
 
-    rows = conn.execute(SQL_BUSCAR_TICKERS, (dtReferencia,)).fetchall()
+    rows = D.Linhas(SQL_BUSCAR_TICKERS, (dtReferencia,))
     stats.total = len(rows)
 
     if stats.total == 0:
@@ -186,7 +186,10 @@ def ProcessarData(conn, dtReferencia: str, log, force: bool) -> EstatisticasData
         dtReferencia, stats.total,
     )
 
-    updates: list[tuple[Optional[float], str, str]] = []
+    taxasRef = {r["cdTicker"]: r["vrTaxa"]
+                for r in D.Linhas(SQL_BUSCAR_MTM, (dtReferencia,))}
+
+    updates: list[dict] = []
 
     for row in rows:
         cdTicker        = row["cdTicker"]
@@ -205,17 +208,17 @@ def ProcessarData(conn, dtReferencia: str, log, force: bool) -> EstatisticasData
             dtReferencia=dtReferencia,
             vrTaxaAnbima=vrTaxaAnbima,
             cdReferencia=cdReferencia,
-            conn=conn,
+            taxasRef=taxasRef,
             log=log,
             stats=stats,
         )
 
-        updates.append((vrSpread, cdTicker, dtReferencia))
+        updates.append({"cdTicker": cdTicker, "dtReferencia": dtReferencia,
+                        "vrSpreadAnbima": vrSpread})
 
-    # Executa UPDATEs em batch
     if updates:
-        conn.executemany(SQL_ATUALIZAR_SPREAD, updates)
-        conn.commit()
+        D.Mesclar("AnbimaIndicativos", pd.DataFrame(updates),
+                  politica=POLITICA_SPREAD, data=dtReferencia)
 
     log.info(
         "spread: dtReferencia=%s — calculado=%d (funding=%d) "
@@ -358,7 +361,6 @@ def MontarResumo(statsList: list[EstatisticasData]) -> str:
 def Principal() -> None:
     log     = ObterLogger("calc_spread_anbima")
     args    = LerArgumentos()
-    conn    = ObterBanco()
     rel     = RelatorioExecucao("calc_spread_anbima")
     erro    = None
     summary = ""
@@ -373,7 +375,7 @@ def Principal() -> None:
 
         statsList: list[EstatisticasData] = []
         for dtReferencia in datas:
-            s = ProcessarData(conn, dtReferencia, log, args.force)
+            s = ProcessarData(dtReferencia, log, args.force)
             statsList.append(s)
 
         summary = MontarResumo(statsList)
@@ -386,7 +388,6 @@ def Principal() -> None:
         log.exception("spread: erro inesperado")
 
     finally:
-        conn.close()
         if summary:
             rel.Secao("Resumo", ["saida"], [[l] for l in summary.splitlines() if l.strip()])
         EnviarEmailConclusao("calc_spread_anbima", success, rel, tracebackErro=erro, logger=log)

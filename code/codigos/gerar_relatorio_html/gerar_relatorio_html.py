@@ -71,7 +71,7 @@ def TipoExibicao(cdInstrumento: str | None, cdIndexador: str | None) -> str | No
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "Helpers"))
 
 from config import cfg
-from db import ObterBanco
+import dados as D
 from logger import ObterLogger
 
 
@@ -232,9 +232,9 @@ def MediaPonderada(valores: list[tuple[float | None, float]]) -> float | None:
     return numerador / denominador
 
 
-def BuscarNegocios(conn, dtLiquidacao: str, dtAnbima: str) -> list[LinhaNegocio]:
+def BuscarNegocios(dtLiquidacao: str, dtAnbima: str) -> list[LinhaNegocio]:
     """Executa o SELECT principal e retorna lista de LinhaNegocio."""
-    rows = conn.execute(SQL_BUSCAR, (dtAnbima, dtLiquidacao)).fetchall()
+    rows = D.Linhas(SQL_BUSCAR, (dtAnbima, dtLiquidacao))
     result: list[LinhaNegocio] = []
     for r in rows:
         result.append(LinhaNegocio(
@@ -255,12 +255,12 @@ def BuscarNegocios(conn, dtLiquidacao: str, dtAnbima: str) -> list[LinhaNegocio]
     return result
 
 
-def BuscarGruposBroker(conn, dtLiquidacao: str, dtAnbima: str) -> list[LinhaNegocio]:
+def BuscarGruposBroker(dtLiquidacao: str, dtAnbima: str) -> list[LinhaNegocio]:
     """
     Busca grupos BROKER, agrega por idGrupoNegocio e retorna LinhaNegocio virtuais
     (uma por grupo): taxa=(MAX+MIN)/2, volume=SUM/2, spread calculado em Python.
     """
-    rows = conn.execute(SQL_BUSCAR_BROKER, (dtAnbima, dtLiquidacao)).fetchall()
+    rows = D.Linhas(SQL_BUSCAR_BROKER, (dtAnbima, dtLiquidacao))
     if not rows:
         return []
 
@@ -287,7 +287,7 @@ def BuscarGruposBroker(conn, dtLiquidacao: str, dtAnbima: str) -> list[LinhaNego
         if cdReferencia == "FUNDING":
             vrSpreadOver = taxaMedia
         elif cdReferencia is not None:
-            mtm = conn.execute(SQL_MTM_TAXA, (cdReferencia, dtNegocio)).fetchone()
+            mtm = D.Linha(SQL_MTM_TAXA, (cdReferencia, dtNegocio))
             if mtm:
                 vrSpreadOver = ((1 + taxaMedia / 100) / (1 + mtm["vrTaxa"] / 100) - 1) * 100
 
@@ -560,7 +560,6 @@ def Principal() -> None:
     dtLiquidacao: str = args.date
     modo: str = args.mode
 
-    conn = ObterBanco()
     summary = ""
     success = True
     caminhoHtml: Path | None = None
@@ -576,8 +575,8 @@ def Principal() -> None:
         dtAnbima = CalcularDMenos1(dtLiquidacao)
         log.info("gerar_relatorio_html: dtAnbima (D-1) = %s", dtAnbima)
 
-        linhas = BuscarNegocios(conn, dtLiquidacao, dtAnbima)
-        linhasBroker = BuscarGruposBroker(conn, dtLiquidacao, dtAnbima)
+        linhas = BuscarNegocios(dtLiquidacao, dtAnbima)
+        linhasBroker = BuscarGruposBroker(dtLiquidacao, dtAnbima)
         linhas.extend(linhasBroker)
         log.info(
             "gerar_relatorio_html: %d linha(s) VALIDO + %d grupo(s) BROKER",
@@ -636,7 +635,6 @@ def Principal() -> None:
         log.exception("gerar_relatorio_html: erro inesperado")
 
     finally:
-        conn.close()
         EnviarEmailComAnexo(
             "gerar_relatorio_html",
             success,
