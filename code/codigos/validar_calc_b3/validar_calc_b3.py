@@ -55,9 +55,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "Helpers"))
 from calc import CarregarAtivo, CalcularPu, CalcularTaxa, ImportarCalc
 from b3_calc_api import CalcularPuGov, CalcularYield, ObterDetalhesAtivo
 from fianalytics_api import ChamarPrimaria
-from cadastro_b3 import GravarAtivo
+from cadastro_b3 import GravarLote, PrepararAtivo
 from config import cfg
-from db import ObterBanco
+import pandas as pd
+
+import dados as D
 from email_outlook import EnviarEmailConclusao
 from logger import ObterLogger
 from relatorio_execucao import RelatorioExecucao
@@ -65,20 +67,28 @@ from relatorio_execucao import RelatorioExecucao
 NOME_SCRIPT = "validar_calc_b3"
 
 
-def RefrescarCadastroB3(conn, cdTicker: str) -> dict | None:
+def RefrescarCadastroB3(cdTicker: str) -> dict | None:
     """Re-busca o getBondDetails e regrava o pacote (VNE + início + FLUXO) pela B3.
     Cura a deriva do fluxo (o scrape de rotina só re-scrapeia info faltando, então
-    fluxo já existente envelhece). Devolve o ativo recarregado, ou None."""
+    fluxo já existente envelhece). Devolve o ativo recarregado, ou None.
+
+    É o único ponto do projeto que grava um ativo por vez, e de propósito: o resultado
+    da gravação é reavaliado na hora, então não há lote a formar. Custa uma reescrita de
+    InfoAtivos e FluxoAtivos por ativo — aceitável porque só os REPROVADOS chegam aqui,
+    e `--sem-refresh` desliga o passo."""
     det = ObterDetalhesAtivo(cdTicker)
     if not det:
         return None
     try:
-        GravarAtivo(conn, cdTicker, det, date.today().isoformat())
-        conn.commit()
+        antes = D.Linha("SELECT cdTicker, stTemFluxo, cdFonteCadastro "
+                        "FROM InfoAtivos WHERE cdTicker = ?", (cdTicker,))
+        escalares, pacote, linhasFluxo, _ = PrepararAtivo(
+            cdTicker, det, date.today().isoformat(), antes)
+        GravarLote([escalares], [pacote] if pacote else [],
+                   {cdTicker: linhasFluxo} if pacote else {})
     except Exception:
-        conn.rollback()
         return None
-    return CarregarAtivo(conn, cdTicker)
+    return CarregarAtivo(cdTicker)
 
 # Régua de PU: erro RELATIVO |puNosso/puB3 - 1|, então independe da escala do PU (papel
 # de emissão 1, 1.000 ou 10.000 usa a mesma régua). 1e-5 = 0,001% = R$0,01 num PU de
@@ -146,7 +156,7 @@ def SemearCurvaCarryForward(dHoje: str, dMais1: str) -> bool:
     return True
 
 
-def DatasPadrao(conn) -> list[str]:
+def DatasPadrao() -> list[str]:
     """As 3 datas do gate: [8 pregões atrás, mais recente com curva ("hoje"), D+1].
     Só datas com curva DI na base — sem curva, todo papel DI levanta exceção na calc e
     seria reprovado por engano. O D+1 é o DU seguinte à data mais recente, precificado
@@ -309,218 +319,216 @@ def Principal() -> None:
     success = True
 
     try:
-        conn = ObterBanco()
-        try:
-            datas = args.datas.split(",") if args.datas else DatasPadrao(conn)
-            rel.Datas(datas)
-            # Gate BIDIRECIONAL: candidatos NÃO se restringem a stFluxoValidado=1 — quem
-            # passa é promovido, quem falha é rebaixado. Mas quem já está validado há menos
-            # de `--revalidar-dias` é PULADO (confia até vencer). Fluxo que muda de verdade
-            # zera stFluxoValidado pelo trigger → cai em não-validado e é re-testado na hora.
-            # `--tickers` ignora essa janela (o usuário pediu aqueles explicitamente).
-            corteReval = None
-            if args.revalidarDias and args.revalidarDias > 0 and not args.tickers:
-                corteReval = (date.today() - timedelta(days=args.revalidarDias)).isoformat()
-            # cláusula que mantém: não-validado (promover) OU validado-vencido (revalidar)
-            recente = ("(i.stFluxoValidado IS NULL OR i.stFluxoValidado = 0 "
-                       "OR i.dtValidacaoFluxo IS NULL OR i.dtValidacaoFluxo < ?)")
-            if args.tickers:
-                alvos = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
-                marcas = ",".join("?" * len(alvos))
-                tickers = [r["cdTicker"] for r in conn.execute(
-                    f"SELECT cdTicker FROM InfoAtivos WHERE cdTicker IN ({marcas})", tuple(alvos))]
-            elif args.negociadosDias:
-                # os que NEGOCIARAM na janela (validados ou não) — é o que aparece no
-                # relatório, e mantém o gate barato na rotina (a base toda leva ~13 min).
-                corte = (date.today() - timedelta(days=args.negociadosDias)).isoformat()
-                sql = ("SELECT DISTINCT i.cdTicker FROM InfoAtivos i "
-                       "JOIN NegociosBrutos nb ON nb.cdTicker = i.cdTicker "
-                       "WHERE nb.dtLiquidacao >= ? AND nb.cdSituacao != 'Cancelado'")
-                params = [corte]
-                if corteReval:
-                    sql += " AND " + recente
-                    params.append(corteReval)
-                sql += " ORDER BY i.cdTicker"
-                tickers = [r["cdTicker"] for r in conn.execute(sql, tuple(params))]
+        datas = args.datas.split(",") if args.datas else DatasPadrao()
+        rel.Datas(datas)
+        # Gate BIDIRECIONAL: candidatos NÃO se restringem a stFluxoValidado=1 — quem
+        # passa é promovido, quem falha é rebaixado. Mas quem já está validado há menos
+        # de `--revalidar-dias` é PULADO (confia até vencer). Fluxo que muda de verdade
+        # zera stFluxoValidado pelo trigger → cai em não-validado e é re-testado na hora.
+        # `--tickers` ignora essa janela (o usuário pediu aqueles explicitamente).
+        corteReval = None
+        if args.revalidarDias and args.revalidarDias > 0 and not args.tickers:
+            corteReval = (date.today() - timedelta(days=args.revalidarDias)).isoformat()
+        # cláusula que mantém: não-validado (promover) OU validado-vencido (revalidar)
+        recente = ("(i.stFluxoValidado IS NULL OR i.stFluxoValidado = 0 "
+                   "OR i.dtValidacaoFluxo IS NULL OR i.dtValidacaoFluxo < ?)")
+        if args.tickers:
+            alvos = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
+            marcas = ",".join("?" * len(alvos))
+            tickers = [r["cdTicker"] for r in D.Linhas(
+                f"SELECT cdTicker FROM InfoAtivos WHERE cdTicker IN ({marcas})", tuple(alvos))]
+        elif args.negociadosDias:
+            # os que NEGOCIARAM na janela (validados ou não) — é o que aparece no
+            # relatório, e mantém o gate barato na rotina (a base toda leva ~13 min).
+            corte = (date.today() - timedelta(days=args.negociadosDias)).isoformat()
+            sql = ("SELECT DISTINCT i.cdTicker FROM InfoAtivos i "
+                   "JOIN NegociosBrutos nb ON nb.cdTicker = i.cdTicker "
+                   "WHERE nb.dtLiquidacao >= ? AND nb.cdSituacao != 'Cancelado'")
+            params = [corte]
+            if corteReval:
+                sql += " AND " + recente
+                params.append(corteReval)
+            sql += " ORDER BY i.cdTicker"
+            tickers = [r["cdTicker"] for r in D.Linhas(sql, tuple(params))]
+        else:
+            sql = "SELECT i.cdTicker FROM InfoAtivos i"
+            params = []
+            if corteReval:
+                sql += " WHERE " + recente
+                params.append(corteReval)
+            sql += " ORDER BY i.cdTicker"
+            tickers = [r["cdTicker"] for r in D.Linhas(sql, tuple(params))]
+        if args.limite:
+            tickers = tickers[:args.limite]
+
+        # cdInstrumento (DEB/CRI/CRA) por ticker — a FI precisa para escolher o
+        # endpoint; e o estado ATUAL de validação, para reportar promoções × rebaixos.
+        instrMap = {r["cdTicker"]: r["cdInstrumento"] for r in D.Linhas(
+            "SELECT cdTicker, cdInstrumento FROM InfoAtivos")}
+        estavaValidado = {r["cdTicker"] for r in D.Linhas(
+            "SELECT cdTicker FROM InfoAtivos WHERE stFluxoValidado = 1")}
+
+        # pré-carrega na thread principal; workers só chamam B3/calc/FI
+        ativos = {}
+        for tk in tickers:
+            a = CarregarAtivo(tk)
+            if a:
+                a["cdInstrumento"] = instrMap.get(tk)
+                ativos[tk] = a
+        log.info("%s: %d candidato(s), %d carregável(is), datas=%s",
+                 NOME_SCRIPT, len(tickers), len(ativos), datas)
+
+        comFi = not args.semFi
+        resultados = []
+        with cf.ThreadPoolExecutor(max_workers=WORKERS) as ex:
+            fut = {ex.submit(AvaliarAtivo, a, datas, args.comTaxa, comFi): tk
+                   for tk, a in ativos.items()}
+            for i, f in enumerate(cf.as_completed(fut), 1):
+                resultados.append(f.result())
+                if i % 200 == 0:
+                    log.info("%s: [%d/%d]", NOME_SCRIPT, i, len(ativos))
+
+        # confiável = algum oráculo (B3 ou FI) reproduziu a calc → r["fonte"] setado.
+        # não-confirmável = nenhum oráculo respondeu (B3 e FI vazias) → INVÁLIDO também
+        # (decisão do usuário: "se nenhuma retorna, impossível validar → inválido"). Cai
+        # na cascata de API no calc_taxa. Distinto de REPROVADO só para o relatório/CSV.
+        def NaoConfirmavel(r):
+            return r["nConfB3"] == 0 and r["nConfFi"] == 0
+
+        reprovados, confirmados, naoConfLista = [], [], []
+        for r in resultados:
+            if NaoConfirmavel(r):
+                naoConfLista.append(r)
+            elif r["fonte"]:
+                confirmados.append(r)
             else:
-                sql = "SELECT i.cdTicker FROM InfoAtivos i"
-                params = []
-                if corteReval:
-                    sql += " WHERE " + recente
-                    params.append(corteReval)
-                sql += " ORDER BY i.cdTicker"
-                tickers = [r["cdTicker"] for r in conn.execute(sql, tuple(params))]
-            if args.limite:
-                tickers = tickers[:args.limite]
+                reprovados.append(r)
+        naoConf = len(naoConfLista)
 
-            # cdInstrumento (DEB/CRI/CRA) por ticker — a FI precisa para escolher o
-            # endpoint; e o estado ATUAL de validação, para reportar promoções × rebaixos.
-            instrMap = {r["cdTicker"]: r["cdInstrumento"] for r in conn.execute(
-                "SELECT cdTicker, cdInstrumento FROM InfoAtivos")}
-            estavaValidado = {r["cdTicker"] for r in conn.execute(
-                "SELECT cdTicker FROM InfoAtivos WHERE stFluxoValidado = 1")}
-
-            # pré-carrega na thread principal (SQLite não cruza threads); workers só chamam B3/calc/FI
-            ativos = {}
-            for tk in tickers:
-                a = CarregarAtivo(conn, tk)
-                if a:
-                    a["cdInstrumento"] = instrMap.get(tk)
-                    ativos[tk] = a
-            log.info("%s: %d candidato(s), %d carregável(is), datas=%s",
-                     NOME_SCRIPT, len(tickers), len(ativos), datas)
-
-            comFi = not args.semFi
-            resultados = []
-            with cf.ThreadPoolExecutor(max_workers=WORKERS) as ex:
-                fut = {ex.submit(AvaliarAtivo, a, datas, args.comTaxa, comFi): tk
-                       for tk, a in ativos.items()}
-                for i, f in enumerate(cf.as_completed(fut), 1):
-                    resultados.append(f.result())
-                    if i % 200 == 0:
-                        log.info("%s: [%d/%d]", NOME_SCRIPT, i, len(ativos))
-
-            # confiável = algum oráculo (B3 ou FI) reproduziu a calc → r["fonte"] setado.
-            # não-confirmável = nenhum oráculo respondeu (B3 e FI vazias) → INVÁLIDO também
-            # (decisão do usuário: "se nenhuma retorna, impossível validar → inválido"). Cai
-            # na cascata de API no calc_taxa. Distinto de REPROVADO só para o relatório/CSV.
-            def NaoConfirmavel(r):
-                return r["nConfB3"] == 0 and r["nConfFi"] == 0
-
-            reprovados, confirmados, naoConfLista = [], [], []
-            for r in resultados:
-                if NaoConfirmavel(r):
-                    naoConfLista.append(r)
-                elif r["fonte"]:
-                    confirmados.append(r)
+        # PASS 2 — refresh-on-fail: cura a deriva do fluxo antes de rebaixar. O scrape
+        # de rotina só re-scrapeia info FALTANDO, então fluxo já existente envelhece;
+        # aqui, quem falha ganha um cadastro fresco da B3 e é re-testado (contra os dois
+        # oráculos). Só rebaixa quem AINDA falha (falha genuína de metodologia).
+        recuperados = 0
+        if reprovados and not args.dryRun and not args.semRefresh:
+            aindaFalha = []
+            log.info("%s: refresh-on-fail em %d reprovado(s)...", NOME_SCRIPT, len(reprovados))
+            for r in reprovados:
+                a2 = RefrescarCadastroB3(r["tk"])
+                if a2:
+                    a2["cdInstrumento"] = instrMap.get(r["tk"])
+                    r2 = AvaliarAtivo(a2, datas, args.comTaxa, comFi)
                 else:
-                    reprovados.append(r)
-            naoConf = len(naoConfLista)
+                    r2 = None
+                if r2 and r2["fonte"]:
+                    recuperados += 1
+                    confirmados.append(r2)
+                else:
+                    aindaFalha.append(r)
+            reprovados = aindaFalha
+            log.info("%s: refresh recuperou %d; restam %d reprovado(s)",
+                     NOME_SCRIPT, recuperados, len(reprovados))
 
-            # PASS 2 — refresh-on-fail: cura a deriva do fluxo antes de rebaixar. O scrape
-            # de rotina só re-scrapeia info FALTANDO, então fluxo já existente envelhece;
-            # aqui, quem falha ganha um cadastro fresco da B3 e é re-testado (contra os dois
-            # oráculos). Só rebaixa quem AINDA falha (falha genuína de metodologia).
-            recuperados = 0
-            if reprovados and not args.dryRun and not args.semRefresh:
-                aindaFalha = []
-                log.info("%s: refresh-on-fail em %d reprovado(s)...", NOME_SCRIPT, len(reprovados))
-                for r in reprovados:
-                    a2 = RefrescarCadastroB3(conn, r["tk"])
-                    if a2:
-                        a2["cdInstrumento"] = instrMap.get(r["tk"])
-                        r2 = AvaliarAtivo(a2, datas, args.comTaxa, comFi)
-                    else:
-                        r2 = None
-                    if r2 and r2["fonte"]:
-                        recuperados += 1
-                        confirmados.append(r2)
-                    else:
-                        aindaFalha.append(r)
-                reprovados = aindaFalha
-                log.info("%s: refresh recuperou %d; restam %d reprovado(s)",
-                         NOME_SCRIPT, recuperados, len(reprovados))
+        reprovados.sort(key=lambda r: -r["piorPU"])
+        confPorTk = {r["tk"]: r for r in confirmados}
+        CSV_SAIDA.parent.mkdir(parents=True, exist_ok=True)
+        with open(CSV_SAIDA, "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(["cdTicker", "idx", "fonteConfirma", "piorPU", "piorFiBps",
+                        "nConfB3", "nConfFi", "veredito"])
+            for r in resultados:
+                rr = confPorTk.get(r["tk"], r)   # se recuperado no refresh, usa o r2
+                if NaoConfirmavel(rr):
+                    v = "nao_confirmavel"
+                elif rr["fonte"]:
+                    v = "confiavel"
+                else:
+                    v = "REPROVADO"
+                w.writerow([rr["tk"], rr["idx"], rr["fonte"] or "-", f"{rr['piorPU']:.2e}",
+                            f"{rr['piorFi']:.2f}", rr["nConfB3"], rr["nConfFi"], v])
 
-            reprovados.sort(key=lambda r: -r["piorPU"])
-            confPorTk = {r["tk"]: r for r in confirmados}
-            CSV_SAIDA.parent.mkdir(parents=True, exist_ok=True)
-            with open(CSV_SAIDA, "w", newline="", encoding="utf-8") as fh:
-                w = csv.writer(fh)
-                w.writerow(["cdTicker", "idx", "fonteConfirma", "piorPU", "piorFiBps",
-                            "nConfB3", "nConfFi", "veredito"])
-                for r in resultados:
-                    rr = confPorTk.get(r["tk"], r)   # se recuperado no refresh, usa o r2
-                    if NaoConfirmavel(rr):
-                        v = "nao_confirmavel"
-                    elif rr["fonte"]:
-                        v = "confiavel"
-                    else:
-                        v = "REPROVADO"
-                    w.writerow([rr["tk"], rr["idx"], rr["fonte"] or "-", f"{rr['piorPU']:.2e}",
-                                f"{rr['piorFi']:.2f}", rr["nConfB3"], rr["nConfFi"], v])
+        # UPDATE bidirecional: promove os confiáveis (validado=1 + fonte + dtValidacaoFluxo
+        # de hoje), rebaixa os inválidos = reprovados + não-confirmáveis (validado=0).
+        invalidos = reprovados + naoConfLista
+        if not args.dryRun:
+            hoje = date.today().isoformat()
+            # Promoção e rebaixo entram no MESMO lote: são o mesmo UPDATE de três
+            # colunas, com valores opostos, e um ticker nunca está nas duas listas.
+            # Tudo SOBRESCREVER — inclusive o rebaixo, cujo dtValidacaoFluxo vai a
+            # NULL de propósito (o resultado anterior virou lixo).
+            marcas = (
+                [{"cdTicker": r["tk"], "stFluxoValidado": 1, "dtValidacaoFluxo": hoje,
+                  "cdFonteValidacaoFluxo": r["fonte"]} for r in confirmados]
+                + [{"cdTicker": r["tk"], "stFluxoValidado": 0, "dtValidacaoFluxo": None,
+                    "cdFonteValidacaoFluxo": None} for r in invalidos])
+            if marcas:
+                D.Mesclar("InfoAtivos", pd.DataFrame(marcas), politica={
+                    c: D.SOBRESCREVER for c in
+                    ("stFluxoValidado", "dtValidacaoFluxo", "cdFonteValidacaoFluxo")})
 
-            # UPDATE bidirecional: promove os confiáveis (validado=1 + fonte + dtValidacaoFluxo
-            # de hoje), rebaixa os inválidos = reprovados + não-confirmáveis (validado=0).
-            invalidos = reprovados + naoConfLista
-            if not args.dryRun:
-                hoje = date.today().isoformat()
-                if confirmados:
-                    conn.executemany(
-                        "UPDATE InfoAtivos SET stFluxoValidado = 1, dtValidacaoFluxo = ?, "
-                        "cdFonteValidacaoFluxo = ? WHERE cdTicker = ?",
-                        [(hoje, r["fonte"], r["tk"]) for r in confirmados])
-                if invalidos:
-                    conn.executemany(
-                        "UPDATE InfoAtivos SET stFluxoValidado = 0, dtValidacaoFluxo = NULL, "
-                        "cdFonteValidacaoFluxo = NULL WHERE cdTicker = ?",
-                        [(r["tk"],) for r in invalidos])
-                conn.commit()
+        from collections import Counter
+        porFonte = Counter(r["fonte"] for r in confirmados)
+        promovidos = [r for r in confirmados if r["tk"] not in estavaValidado]
+        rebaixados = [r for r in invalidos if r["tk"] in estavaValidado]
+        porIdx = Counter(r["idx"] for r in reprovados)
 
-            from collections import Counter
-            porFonte = Counter(r["fonte"] for r in confirmados)
-            promovidos = [r for r in confirmados if r["tk"] not in estavaValidado]
-            rebaixados = [r for r in invalidos if r["tk"] in estavaValidado]
-            porIdx = Counter(r["idx"] for r in reprovados)
+        # ── ACURACIA PU calc vs B3, por indexador (so onde a B3 respondeu) ──
+        # Metrica-chave do gate: distribuicao do pior erro RELATIVO de PU por
+        # faixa. Expoe o "fora do par" (bate no par, erra o desconto) — que se
+        # concentra em IPCA e %CDI — em vez de so um placar de aprovados.
+        from collections import defaultdict
+        comB3 = [r for r in resultados if r["nConfB3"] > 0]
 
-            # ── ACURACIA PU calc vs B3, por indexador (so onde a B3 respondeu) ──
-            # Metrica-chave do gate: distribuicao do pior erro RELATIVO de PU por
-            # faixa. Expoe o "fora do par" (bate no par, erra o desconto) — que se
-            # concentra em IPCA e %CDI — em vez de so um placar de aprovados.
-            from collections import defaultdict
-            comB3 = [r for r in resultados if r["nConfB3"] > 0]
+        def Faixa(e: float) -> str:
+            if e <= 1e-6: return "<=1e-6"
+            if e <= TOL_PU: return "<=1e-5"
+            if e <= 1e-4: return "<=1e-4"
+            if e <= 1e-3: return "<=1e-3"
+            return ">1e-3"
 
-            def Faixa(e: float) -> str:
-                if e <= 1e-6: return "<=1e-6"
-                if e <= TOL_PU: return "<=1e-5"
-                if e <= 1e-4: return "<=1e-4"
-                if e <= 1e-3: return "<=1e-3"
-                return ">1e-3"
+        FAIXAS = ["<=1e-6", "<=1e-5", "<=1e-4", "<=1e-3", ">1e-3"]
+        distr = defaultdict(Counter)
+        for r in comB3:
+            distr[r["idx"]][Faixa(r["piorPU"])] += 1
+        linhasAcc = []
+        for idx in sorted(distr):
+            c = distr[idx]
+            n = sum(c.values())
+            dentro = c["<=1e-6"] + c["<=1e-5"]
+            linhasAcc.append([idx, n, f"{100 * dentro / n:.1f}%"] + [c[f] for f in FAIXAS])
+        if linhasAcc:
+            rel.Secao("Acuracia PU calc vs B3 (por indexador; so onde a B3 respondeu)",
+                      ["indexador", "n", "%<=1e-5"] + FAIXAS, linhasAcc)
+            totN = len(comB3)
+            totDentro = sum(1 for r in comB3 if r["piorPU"] <= TOL_PU)
+            rel.Metrica("Acuracia PU<=1e-5 (R$0,01/1000) global",
+                        f"{100 * totDentro / totN:.1f}% ({totDentro}/{totN})" if totN else "n/a")
 
-            FAIXAS = ["<=1e-6", "<=1e-5", "<=1e-4", "<=1e-3", ">1e-3"]
-            distr = defaultdict(Counter)
-            for r in comB3:
-                distr[r["idx"]][Faixa(r["piorPU"])] += 1
-            linhasAcc = []
-            for idx in sorted(distr):
-                c = distr[idx]
-                n = sum(c.values())
-                dentro = c["<=1e-6"] + c["<=1e-5"]
-                linhasAcc.append([idx, n, f"{100 * dentro / n:.1f}%"] + [c[f] for f in FAIXAS])
-            if linhasAcc:
-                rel.Secao("Acuracia PU calc vs B3 (por indexador; so onde a B3 respondeu)",
-                          ["indexador", "n", "%<=1e-5"] + FAIXAS, linhasAcc)
-                totN = len(comB3)
-                totDentro = sum(1 for r in comB3 if r["piorPU"] <= TOL_PU)
-                rel.Metrica("Acuracia PU<=1e-5 (R$0,01/1000) global",
-                            f"{100 * totDentro / totN:.1f}% ({totDentro}/{totN})" if totN else "n/a")
-
-            rel.Metrica("Candidatos testados", len(ativos))
-            rel.Metrica("Confiáveis (calc reproduz um oráculo)", len(confirmados))
-            rel.Metrica("- por oráculo (B3 / FI)", dict(porFonte))
-            rel.Metrica("- resgatados pela FI (B3 não bateu)", porFonte.get("FiAnalytics", 0))
-            rel.Metrica("Promovidos (eram não-validados)", len(promovidos))
-            rel.Metrica("Recuperados por refresh da B3", recuperados)
-            rel.Metrica("INVÁLIDOS (rebaixados p/ 0)" + ("" if not args.dryRun else " (dry-run)"),
-                        len(invalidos))
-            rel.Metrica("- por divergência (REPROVADOS)", len(reprovados))
-            rel.Metrica("- por não-confirmável (B3 e FI mudas)", naoConf)
-            rel.Metrica("- eram validados (rebaixados de fato)", len(rebaixados))
-            rel.Metrica("Reprovados por indexador", dict(porIdx))
-            rel.Secao("Piores reprovados",
-                      ["ticker", "idx", "piorPU", "piorFiBps", "nConfB3", "nConfFi"],
-                      [[r["tk"], r["idx"], f"{r['piorPU']:.1e}", f"{r['piorFi']:.1f}",
-                        r["nConfB3"], r["nConfFi"]] for r in reprovados[:30]])
-            total = conn.execute("SELECT COUNT(*) FROM InfoAtivos WHERE stFluxoValidado = 1").fetchone()[0]
-            rel.Metrica("Total validado na base (após a rodada)", total)
-            if invalidos and not args.dryRun:
-                rel.Aviso(f"{len(invalidos)} ativo(s) INVÁLIDOS ({len(reprovados)} por divergência, "
-                          f"{naoConf} sem oráculo): a calc não pôde ser confirmada. Caem na cascata "
-                          f"de API no calc_taxa. Ver {CSV_SAIDA}.")
-            log.info("%s: confiáveis=%d (B3=%d FI=%d) promovidos=%d reprovados=%d nao_conf=%d",
-                     NOME_SCRIPT, len(confirmados), porFonte.get("B3", 0),
-                     porFonte.get("FiAnalytics", 0), len(promovidos), len(reprovados), naoConf)
-        finally:
-            conn.close()
+        rel.Metrica("Candidatos testados", len(ativos))
+        rel.Metrica("Confiáveis (calc reproduz um oráculo)", len(confirmados))
+        rel.Metrica("- por oráculo (B3 / FI)", dict(porFonte))
+        rel.Metrica("- resgatados pela FI (B3 não bateu)", porFonte.get("FiAnalytics", 0))
+        rel.Metrica("Promovidos (eram não-validados)", len(promovidos))
+        rel.Metrica("Recuperados por refresh da B3", recuperados)
+        rel.Metrica("INVÁLIDOS (rebaixados p/ 0)" + ("" if not args.dryRun else " (dry-run)"),
+                    len(invalidos))
+        rel.Metrica("- por divergência (REPROVADOS)", len(reprovados))
+        rel.Metrica("- por não-confirmável (B3 e FI mudas)", naoConf)
+        rel.Metrica("- eram validados (rebaixados de fato)", len(rebaixados))
+        rel.Metrica("Reprovados por indexador", dict(porIdx))
+        rel.Secao("Piores reprovados",
+                  ["ticker", "idx", "piorPU", "piorFiBps", "nConfB3", "nConfFi"],
+                  [[r["tk"], r["idx"], f"{r['piorPU']:.1e}", f"{r['piorFi']:.1f}",
+                    r["nConfB3"], r["nConfFi"]] for r in reprovados[:30]])
+        total = D.Escalar("SELECT COUNT(*) FROM InfoAtivos WHERE stFluxoValidado = 1")
+        rel.Metrica("Total validado na base (após a rodada)", total)
+        if invalidos and not args.dryRun:
+            rel.Aviso(f"{len(invalidos)} ativo(s) INVÁLIDOS ({len(reprovados)} por divergência, "
+                      f"{naoConf} sem oráculo): a calc não pôde ser confirmada. Caem na cascata "
+                      f"de API no calc_taxa. Ver {CSV_SAIDA}.")
+        log.info("%s: confiáveis=%d (B3=%d FI=%d) promovidos=%d reprovados=%d nao_conf=%d",
+                 NOME_SCRIPT, len(confirmados), porFonte.get("B3", 0),
+                 porFonte.get("FiAnalytics", 0), len(promovidos), len(reprovados), naoConf)
     except Exception:
         success = False
         rel.Erro("A rodada abortou — ver traceback.")
