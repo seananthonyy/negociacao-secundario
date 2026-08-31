@@ -242,10 +242,18 @@ def TipoSql(tipo: pa.DataType) -> str:
     return "BIGINT"
 
 
-def Consultar(sql: str, params: tuple | list | None = None):
-    """Roda SQL sobre os parquets e devolve DataFrame. Aceita `?` como no sqlite3."""
+def Consultar(sql: str, params: tuple | list | dict | None = None):
+    """Roda SQL sobre os parquets e devolve DataFrame.
+
+    Aceita `?` posicional, como o sqlite3. Parametro NOMEADO tambem, por dict — mas a
+    sintaxe no SQL e `$nome`, e nao o `:nome` do sqlite3, que o DuckDB nao entende."""
     con = Conectar()
-    cur = con.execute(sql, list(params)) if params else con.execute(sql)
+    if params is None:
+        cur = con.execute(sql)
+    elif isinstance(params, dict):
+        cur = con.execute(sql, params)
+    else:
+        cur = con.execute(sql, list(params))
     return cur.df()
 
 
@@ -351,11 +359,24 @@ def GravarArquivo(tabela: pa.Table, destino: str) -> None:
     pq.write_table(tabela, caminho, compression=COMPRESSAO)
 
 
+# Contador de escrita por tabela. Quem mantem um indice em memoria (o CarregarAtivo do
+# calc.py le InfoAtivos e FluxoAtivos milhares de vezes por rodada) compara a geracao
+# que guardou com a atual e so reconstroi quando alguem gravou de fato. E o unico jeito
+# de um cache aqui ser seguro: no SQLite cada leitura enxergava a escrita anterior de
+# graca, e um cache mudo devolveria dado velho depois de qualquer gravacao.
+GERACAO: dict[str, int] = {t: 0 for t in TABELAS}
+
+
+def Geracao(tabela: str) -> int:
+    return GERACAO[tabela]
+
+
 def GravarTudo(tabela: str, df) -> int:
     """Reescreve a tabela INTEIRA. Para as tabelas de ESTADO (InfoAtivos, FluxoAtivos):
     elas sao o retrato corrente do cadastro e cabem num arquivo so."""
     dados = Conformar(tabela, df)
     GravarArquivo(dados, f"{CaminhoTabela(tabela)}/dados.parquet")
+    GERACAO[tabela] += 1
     Invalidar(tabela)
     return dados.num_rows
 
@@ -368,6 +389,7 @@ def GravarDia(tabela: str, df, data: str) -> int:
         raise ValueError(f"{tabela} nao e particionada — use GravarTudo")
     dados = Conformar(tabela, df)
     GravarArquivo(dados, f"{CaminhoTabela(tabela)}/{coluna}={data}/dados.parquet")
+    GERACAO[tabela] += 1
     Invalidar(tabela)
     return dados.num_rows
 

@@ -42,12 +42,14 @@ CLI (sem argumentos — roda sobre toda a base):
 import argparse
 import sys
 import traceback
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "Helpers"))
 
-from db import ObterBanco
+import pandas as pd
+
+import dados as D
 from logger import ObterLogger
 from email_outlook import EnviarEmailConclusao
 from relatorio_execucao import RelatorioExecucao
@@ -79,8 +81,8 @@ SQL_BUSCAR_ATIVOS = """
             OR cdFonteReferencia = 'MatchRef'
             OR dtAtualizacaoReferencia IS NULL
             OR dtAtualizacaoReferencia < CASE cdIndexador
-                                           WHEN 'IPCA' THEN :corteIpca
-                                           ELSE :cortePre END)
+                                           WHEN 'IPCA' THEN $corteIpca
+                                           ELSE $cortePre END)
 """
 
 SQL_BUSCAR_REFS = """
@@ -91,12 +93,18 @@ SQL_BUSCAR_REFS = """
       AND  vrDuration IS NOT NULL
 """
 
-SQL_ATUALIZAR_REF = """
-    UPDATE InfoAtivos
-    SET    cdReferencia = ?, cdFonteReferencia = 'MatchRef',
-           dtAtualizacaoReferencia = ?, dtAtualizacao = CURRENT_TIMESTAMP
-    WHERE  cdTicker = ?
-"""
+# O que eram os dois UPDATE de InfoAtivos deste script:
+#
+#   SET cdReferencia = ?, cdFonteReferencia = 'MatchRef',
+#       dtAtualizacaoReferencia = ?, dtAtualizacao = CURRENT_TIMESTAMP
+#   SET vrDuration = ?, dtAtualizacaoDuration = ?, dtAtualizacao = CURRENT_TIMESTAMP
+#
+# Um UPDATE sobrescreve, entao a politica e SOBRESCREVER em tudo o que ele nomeava. Cada
+# lote so leva as colunas do seu UPDATE, e Mesclar nao toca em coluna ausente — o passo
+# da duration nao mexe na referencia, e vice-versa.
+POLITICA_UPDATE = {c: D.SOBRESCREVER for c in (
+    "cdReferencia", "cdFonteReferencia", "dtAtualizacaoReferencia",
+    "vrDuration", "dtAtualizacaoDuration", "dtAtualizacao")}
 
 
 def LerArgumentos() -> argparse.Namespace:
@@ -115,6 +123,11 @@ def LerArgumentos() -> argparse.Namespace:
              "IPCA/PREFIXADO elegiveis, inclusive os que a Anbima acabou de reafirmar.",
     )
     return parser.parse_args()
+
+
+def Agora() -> str:
+    """O que o CURRENT_TIMESTAMP dos UPDATE gravava em dtAtualizacao."""
+    return datetime.now().isoformat(sep=" ", timespec="seconds")
 
 
 def PrefixoDe(cdIndexador: str) -> str:
@@ -140,40 +153,33 @@ SQL_DURATION_FALTANTE = """
             -- upsert dela renova a data e este ramo nunca dispara.
             OR ia.dtAtualizacaoReferencia IS NULL
             OR ia.dtAtualizacaoReferencia < CASE ia.cdIndexador
-                                              WHEN 'IPCA' THEN :corteIpca
-                                              ELSE :cortePre END
+                                              WHEN 'IPCA' THEN $corteIpca
+                                              ELSE $cortePre END
             -- (b) referencia ORFA: aponta para papel que sumiu da curva viva (venceu).
             -- Atalho do (a) — nao espera o prazo, porque o spread ja esta quebrado.
             OR (ia.cdReferencia IS NOT NULL
                 AND ia.cdReferencia NOT IN (
                     SELECT cdTicker FROM MtmAnbima
                     WHERE dtReferencia = CASE ia.cdIndexador
-                                           WHEN 'IPCA' THEN :dtCurvaIpca
-                                           ELSE :dtCurvaPre END)))
+                                           WHEN 'IPCA' THEN $dtCurvaIpca
+                                           ELSE $dtCurvaPre END)))
 """
 
 SQL_MAX_DATA_BENCHMARK = """
     SELECT MAX(dtReferencia) FROM MtmAnbima WHERE cdTicker LIKE ? AND vrDuration IS NOT NULL
 """
 
-SQL_GRAVAR_DURATION = """
-    UPDATE InfoAtivos
-    SET    vrDuration = ?, dtAtualizacaoDuration = ?, dtAtualizacao = CURRENT_TIMESTAMP
-    WHERE  cdTicker = ?
-"""
-
-
-def DatasBenchmark(conn) -> dict:
+def DatasBenchmark() -> dict:
     """Pregao mais recente com curva de benchmark na base, por indexador. E a data as-of
     da qual a duration e calculada E onde o match procura candidatos — por isso os dois
     passos tem de usar exatamente a mesma."""
     return {
-        "IPCA": conn.execute(SQL_MAX_DATA_BENCHMARK, ("NTN-B%",)).fetchone()[0],
-        "PREFIXADO": conn.execute(SQL_MAX_DATA_BENCHMARK, ("DI1%",)).fetchone()[0],
+        "IPCA": D.Escalar(SQL_MAX_DATA_BENCHMARK, ("NTN-B%",)),
+        "PREFIXADO": D.Escalar(SQL_MAX_DATA_BENCHMARK, ("DI1%",)),
     }
 
 
-def CalcularDurationAtivo(conn, a, dtRef: str, log):
+def CalcularDurationAtivo(a, dtRef: str, log):
     """Duration (anos) de um ativo pela cascata de confiança. Validado -> calc local.
     Nao-validado -> FI (maculayDuration) e, se a FI nao cobrir, B3 (CalcularPuGov).
     Desconta na vrTaxaEmissao (as-of dtRef). Devolve (vrDuration, fonte) ou (None, None)."""
@@ -181,7 +187,7 @@ def CalcularDurationAtivo(conn, a, dtRef: str, log):
     taxa = a["vrTaxaEmissao"]
 
     if a["stFluxoValidado"] == 1:
-        ativoCalc = CarregarAtivo(conn, cdTicker)   # precisa de fluxo/cadastro completo
+        ativoCalc = CarregarAtivo(cdTicker)   # precisa de fluxo/cadastro completo
         if ativoCalc:
             try:
                 return CalcularDuration(ativoCalc, date.fromisoformat(dtRef), taxa), "calc"
@@ -226,7 +232,7 @@ def CorteRevalidacao(dtBenchmark: str | None, revalidarDias: int, force: bool = 
     return (date.fromisoformat(dtBenchmark) - timedelta(days=revalidarDias)).isoformat()
 
 
-def PreencherDurationFaltante(conn, log, revalidarDias: int = DIAS_REVALIDAR_REFERENCIA,
+def PreencherDurationFaltante(log, revalidarDias: int = DIAS_REVALIDAR_REFERENCIA,
                               force: bool = False) -> dict:
     """Calcula a vrDuration dos IPCA/PREFIXADO que negociaram e estao sem ela OU cuja
     duration esta as-of uma curva com mais de `revalidarDias` dias (a duration envelhece
@@ -235,14 +241,14 @@ def PreencherDurationFaltante(conn, log, revalidarDias: int = DIAS_REVALIDAR_REF
     Retorna dict com contagem por fonte + novos/recalculados/semDados/semCurva."""
     # data da curva de benchmark mais recente por indexador — a duration e gravada
     # as-of essa data (dtAtualizacaoDuration), que e onde o match vai procurar candidatos.
-    dataBenchmark = DatasBenchmark(conn)
+    dataBenchmark = DatasBenchmark()
     corteIpca = CorteRevalidacao(dataBenchmark["IPCA"], revalidarDias, force)
     cortePre  = CorteRevalidacao(dataBenchmark["PREFIXADO"], revalidarDias, force)
 
-    ativos = conn.execute(SQL_DURATION_FALTANTE, {
+    ativos = D.Linhas(SQL_DURATION_FALTANTE, {
         "corteIpca": corteIpca, "cortePre": cortePre,
         "dtCurvaIpca": dataBenchmark["IPCA"] or "", "dtCurvaPre": dataBenchmark["PREFIXADO"] or "",
-    }).fetchall()
+    })
     contagem = {"calc": 0, "FI": 0, "B3": 0, "semDados": 0, "semCurva": 0,
                 "novos": 0, "recalculados": 0, "orfaos": 0}
     if not ativos:
@@ -250,7 +256,8 @@ def PreencherDurationFaltante(conn, log, revalidarDias: int = DIAS_REVALIDAR_REF
                  corteIpca, cortePre)
         return contagem
 
-    vivos = {ix: {r[0] for r in conn.execute(SQL_BUSCAR_REFS, (PrefixoDe(ix), dataBenchmark[ix] or ""))}
+    vivos = {ix: {r[0] for r in D.Tuplas(SQL_BUSCAR_REFS,
+                                         (PrefixoDe(ix), dataBenchmark[ix] or ""))}
              for ix in ("IPCA", "PREFIXADO")}
     contagem["novos"]  = sum(1 for a in ativos if a["vrDuration"] is None)
     contagem["orfaos"] = sum(1 for a in ativos if a["vrDuration"] is not None
@@ -262,18 +269,24 @@ def PreencherDurationFaltante(conn, log, revalidarDias: int = DIAS_REVALIDAR_REF
              len(ativos), contagem["novos"], contagem["recalculados"], contagem["orfaos"],
              dataBenchmark, corteIpca, cortePre)
 
+    # Os UPDATE viravam um lote so no `commit()` do fim; aqui eles viram um lote so no
+    # Mesclar do fim, pelo mesmo motivo — e porque reescrever InfoAtivos por ativo
+    # invalidaria o indice do CarregarAtivo a cada volta do laco.
+    updates: list[dict] = []
+
     for a in ativos:
         dtRef = dataBenchmark.get(a["cdIndexador"])
         if not dtRef:
             contagem["semCurva"] += 1
             continue
 
-        vrDuration, fonte = CalcularDurationAtivo(conn, a, dtRef, log)
+        vrDuration, fonte = CalcularDurationAtivo(a, dtRef, log)
         if not vrDuration or vrDuration <= 0:
             contagem["semDados"] += 1
             continue
 
-        conn.execute(SQL_GRAVAR_DURATION, (vrDuration, dtRef, a["cdTicker"]))
+        updates.append({"cdTicker": a["cdTicker"], "vrDuration": vrDuration,
+                        "dtAtualizacaoDuration": dtRef, "dtAtualizacao": Agora()})
         contagem[fonte] += 1
         if a["vrDuration"] is None:
             log.info("match_ref: duration %s (%s) = %.4f anos (%s, as-of %s) [nova]",
@@ -284,7 +297,8 @@ def PreencherDurationFaltante(conn, log, revalidarDias: int = DIAS_REVALIDAR_REF
                      a["cdTicker"], a["cdIndexador"], vrDuration, fonte, dtRef,
                      a["vrDuration"], a["dtAtualizacaoDuration"])
 
-    conn.commit()
+    if updates:
+        D.Mesclar("InfoAtivos", pd.DataFrame(updates), politica=POLITICA_UPDATE)
     log.info("match_ref: duration gravada — calc=%d FI=%d B3=%d semDados=%d semCurva=%d "
              "(fila: %d nova(s) + %d recalculada(s))",
              contagem["calc"], contagem["FI"], contagem["B3"], contagem["semDados"],
@@ -301,81 +315,88 @@ def Principal() -> None:
     success = True
 
     try:
-        conn = ObterBanco()
-        try:
-            # PRE-PASSO: calcula a duration de quem negociou e esta sem ela, para o
-            # match logo abaixo poder casa-los (senao ficariam sem ref -> sem spread).
-            durStats = PreencherDurationFaltante(conn, log, args.revalidarDias, args.force)
+        # PRE-PASSO: calcula a duration de quem negociou e esta sem ela, para o
+        # match logo abaixo poder casa-los (senao ficariam sem ref -> sem spread).
+        durStats = PreencherDurationFaltante(log, args.revalidarDias, args.force)
 
-            benchmark = DatasBenchmark(conn)
-            ativos = conn.execute(SQL_BUSCAR_ATIVOS, {
-                "corteIpca": CorteRevalidacao(benchmark["IPCA"], args.revalidarDias, args.force),
-                "cortePre":  CorteRevalidacao(benchmark["PREFIXADO"], args.revalidarDias, args.force),
-            }).fetchall()
-            nAssumidos = sum(1 for a in ativos
-                             if a["cdFonteReferencia"] not in (None, "MatchRef"))
-            log.info("match_ref: %d ativo(s) IPCA/PREFIXADO elegiveis ao match "
-                     "(%d assumidos de outra fonte; criterio: %s)",
-                     len(ativos), nAssumidos,
-                     "--force (ignora prazo)" if args.force
-                     else f"referencia parada ha >{args.revalidarDias}d")
+        benchmark = DatasBenchmark()
+        ativos = D.Linhas(SQL_BUSCAR_ATIVOS, {
+            "corteIpca": CorteRevalidacao(benchmark["IPCA"], args.revalidarDias, args.force),
+            "cortePre":  CorteRevalidacao(benchmark["PREFIXADO"], args.revalidarDias, args.force),
+        })
+        nAssumidos = sum(1 for a in ativos
+                         if a["cdFonteReferencia"] not in (None, "MatchRef"))
+        log.info("match_ref: %d ativo(s) IPCA/PREFIXADO elegiveis ao match "
+                 "(%d assumidos de outra fonte; criterio: %s)",
+                 len(ativos), nAssumidos,
+                 "--force (ignora prazo)" if args.force
+                 else f"referencia parada ha >{args.revalidarDias}d")
 
-            nMatch  = 0
-            nSemRef = 0
-            detalhes: list[str] = []
+        nMatch  = 0
+        nSemRef = 0
+        detalhes: list[str] = []
+        updates: list[dict] = []
+        # Milhares de ativos disputam um punhado de curvas: a consulta de candidatos
+        # so depende de (prefixo, data), e nao do ativo. Uma vez por curva basta.
+        curvas: dict[tuple, list] = {}
 
-            for ativo in ativos:
-                cdTicker    = ativo["cdTicker"]
-                cdIndexador = ativo["cdIndexador"]
-                vrDuration  = ativo["vrDuration"]
-                dtUpsertDur = ativo["dtAtualizacaoDuration"]
+        for ativo in ativos:
+            cdTicker    = ativo["cdTicker"]
+            cdIndexador = ativo["cdIndexador"]
+            vrDuration  = ativo["vrDuration"]
+            dtUpsertDur = ativo["dtAtualizacaoDuration"]
 
-                prefix     = PrefixoDe(cdIndexador)
-                candidatos = conn.execute(SQL_BUSCAR_REFS, (prefix, dtUpsertDur)).fetchall()
+            prefix = PrefixoDe(cdIndexador)
+            if (prefix, dtUpsertDur) not in curvas:
+                curvas[(prefix, dtUpsertDur)] = D.Linhas(
+                    SQL_BUSCAR_REFS, (prefix, dtUpsertDur))
+            candidatos = curvas[(prefix, dtUpsertDur)]
 
-                if not candidatos:
-                    log.warning(
-                        "match_ref: %s (%s) — nenhum candidato em MtmAnbima para data %s",
-                        cdTicker, cdIndexador, dtUpsertDur,
-                    )
-                    nSemRef += 1
-                    detalhes.append(
-                        f"  SEM_REF  {cdTicker:<20} ({cdIndexador}) dtUpsert={dtUpsertDur}"
-                    )
-                    continue
+            if not candidatos:
+                log.warning(
+                    "match_ref: %s (%s) — nenhum candidato em MtmAnbima para data %s",
+                    cdTicker, cdIndexador, dtUpsertDur,
+                )
+                nSemRef += 1
+                detalhes.append(
+                    f"  SEM_REF  {cdTicker:<20} ({cdIndexador}) dtUpsert={dtUpsertDur}"
+                )
+                continue
 
-                cdReferencia = MelhorMatch(vrDuration, candidatos)
-                # dtAtualizacaoReferencia = a data da curva contra a qual casamos (nao
-                # CURRENT_TIMESTAMP): e a mesma unidade que a Anbima grava (data de
-                # mercado), entao as duas fontes sao comparaveis no mesmo prazo.
-                conn.execute(SQL_ATUALIZAR_REF, (cdReferencia, dtUpsertDur, cdTicker))
-                nMatch += 1
+            cdReferencia = MelhorMatch(vrDuration, candidatos)
+            # dtAtualizacaoReferencia = a data da curva contra a qual casamos (nao
+            # o timestamp de agora): e a mesma unidade que a Anbima grava (data de
+            # mercado), entao as duas fontes sao comparaveis no mesmo prazo.
+            updates.append({
+                "cdTicker": cdTicker, "cdReferencia": cdReferencia,
+                "cdFonteReferencia": "MatchRef",
+                "dtAtualizacaoReferencia": dtUpsertDur, "dtAtualizacao": Agora(),
+            })
+            nMatch += 1
 
-                refAnterior = ativo["cdReferencia"]
-                fonteAnterior = ativo["cdFonteReferencia"]
-                if refAnterior and refAnterior != cdReferencia:
-                    log.info(
-                        "match_ref: %s (%s) dur=%.4f → %s [era %s, fonte %s]",
-                        cdTicker, cdIndexador, vrDuration, cdReferencia,
-                        refAnterior, fonteAnterior,
-                    )
-                    detalhes.append(
-                        f"  TROCA    {cdTicker:<20} ({cdIndexador}) dur={vrDuration:.4f} "
-                        f"{refAnterior} → {cdReferencia} (era fonte {fonteAnterior})"
-                    )
-                else:
-                    log.info(
-                        "match_ref: %s (%s) dur=%.4f → %s",
-                        cdTicker, cdIndexador, vrDuration, cdReferencia,
-                    )
-                    detalhes.append(
-                        f"  MATCH    {cdTicker:<20} ({cdIndexador}) dur={vrDuration:.4f} → {cdReferencia}"
-                    )
+            refAnterior = ativo["cdReferencia"]
+            fonteAnterior = ativo["cdFonteReferencia"]
+            if refAnterior and refAnterior != cdReferencia:
+                log.info(
+                    "match_ref: %s (%s) dur=%.4f → %s [era %s, fonte %s]",
+                    cdTicker, cdIndexador, vrDuration, cdReferencia,
+                    refAnterior, fonteAnterior,
+                )
+                detalhes.append(
+                    f"  TROCA    {cdTicker:<20} ({cdIndexador}) dur={vrDuration:.4f} "
+                    f"{refAnterior} → {cdReferencia} (era fonte {fonteAnterior})"
+                )
+            else:
+                log.info(
+                    "match_ref: %s (%s) dur=%.4f → %s",
+                    cdTicker, cdIndexador, vrDuration, cdReferencia,
+                )
+                detalhes.append(
+                    f"  MATCH    {cdTicker:<20} ({cdIndexador}) dur={vrDuration:.4f} → {cdReferencia}"
+                )
 
-            conn.commit()
-
-        finally:
-            conn.close()
+        if updates:
+            D.Mesclar("InfoAtivos", pd.DataFrame(updates), politica=POLITICA_UPDATE)
 
         linhas = [
             f"Duration calculada : calc={durStats['calc']} FI={durStats['FI']} B3={durStats['B3']} semDados={durStats['semDados']} semCurva={durStats['semCurva']}",

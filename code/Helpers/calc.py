@@ -36,6 +36,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
+import dados
 from config import cfg, ObterSegredo
 
 # Raiz do projeto Python: code/  (lib/../)
@@ -166,15 +167,55 @@ def RecarregarMercado() -> None:
 INDEXADORES_SUPORTADOS = ("IPCA", "PREFIXADO", "CDI+", "%CDI")
 
 
-def CarregarAtivo(conn, cdTicker: str) -> dict | None:
+# Índice em memória de InfoAtivos e FluxoAtivos, reconstruído só quando alguém grava.
+#
+# No SQLite, CarregarAtivo custava dois acertos de índice e era chamado à vontade — o
+# validar_calc_b3 e o match_referencias o chamam uma vez por ativo, milhares por rodada.
+# No DuckDB cada consulta reabre os parquets, e esse padrão sairia da casa dos
+# milissegundos para a de dezenas de minutos. As duas tabelas somam 0,55 MB: cabem
+# inteiras na memória.
+#
+# A guarda contra dado velho é a geração de dados.py: quem grava a incrementa, e o
+# índice se reconstrói na leitura seguinte. Sem isso o cache devolveria, por exemplo, o
+# stFluxoValidado de antes da última validação.
+indiceCache: dict = {}
+
+
+def IndiceAtivos() -> dict:
+    """{cdTicker: {cadastro, fluxo}}, reconstruído quando InfoAtivos ou FluxoAtivos mudam."""
+    geracao = (dados.Geracao("InfoAtivos"), dados.Geracao("FluxoAtivos"))
+    if indiceCache.get("geracao") == geracao:
+        return indiceCache["ativos"]
+
+    info = dados.Consultar(
+        "SELECT cdTicker, cdIndexador, vrTaxaEmissao, vrVNE, dtInicioRentabilidade, "
+        "       dtVencimento, vrAniversario, cdTipoAmortizacao, stFluxoValidado "
+        'FROM "InfoAtivos"')
+    ativos = {r["cdTicker"]: {"cadastro": r, "fluxo": []}
+              for r in info.to_dict(orient="records")}
+
+    fluxo = dados.Consultar(
+        "SELECT cdTicker, dtEvento, vrPctAmortizacao, vrPctIncorporacao "
+        'FROM "FluxoAtivos" ORDER BY cdTicker, dtEvento')
+    for cdTicker, dtEvento, amort, incorp in fluxo.itertuples(index=False):
+        alvo = ativos.get(cdTicker)
+        if alvo is not None:
+            alvo["fluxo"].append((date.fromisoformat(dtEvento),
+                                  dados.SemNaN(amort) or 0.0,
+                                  dados.SemNaN(incorp) or 0.0))
+
+    indiceCache["geracao"] = geracao
+    indiceCache["ativos"]  = ativos
+    return ativos
+
+
+def CarregarAtivo(cdTicker: str) -> dict | None:
     """Cadastro + fluxo no formato que a calculadora consome, ou None se não dá para
     precificar (falta taxa de emissão, início de rentabilidade, fluxo ou indexador)."""
-    info = conn.execute(
-        "SELECT cdIndexador, vrTaxaEmissao, vrVNE, dtInicioRentabilidade, dtVencimento, "
-        "       vrAniversario, cdTipoAmortizacao, stFluxoValidado "
-        "FROM InfoAtivos WHERE cdTicker = ?", (cdTicker,)).fetchone()
-    if info is None:
+    entrada = IndiceAtivos().get(cdTicker)
+    if entrada is None:
         return None
+    info = {k: dados.SemNaN(v) for k, v in entrada["cadastro"].items()}
 
     cdIndexador = info["cdIndexador"]
     if (cdIndexador not in INDEXADORES_SUPORTADOS
@@ -182,12 +223,7 @@ def CarregarAtivo(conn, cdTicker: str) -> dict | None:
             or not info["dtInicioRentabilidade"]):
         return None
 
-    fluxo = [(date.fromisoformat(e["dtEvento"]),
-              e["vrPctAmortizacao"] or 0.0,
-              e["vrPctIncorporacao"] or 0.0)
-             for e in conn.execute(
-                 "SELECT dtEvento, vrPctAmortizacao, vrPctIncorporacao FROM FluxoAtivos "
-                 "WHERE cdTicker = ? ORDER BY dtEvento", (cdTicker,))]
+    fluxo = entrada["fluxo"]
     if not fluxo:
         return None
 
