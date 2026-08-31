@@ -61,7 +61,9 @@ from uuid import uuid4
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "Helpers"))
 
 from config import cfg
-from db import ObterBanco
+import pandas as pd
+
+import dados as D
 from logger import ObterLogger
 from email_outlook import EnviarEmailConclusao
 from relatorio_execucao import RelatorioExecucao
@@ -119,12 +121,11 @@ WHERE dtReferencia = ?
   AND vrTaxaAnbima IS NOT NULL
 """
 
-SQL_ATUALIZAR_STATUS = """
-UPDATE NegociosProcessados
-SET cdStatus     = ?,
-    idGrupoNegocio = ?
-WHERE cdIdentificadorNegocio = ?
-"""
+# O que era `UPDATE NegociosProcessados SET cdStatus = ?, idGrupoNegocio = ? WHERE
+# cdIdentificadorNegocio = ?`. As duas SOBRESCREVEM: a classificacao e recalculada do
+# zero a cada rodada, e o idGrupoNegocio volta a NULL para o trade que deixou de ser
+# duplicado (com PREFERIR_NOVO ele carregaria o grupo da rodada anterior para sempre).
+POLITICA_STATUS = {"cdStatus": D.SOBRESCREVER, "idGrupoNegocio": D.SOBRESCREVER}
 
 
 # ---------------------------------------------------------------------------
@@ -572,7 +573,6 @@ def AplicarFiltroPF(
 # ---------------------------------------------------------------------------
 
 def ProcessarData(
-    conn,
     dtLiquidacao: str,
     fundoMaxReaisPorMilhao: float,
     corretorMaxBps: float,
@@ -588,7 +588,7 @@ def ProcessarData(
     """
     stats = EstatisticasData(dtLiquidacao=dtLiquidacao)
 
-    rows = conn.execute(SQL_BUSCAR_NEGOCIOS, (dtLiquidacao,)).fetchall()
+    rows = D.Linhas(SQL_BUSCAR_NEGOCIOS, (dtLiquidacao,))
     stats.total = len(rows)
 
     if stats.total == 0:
@@ -610,7 +610,7 @@ def ProcessarData(
     ]
 
     # Taxas indicativas Anbima para a data (referência do filtro PF)
-    linhasAnbima = conn.execute(SQL_BUSCAR_ANBIMA, (dtLiquidacao,)).fetchall()
+    linhasAnbima = D.Linhas(SQL_BUSCAR_ANBIMA, (dtLiquidacao,))
     taxaAnbima = {r["cdTicker"]: r["vrTaxaAnbima"] for r in linhasAnbima}
 
     log.info(
@@ -648,10 +648,12 @@ def ProcessarData(
         elif t.cdStatus == 'PF':
             stats.pf += 1
 
-    # UPDATE atômico: um executemany para todos os trades da data
-    updates = [(t.cdStatus, t.idGrupoNegocio, t.cdIdentificadorNegocio) for t in trades]
-    conn.executemany(SQL_ATUALIZAR_STATUS, updates)
-    conn.commit()
+    # Um lote só para todos os trades da data — era o executemany + commit único.
+    D.Mesclar("NegociosProcessados", pd.DataFrame([
+        {"cdIdentificadorNegocio": t.cdIdentificadorNegocio,
+         "dtLiquidacao": dtLiquidacao,
+         "cdStatus": t.cdStatus, "idGrupoNegocio": t.idGrupoNegocio}
+        for t in trades]), politica=POLITICA_STATUS, data=dtLiquidacao)
 
     log.info(
         "filtrar_trades: %s — VALIDO=%d FUNDO=%d BROKER=%d PF=%d NullTaxa=%d",
@@ -791,7 +793,6 @@ def MontarRelatorio(statsList: list[EstatisticasData], rel) -> None:
 def Principal() -> None:
     log     = ObterLogger("filtrar_trades")
     args    = LerArgumentos()
-    conn    = ObterBanco()
     rel     = RelatorioExecucao("filtrar_trades", args=vars(args))
     erro    = None
     success = True
@@ -830,7 +831,7 @@ def Principal() -> None:
         statsList: list[EstatisticasData] = []
         for dtLiquidacao in datas:
             s = ProcessarData(
-                conn, dtLiquidacao,
+                dtLiquidacao,
                 fundoMaxReaisPorMilhao,
                 corretorMaxBps, corretorMaxPctCdi,
                 pfMinBps, pfMinPctCdi,
@@ -848,7 +849,6 @@ def Principal() -> None:
         log.exception("filtrar_trades: erro inesperado")
 
     finally:
-        conn.close()
         EnviarEmailConclusao("filtrar_trades", success, rel, tracebackErro=erro, logger=log)
 
     if not success:
