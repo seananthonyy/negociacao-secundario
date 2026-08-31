@@ -25,7 +25,7 @@ import csv
 import io
 import sys
 import traceback
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 # Garante que code/ esteja no sys.path ao rodar como script
@@ -33,7 +33,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "Helpers"))
 
 from playwright.async_api import async_playwright, Download, Page, BrowserContext
 
-from db import ObterBanco
+import pandas as pd
+
+import dados as D
 from config import cfg, ObterProxyPlaywright
 from logger import ObterLogger
 from email_outlook import EnviarEmailConclusao
@@ -84,17 +86,19 @@ REQUIRED_COLS = {
     "dtNegocio", "dtLiquidacao", "cdSituacao",
 }
 
-UPSERT_SQL = """
-INSERT INTO NegociosBrutos (
-    cdIdentificadorNegocio, cdInstrumento, cdEmissor, cdTicker,
-    vrQuantidade, vrPU, vrVolume, vrTaxaNegocio,
-    dtHorarioNegocio, dtNegocio, cdISIN, dtLiquidacao, cdSituacao
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(cdIdentificadorNegocio) DO UPDATE SET
-    vrTaxaNegocio = excluded.vrTaxaNegocio,
-    cdSituacao    = excluded.cdSituacao,
-    dtAtualizacao   = CURRENT_TIMESTAMP
-"""
+COLS_NEGOCIO = ("cdIdentificadorNegocio", "cdInstrumento", "cdEmissor", "cdTicker",
+                "vrQuantidade", "vrPU", "vrVolume", "vrTaxaNegocio",
+                "dtHorarioNegocio", "dtNegocio", "cdISIN", "dtLiquidacao", "cdSituacao")
+
+# O `ON CONFLICT(cdIdentificadorNegocio) DO UPDATE` daqui reescrevia so tres colunas:
+# vrTaxaNegocio, cdSituacao e dtAtualizacao. Um negocio ja gravado nao muda de ticker,
+# de PU nem de volume — o que a B3 revisa depois e a taxa e a situacao.
+#
+# Como Mesclar aplica a politica a toda coluna PRESENTE no DataFrame, o lote e partido em
+# dois, como no calc_taxa_negocios: linha nova entra inteira, linha existente leva so as
+# tres do DO UPDATE.
+COLS_ATUALIZAVEIS = ("vrTaxaNegocio", "cdSituacao", "dtAtualizacao")
+POLITICA_UPSERT = {c: D.SOBRESCREVER for c in COLS_ATUALIZAVEIS}
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -328,79 +332,91 @@ def NormalizarHora(val: str) -> str:
 # UPSERT no banco
 # ---------------------------------------------------------------------------
 
-def UpsertLinhas(conn, rows: list[dict], log) -> tuple[int, int]:
+def UpsertLinhas(rows: list[dict], log) -> tuple[int, int]:
     """Faz UPSERT de todos os rows em NegociosBrutos. Retorna (inseridos, atualizados)."""
     if not rows:
         return 0, 0
 
-    ids = [r["cdIdentificadorNegocio"] for r in rows]
-    idsExistentes: set[str] = set()
-    tamanhoChunk = 500
-    for i in range(0, len(ids), tamanhoChunk):
-        chunk = ids[i:i + tamanhoChunk]
-        placeholders = ",".join("?" * len(chunk))
-        for row in conn.execute(
-            f"SELECT cdIdentificadorNegocio FROM NegociosBrutos WHERE cdIdentificadorNegocio IN ({placeholders})",
-            chunk,
-        ):
-            idsExistentes.add(row[0])
+    agora = datetime.now().isoformat(sep=" ", timespec="seconds")
+    inserted = updated = 0
 
-    params = [
-        (
-            r["cdIdentificadorNegocio"],
-            r["cdInstrumento"],
-            r["cdEmissor"],
-            r["cdTicker"],
-            r["vrQuantidade"],
-            r["vrPU"],
-            r["vrVolume"],
-            r.get("vrTaxaNegocio"),
-            r["dtHorarioNegocio"],
-            r["dtNegocio"],
-            r.get("cdISIN"),
-            r["dtLiquidacao"],
-            r["cdSituacao"],
-        )
-        for r in rows
-    ]
+    # NegociosBrutos e particionada por dtNegocio, e cada Mesclar toca UM dia. Na pratica
+    # o CSV de um pregao so traz aquele dtNegocio, mas agrupar aqui torna isso explicito
+    # em vez de suposto.
+    porDia: dict[str, list[dict]] = {}
+    for r in rows:
+        porDia.setdefault(r["dtNegocio"], []).append(r)
 
-    conn.executemany(UPSERT_SQL, params)
-    conn.commit()
+    for dtNegocio, doDia in porDia.items():
+        marcas = ",".join("?" * len(doDia))
+        idsExistentes = {r[0] for r in D.Tuplas(
+            f"SELECT cdIdentificadorNegocio FROM NegociosBrutos "
+            f"WHERE dtNegocio = ? AND cdIdentificadorNegocio IN ({marcas})",
+            [dtNegocio] + [r["cdIdentificadorNegocio"] for r in doDia])}
 
-    inserted = sum(1 for r in rows if r["cdIdentificadorNegocio"] not in idsExistentes)
-    updated  = sum(1 for r in rows if r["cdIdentificadorNegocio"] in idsExistentes)
+        novos = [{**{c: r.get(c) for c in COLS_NEGOCIO},
+                  "dtCriacao": agora, "dtAtualizacao": agora}
+                 for r in doDia if r["cdIdentificadorNegocio"] not in idsExistentes]
+        atualizados = [{"cdIdentificadorNegocio": r["cdIdentificadorNegocio"],
+                        "dtNegocio": r["dtNegocio"],
+                        "vrTaxaNegocio": r.get("vrTaxaNegocio"),
+                        "cdSituacao": r["cdSituacao"], "dtAtualizacao": agora}
+                       for r in doDia if r["cdIdentificadorNegocio"] in idsExistentes]
+
+        if novos:
+            D.Mesclar("NegociosBrutos", pd.DataFrame(novos),
+                      padrao=D.SOBRESCREVER, data=dtNegocio)
+        if atualizados:
+            D.Mesclar("NegociosBrutos", pd.DataFrame(atualizados),
+                      politica=POLITICA_UPSERT, data=dtNegocio)
+
+        # Conta IDENTIFICADORES, nao linhas do CSV. O CSV traz negocios cujo
+        # "Cod. identificador do negocio" vem como "-" (a B3 nao o preenche em toda
+        # operacao), e todos eles colapsam numa linha so — em 28/07/2026 foram 25 linhas
+        # virando uma. Contar linhas dizia "25 inseridos" onde entrou 1. Ver o aviso de
+        # SemIdentificador.
+        inserted += len({r["cdIdentificadorNegocio"] for r in novos})
+        updated  += len({r["cdIdentificadorNegocio"] for r in atualizados})
+
     log.info(f"UPSERT: {inserted} inseridos, {updated} atualizados")
     return inserted, updated
 
 
-def SoftCancelAusentes(conn, dataStr: str, idsBaixados: set, log) -> int:
+def SemIdentificador(rows: list[dict]) -> int:
+    """Quantos negocios do CSV vieram sem `cdIdentificadorNegocio` (a B3 manda "-").
+
+    Importa porque esse campo e a CHAVE da base desde que o idTrade AUTOINCREMENT do
+    SQLite foi aposentado: todos os "-" de um pregao colapsam numa unica linha, e os
+    demais somem. Nao e regressao do Parquet — o SQLite tinha UNIQUE nessa coluna e
+    fazia o mesmo —, mas so agora ficou visivel. Ver [[98 - Backlog]]."""
+    return sum(1 for r in rows if not (r.get("cdIdentificadorNegocio") or "").strip("-").strip())
+
+
+def SoftCancelAusentes(dataStr: str, idsBaixados: set, log) -> int:
     """
     Trades que estavam em NegociosBrutos para date_str mas não aparecem em downloaded_ids
     são marcados cdSituacao='Cancelado' (soft delete).
     Os correspondentes em NegociosProcessados são deletados (hard delete).
     Retorna count de trades cancelados.
     """
-    cursor = conn.execute(
-        "SELECT cdIdentificadorNegocio FROM NegociosBrutos "
-        "WHERE dtNegocio = ? AND cdSituacao != 'Cancelado'",
-        (dataStr,),
-    )
     # A chave e uma so desde a migracao para Parquet (era idTrade + identificador).
-    aCancelar = [row[0] for row in cursor if row[0] not in idsBaixados]
+    aCancelar = [r[0] for r in D.Tuplas(
+        "SELECT cdIdentificadorNegocio FROM NegociosBrutos "
+        "WHERE dtNegocio = ? AND cdSituacao != 'Cancelado'", (dataStr,))
+        if r[0] not in idsBaixados]
 
     if not aCancelar:
         return 0
 
     idsNegocioCancelar = aCancelar
-    ph = ",".join("?" * len(aCancelar))
+    agora = datetime.now().isoformat(sep=" ", timespec="seconds")
 
-    conn.execute(f"DELETE FROM NegociosProcessados WHERE cdIdentificadorNegocio IN ({ph})", aCancelar)
-    conn.execute(
-        f"UPDATE NegociosBrutos SET cdSituacao = 'Cancelado', dtAtualizacao = CURRENT_TIMESTAMP "
-        f"WHERE cdIdentificadorNegocio IN ({ph})",
-        idsNegocioCancelar,
-    )
-    conn.commit()
+    D.Apagar("NegociosProcessados", "cdIdentificadorNegocio", aCancelar)
+    D.Mesclar("NegociosBrutos", pd.DataFrame(
+        [{"cdIdentificadorNegocio": i, "dtNegocio": dataStr,
+          "cdSituacao": "Cancelado", "dtAtualizacao": agora} for i in aCancelar]),
+        politica={"cdSituacao": D.SOBRESCREVER, "dtAtualizacao": D.SOBRESCREVER},
+        data=dataStr)
 
     log.warning(
         f"Soft-cancel {dataStr}: {len(aCancelar)} trade(s) marcados Cancelado e removidos de "
@@ -505,7 +521,6 @@ async def RasparData(
     page: Page,
     context: BrowserContext,
     dataAlvo: date,
-    conn,
     log,
     debugOnly: bool = False,
 ) -> tuple[int, int, int]:
@@ -786,9 +801,17 @@ async def RasparData(
         log.warning(f"Nenhum trade DEB/CRI/CRA encontrado para {dataStr}")
         return 0, 0, 0
 
-    ins, upd = UpsertLinhas(conn, rows, log)
+    semId = SemIdentificador(rows)
+    if semId:
+        log.warning(
+            f"{dataStr}: {semId} negocio(s) vieram SEM identificador da B3 ('-'). "
+            f"Como esse campo e a chave da base, todos colapsam numa linha so e os "
+            f"demais nao entram. Ver [[98 - Backlog]]."
+        )
+
+    ins, upd = UpsertLinhas(rows, log)
     idsBaixados = {r["cdIdentificadorNegocio"] for r in rows}
-    cancelled = SoftCancelAusentes(conn, dataStr, idsBaixados, log)
+    cancelled = SoftCancelAusentes(dataStr, idsBaixados, log)
     return ins, upd, cancelled
 
 
@@ -879,58 +902,53 @@ async def PrincipalAsync(args: argparse.Namespace) -> RelatorioExecucao:
     log.info(f"DEBUG_DIR: {DEBUG_DIR.resolve()}")
 
     GarantirDirDebug()
-    conn = ObterBanco()
     totalInseridos   = 0
     totalAtualizados    = 0
     totalCancelados  = 0
     results: list[str] = []
 
-    try:
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch(
-                headless=args.headless,
-                slow_mo=200,
-                proxy=ObterProxyPlaywright(),  # None no PC pessoal; proxy da conta no banco
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
+            headless=args.headless,
+            slow_mo=200,
+            proxy=ObterProxyPlaywright(),  # None no PC pessoal; proxy da conta no banco
+        )
+
+        # Loop data por data. (Antes havia um atalho de POST-range único para
+        # --start/--end, mas a API BDI da B3 só retornava as duas PONTAS do
+        # intervalo — não os pregões do meio — e ainda com status 200, então o
+        # fallback nunca disparava e dias sumiam silenciosamente. Removido: cada
+        # pregão é baixado individualmente, idempotente via UPSERT.)
+        for dataAlvo in dates:
+            dataStr = str(dataAlvo)
+            context = await browser.new_context(
+                accept_downloads=True,
+                viewport={"width": 1400, "height": 900},
+                ignore_https_errors=True,
             )
+            page = await context.new_page()
 
-            # Loop data por data. (Antes havia um atalho de POST-range único para
-            # --start/--end, mas a API BDI da B3 só retornava as duas PONTAS do
-            # intervalo — não os pregões do meio — e ainda com status 200, então o
-            # fallback nunca disparava e dias sumiam silenciosamente. Removido: cada
-            # pregão é baixado individualmente, idempotente via UPSERT.)
-            for dataAlvo in dates:
-                dataStr = str(dataAlvo)
-                context = await browser.new_context(
-                    accept_downloads=True,
-                    viewport={"width": 1400, "height": 900},
-                    ignore_https_errors=True,
+            try:
+                ins, upd, cnl = await RasparData(
+                    page, context, dataAlvo, log, args.debugOnly
                 )
-                page = await context.new_page()
-
+                totalInseridos  += ins
+                totalAtualizados   += upd
+                totalCancelados += cnl
+                results.append([dataStr, ins, upd, cnl])
+                log.info(f"{dataStr}: {ins} inseridos, {upd} atualizados, {cnl} cancelados")
+            except Exception as e:
+                log.error(f"{dataStr}: ERRO — {e}")
+                log.debug(traceback.format_exc())
+                results.append([dataStr, "ERRO", str(e)[:60], ""])
                 try:
-                    ins, upd, cnl = await RasparData(
-                        page, context, dataAlvo, conn, log, args.debugOnly
-                    )
-                    totalInseridos  += ins
-                    totalAtualizados   += upd
-                    totalCancelados += cnl
-                    results.append([dataStr, ins, upd, cnl])
-                    log.info(f"{dataStr}: {ins} inseridos, {upd} atualizados, {cnl} cancelados")
-                except Exception as e:
-                    log.error(f"{dataStr}: ERRO — {e}")
-                    log.debug(traceback.format_exc())
-                    results.append([dataStr, "ERRO", str(e)[:60], ""])
-                    try:
-                        await SalvarDebug(page, f"ERRO_{dataStr}", log)
-                    except Exception:
-                        pass
-                finally:
-                    await context.close()
+                    await SalvarDebug(page, f"ERRO_{dataStr}", log)
+                except Exception:
+                    pass
+            finally:
+                await context.close()
 
-            await browser.close()
-
-    finally:
-        conn.close()
+        await browser.close()
 
     rel = RelatorioExecucao("scrape_b3_boletim", args=vars(args))
     rel.Datas([r[0] for r in results])

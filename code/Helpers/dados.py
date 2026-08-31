@@ -424,6 +424,44 @@ def Upsert(tabela: str, df, data: str | None = None) -> int:
     return GravarDia(tabela, junto, data) if coluna else GravarTudo(tabela, junto)
 
 
+def Apagar(tabela: str, coluna: str, valores) -> int:
+    """Remove as linhas cuja `coluna` esta em `valores`. Devolve quantas saiu.
+
+    E o `DELETE ... WHERE col IN (...)`. Numa tabela particionada, so as particoes que
+    de fato contem alguma dessas linhas sao reescritas — descobrir quais custa uma
+    consulta e evita reescrever a serie inteira.
+
+    Usado pelo soft-cancel do boletim: negocio que a B3 tirou do arquivo sai de
+    NegociosProcessados de vez (em NegociosBrutos ele so vira 'Cancelado', para nao
+    perder o rastro)."""
+    import pandas as pd
+    valores = list(valores)
+    if not valores:
+        return 0
+    marcas = ",".join("?" * len(valores))
+    particao = PARTICAO[tabela]
+    colunas = [c.name for c in ESQUEMA[tabela]]
+
+    if not particao:
+        atual = Ler(tabela)
+        fica  = atual[~atual[coluna].isin(valores)]
+        n = len(atual) - len(fica)
+        if n:
+            GravarTudo(tabela, fica)
+        return n
+
+    dias = [r[0] for r in Consultar(
+        f'SELECT DISTINCT "{particao}" FROM "{tabela}" WHERE "{coluna}" IN ({marcas})',
+        valores).itertuples(index=False)]
+    total = 0
+    for dia in dias:
+        atual = Ler(tabela, dia)
+        fica  = atual[~atual[coluna].isin(valores)]
+        total += len(atual) - len(fica)
+        GravarDia(tabela, fica[colunas], dia)
+    return total
+
+
 def Datas(tabela: str) -> list[str]:
     """As datas (particoes) que a tabela ja tem."""
     coluna = PARTICAO[tabela]
@@ -471,7 +509,10 @@ def Dobrar(df, chave: list[str], politica: dict, padrao: str):
     politica. Um drop_duplicates perderia isso.
 
     O last()/first() do groupby ignora NULL — que e precisamente a semantica do
-    COALESCE. O nth() nao ignora, e por isso serve ao SOBRESCREVER.
+    COALESCE. O SOBRESCREVER precisa do contrario, o ultimo valor INCLUSIVE nulo, e para
+    isso vai por `agg(iloc[-1])`: o `nth(-1)`, que seria o natural, deixou de agregar no
+    pandas 2 e passou a devolver as linhas originais com o indice original — o que faz o
+    reset_index() abaixo nao reconstruir as colunas da chave.
     """
     import pandas as pd
     if not df.duplicated(subset=chave).any():
@@ -487,7 +528,7 @@ def Dobrar(df, chave: list[str], politica: dict, padrao: str):
         if modo == PREFERIR_ATUAL:
             partes[col] = grupos[col].first()   # primeiro nao-nulo
         elif modo == SOBRESCREVER:
-            partes[col] = grupos[col].nth(-1)   # ultimo, nulo inclusive
+            partes[col] = grupos[col].agg(lambda s: s.iloc[-1])  # ultimo, nulo inclusive
         else:
             partes[col] = grupos[col].last()    # ultimo nao-nulo
     return pd.DataFrame(partes).reset_index()[ordem]
