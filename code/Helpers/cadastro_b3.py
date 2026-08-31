@@ -18,6 +18,7 @@ fontes conta a capitalizacao DUAS VEZES, sem erro nenhum, so um PU errado.
 
 from datetime import date
 
+import dados as D
 from calc import ImportarCalc
 
 
@@ -104,15 +105,35 @@ def FluxoDaB3(det: dict) -> list[tuple[str, float | None, float | None]]:
     return sorted((d.isoformat(), v[0], v[1]) for d, v in eventos.items())
 
 
-def GravarAtivo(conn, cdTicker: str, det: dict, agora: str) -> str:
-    """Grava o que a B3 sabe. Devolve 'inseridos' | 'atualizados' | 'ignorados'.
+# As politicas dos tres UPDATE que este modulo fazia por ativo.
+#
+# Escalares: era `c = COALESCE(c, ?)` — a B3 preenche buraco, nao sobrescreve o que a
+# Anbima ja gravou. Excecao: vrAniversario, `COALESCE(?, vrAniversario)`, porque a B3 e
+# a unica fonte explicita dele.
+POLITICA_ESCALARES = {c: D.PREFERIR_ATUAL for c in CAMPOS_ESCALARES}
+POLITICA_ESCALARES.update({"vrAniversario": D.PREFERIR_NOVO,
+                           "dtAtualizacao": D.SOBRESCREVER})
+
+# O PACOTE (vrVNE + dtInicioRentabilidade + FluxoAtivos): um UPDATE direto, sem
+# COALESCE. So e escrito quando a B3 traz eventos.
+POLITICA_PACOTE = {c: D.SOBRESCREVER for c in (
+    "vrVNE", "dtInicioRentabilidade", "cdFonteCadastro", "stTemFluxo", "dtAtualizacao")}
+
+
+def PrepararAtivo(cdTicker: str, det: dict, agora: str, antes: dict | None) -> tuple:
+    """O que gravar do que a B3 sabe, SEM gravar.
+
+    Devolve (linhaEscalares, linhaPacote, linhasFluxo, acao), onde acao e
+    'inseridos' | 'atualizados' | 'ignorados'. `antes` e a linha atual de InfoAtivos
+    (ou None se o ativo e novo).
+
+    Nao grava porque InfoAtivos e FluxoAtivos sao arquivos unicos: escrever ativo a
+    ativo reescreveria as duas tabelas inteiras uma vez por ativo. O chamador junta
+    tudo e grava uma vez — que e o que o commit() unico do SQLite ja fazia.
 
     Sem eventos, a B3 nao serve de fonte de fluxo: preenche so os escalares que estao
     NULL e NAO toca em vrVNE / dtInicioRentabilidade / FluxoAtivos (o pacote).
     """
-    antes = conn.execute(
-        "SELECT cdTicker, stTemFluxo, cdFonteCadastro FROM InfoAtivos WHERE cdTicker = ?",
-        (cdTicker,)).fetchone()
     novo = antes is None
 
     cdIndexador = MapearIndexador(det.get("method"))
@@ -130,34 +151,24 @@ def GravarAtivo(conn, cdTicker: str, det: dict, agora: str) -> str:
     aniversario = det.get("anniversaryday")
     vrAniversario = int(aniversario) if (cdIndexador == "IPCA" and aniversario is not None) else None
 
-    if novo:
-        conn.execute("INSERT INTO InfoAtivos (cdTicker, dtAtualizacao) VALUES (?, ?)",
-                     (cdTicker, agora))
-
-    # COALESCE nos escalares: a B3 preenche buraco, nao sobrescreve o que a Anbima ja
-    # gravou. Excecao: vrAniversario, para o qual a B3 e a unica fonte explicita.
-    sets = ", ".join(f"{c} = COALESCE({c}, ?)" for c in CAMPOS_ESCALARES)
-    conn.execute(
-        f"UPDATE InfoAtivos SET {sets}, "
-        "  vrAniversario = COALESCE(?, vrAniversario), dtAtualizacao = ? WHERE cdTicker = ?",
-        tuple(valores[c] for c in CAMPOS_ESCALARES) + (vrAniversario, agora, cdTicker))
+    escalares = {"cdTicker": cdTicker, "dtAtualizacao": agora,
+                 "vrAniversario": vrAniversario,
+                 **{c: valores[c] for c in CAMPOS_ESCALARES}}
 
     fluxo = FluxoDaB3(det)
     if not fluxo:
-        return "inseridos" if novo else "ignorados"
+        return escalares, None, None, ("inseridos" if novo else "ignorados")
 
-    # O PACOTE. Escrever vrVNE/dtInicioRentabilidade dispara trgInfoAtivosInvalidaFluxo,
-    # que zera stFluxoValidado — por isso a validacao e reafirmada DEPOIS, mais abaixo.
-    conn.execute(
-        "UPDATE InfoAtivos SET vrVNE = ?, dtInicioRentabilidade = ?, cdFonteCadastro = 'B3', "
-        "  stTemFluxo = 1, dtAtualizacao = ? WHERE cdTicker = ?",
-        (det.get("vne"), (det.get("startingdate") or "")[:10] or None, agora, cdTicker))
+    # O PACOTE. Escrever vrVNE/dtInicioRentabilidade zera stFluxoValidado (era o
+    # trgInfoAtivosInvalidaFluxo, hoje o Mesclar de dados.py) — e assim tem de ser: o
+    # fluxo mudou, e a validacao anterior deixou de valer.
+    pacote = {"cdTicker": cdTicker, "vrVNE": det.get("vne"),
+              "dtInicioRentabilidade": (det.get("startingdate") or "")[:10] or None,
+              "cdFonteCadastro": "B3", "stTemFluxo": 1, "dtAtualizacao": agora}
 
-    conn.execute("DELETE FROM FluxoAtivos WHERE cdTicker = ?", (cdTicker,))
-    conn.executemany(
-        "INSERT INTO FluxoAtivos (cdTicker, dtEvento, vrPctAmortizacao, vrPctIncorporacao, "
-        "dtAtualizacao) VALUES (?, ?, ?, ?, ?)",
-        [(cdTicker, d, a, i, agora) for d, a, i in fluxo])
+    linhasFluxo = [{"cdTicker": cdTicker, "dtEvento": d, "vrPctAmortizacao": a,
+                    "vrPctIncorporacao": i, "dtAtualizacao": agora}
+                   for d, a, i in fluxo]
 
     # Este script NAO valida (24/08/2026). "Fluxo veio da B3" nao e o mesmo que "a calc
     # precifica este ativo certo": marcar validado aqui liberava para a calc local ativo
@@ -165,4 +176,20 @@ def GravarAtivo(conn, cdTicker: str, det: dict, agora: str) -> str:
     # e SO o validar_calc_b3, e so depois de a nossa calc reproduzir a B3 (ou a FI).
     # Ate la o ativo cai na cascata de API no calc_taxa, que e o comportamento seguro.
 
-    return "inseridos" if (novo or not antes["stTemFluxo"]) else "atualizados"
+    acao = "inseridos" if (novo or not antes.get("stTemFluxo")) else "atualizados"
+    return escalares, pacote, linhasFluxo, acao
+
+
+def GravarLote(escalares: list, pacotes: list, fluxos: dict) -> None:
+    """Grava de uma vez o que PrepararAtivo acumulou.
+
+    Sao duas mesclagens em InfoAtivos porque eram dois UPDATE com politicas opostas: os
+    escalares so preenchem buraco, o pacote sobrescreve. E uma substituicao de agenda em
+    FluxoAtivos, que e o DELETE+INSERT por ticker."""
+    import pandas as pd
+    if escalares:
+        D.Mesclar("InfoAtivos", pd.DataFrame(escalares), politica=POLITICA_ESCALARES)
+    if pacotes:
+        D.Mesclar("InfoAtivos", pd.DataFrame(pacotes), politica=POLITICA_PACOTE)
+    if fluxos:
+        D.SubstituirFluxo(fluxos)

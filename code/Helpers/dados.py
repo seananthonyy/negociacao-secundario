@@ -647,6 +647,25 @@ def LerFluxoAtivos(cdTicker: str) -> dict:
             for r in df.itertuples()}
 
 
+def SubstituirFluxo(porTicker: dict) -> int:
+    """Troca a agenda INTEIRA dos tickers de `porTicker` — o `DELETE ... WHERE cdTicker`
+    seguido de INSERT, que e como a B3 grava (a agenda dela vem completa, e um evento
+    que sumiu tem de sumir da base tambem; um upsert deixaria o velho para tras).
+
+    `porTicker`: {cdTicker: [linhas]}. Ticker fora do dict fica intacto.
+
+    Recebe todos os tickers de uma vez porque FluxoAtivos e um arquivo so: fazer isto
+    por ticker reescreveria a tabela inteira uma vez por ativo."""
+    import pandas as pd
+    if not porTicker:
+        return 0
+    atual = Ler("FluxoAtivos")
+    resto = atual[~atual["cdTicker"].isin(porTicker)] if not atual.empty else atual
+    novas = pd.DataFrame([l for linhas in porTicker.values() for l in linhas])
+    junto = pd.concat([resto, novas], ignore_index=True) if not resto.empty else novas
+    return GravarTudo("FluxoAtivos", junto)
+
+
 def MarcarTemFluxo(cdTicker: str, temFluxo: bool = True) -> None:
     """Mantem InfoAtivos.stTemFluxo em dia. Chamado por quem escreve FluxoAtivos."""
     info = Ler("InfoAtivos")

@@ -44,8 +44,9 @@ from traceback import format_exc
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "Helpers"))
 
 from b3_calc_api import ObterDetalhesAtivo
-from cadastro_b3 import GravarAtivo
-from db import ObterBanco
+from cadastro_b3 import (CAMPOS_ESCALARES, FluxoDaB3, GravarLote, MapearIndexador,
+                         PrepararAtivo)
+import dados as D
 from email_outlook import EnviarEmailConclusao
 from logger import ObterLogger
 from relatorio_execucao import RelatorioExecucao
@@ -73,7 +74,7 @@ def LerArgumentos() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def MontarFila(args: argparse.Namespace, conn, log) -> tuple[list[str], list[str]]:
+def MontarFila(args: argparse.Namespace, log) -> tuple[list[str], list[str]]:
     """(fila, datas). A fila ja vem filtrada pelo gate de informacao faltante."""
     if args.tickers:
         return [t.strip().upper() for t in args.tickers.split(",") if t.strip()], []
@@ -91,7 +92,7 @@ def MontarFila(args: argparse.Namespace, conn, log) -> tuple[list[str], list[str
     )
 
     if args.todos:
-        fila = [r["cdTicker"] for r in conn.execute(
+        fila = [r["cdTicker"] for r in D.Linhas(
             f"SELECT i.cdTicker FROM InfoAtivos i WHERE {faltando} ORDER BY i.cdTicker")]
         log.info("%s: modo --todos, %d ativo(s) com informacao faltante", NOME_SCRIPT, len(fila))
         return fila, []
@@ -99,24 +100,23 @@ def MontarFila(args: argparse.Namespace, conn, log) -> tuple[list[str], list[str
     if args.start and args.end:
         onde, params = "n.dtNegocio BETWEEN ? AND ?", (args.start, args.end)
     else:
-        dtRef = args.date or conn.execute(
-            "SELECT MAX(dtNegocio) FROM NegociosBrutos").fetchone()[0]
+        dtRef = args.date or D.Escalar("SELECT MAX(dtNegocio) FROM NegociosBrutos")
         onde, params = "n.dtNegocio = ?", (dtRef,)
 
-    datas = [r[0] for r in conn.execute(
+    datas = [r[0] for r in D.Tuplas(
         f"SELECT DISTINCT n.dtNegocio FROM NegociosBrutos n WHERE {onde} ORDER BY 1", params)]
 
     # LEFT JOIN: ticker que negociou e nem existe no InfoAtivos tambem entra na fila —
     # sao 701 dos 1.085 que negociaram em 90 dias e nao tem fluxo nenhum na base.
-    fila = [r["cdTicker"] for r in conn.execute(
+    fila = [r["cdTicker"] for r in D.Linhas(
         f"""SELECT DISTINCT n.cdTicker
               FROM NegociosBrutos n
               LEFT JOIN InfoAtivos i ON i.cdTicker = n.cdTicker
              WHERE {onde} AND (i.cdTicker IS NULL OR {faltando})
              ORDER BY n.cdTicker""", params)]
 
-    negociaram = conn.execute(
-        f"SELECT COUNT(DISTINCT n.cdTicker) FROM NegociosBrutos n WHERE {onde}", params).fetchone()[0]
+    negociaram = D.Escalar(
+        f"SELECT COUNT(DISTINCT n.cdTicker) FROM NegociosBrutos n WHERE {onde}", params)
     log.info("%s: %d ticker(s) negociaram; %d com informacao faltante (gate)",
              NOME_SCRIPT, negociaram, len(fila))
     return fila, datas
@@ -129,60 +129,66 @@ def Principal() -> None:
     success = True
 
     try:
-        conn = ObterBanco()
-        try:
-            fila, datas = MontarFila(args, conn, log)
-            rel.Datas(datas)
-            if args.limite:
-                fila = fila[:args.limite]
-            rel.Metrica("Ativos na fila (gate de info faltante)", len(fila))
+        fila, datas = MontarFila(args, log)
+        rel.Datas(datas)
+        if args.limite:
+            fila = fila[:args.limite]
+        rel.Metrica("Ativos na fila (gate de info faltante)", len(fila))
 
-            if not fila:
-                rel.Aviso("Nada a fazer: todos os tickers negociados ja tem o cadastro completo.")
-                EnviarEmailConclusao(NOME_SCRIPT, True, rel, logger=log)
-                return
+        if not fila:
+            rel.Aviso("Nada a fazer: todos os tickers negociados ja tem o cadastro completo.")
+            EnviarEmailConclusao(NOME_SCRIPT, True, rel, logger=log)
+            return
 
-            # O getBondDetails e I/O puro e o httpx.Client e thread-safe: paraleliza.
-            # A escrita no SQLite fica na thread principal (uma conexao, sem contencao).
-            log.info("%s: buscando %d ativo(s) na B3...", NOME_SCRIPT, len(fila))
-            with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-                detalhes = list(pool.map(ObterDetalhesAtivo, fila))
+        # O getBondDetails e I/O puro e o httpx.Client e thread-safe: paraleliza.
+        log.info("%s: buscando %d ativo(s) na B3...", NOME_SCRIPT, len(fila))
+        with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+            detalhes = list(pool.map(ObterDetalhesAtivo, fila))
 
-            agora = datetime.now().isoformat(timespec="seconds")
-            semCobertura = []
-            for cdTicker, det in zip(fila, detalhes):
-                if not det:
-                    semCobertura.append(cdTicker)
-                    rel.Contar("ignorados")
-                    continue
-                try:
-                    acao = GravarAtivo(conn, cdTicker, det, agora)
-                except Exception as exc:
-                    log.warning("%s: falha ao gravar %s: %s", NOME_SCRIPT, cdTicker, exc)
-                    rel.Contar("falhas")
-                    rel.Exemplo("falhas", {"cdTicker": cdTicker, "erro": str(exc)[:120]})
-                    continue
+        agora = datetime.now().isoformat(timespec="seconds")
+        semCobertura = []
+        # InfoAtivos e FluxoAtivos sao arquivos unicos: monta-se tudo em memoria e
+        # grava-se uma vez so, no lugar do commit() unico que o SQLite tinha.
+        infoAtual = {r["cdTicker"]: r for r in D.Linhas(
+            "SELECT cdTicker, stTemFluxo, cdFonteCadastro FROM InfoAtivos")}
+        escalares, pacotes, fluxos = [], [], {}
 
-                rel.Contar(acao)
-                if acao in ("inseridos", "atualizados"):
-                    rel.Exemplo(acao, {
-                        "cdTicker": cdTicker,
-                        "indexador": MapearIndexador(det.get("method")),
-                        "vrVNE": det.get("vne"),
-                        "inicio": (det.get("startingdate") or "")[:10],
-                        "aniversario": det.get("anniversaryday"),
-                        "eventos": len(FluxoDaB3(det)),
-                    })
-            conn.commit()
+        for cdTicker, det in zip(fila, detalhes):
+            if not det:
+                semCobertura.append(cdTicker)
+                rel.Contar("ignorados")
+                continue
+            try:
+                linhaEsc, pacote, linhasFluxo, acao = PrepararAtivo(
+                    cdTicker, det, agora, infoAtual.get(cdTicker))
+                escalares.append(linhaEsc)
+                if pacote:
+                    pacotes.append(pacote)
+                    fluxos[cdTicker] = linhasFluxo
+            except Exception as exc:
+                log.warning("%s: falha ao gravar %s: %s", NOME_SCRIPT, cdTicker, exc)
+                rel.Contar("falhas")
+                rel.Exemplo("falhas", {"cdTicker": cdTicker, "erro": str(exc)[:120]})
+                continue
 
-            rel.Metrica("Sem cobertura da B3 (caem para a Anbima)", len(semCobertura))
-            if semCobertura:
-                rel.Aviso(f"{len(semCobertura)} ticker(s) a B3 nao cobre — o "
-                          f"scrape_anbima_data_ativos e quem vai preencher.")
-            log.info("%s: concluido. %s", NOME_SCRIPT, rel.contadores)
+            rel.Contar(acao)
+            if acao in ("inseridos", "atualizados"):
+                rel.Exemplo(acao, {
+                    "cdTicker": cdTicker,
+                    "indexador": MapearIndexador(det.get("method")),
+                    "vrVNE": det.get("vne"),
+                    "inicio": (det.get("startingdate") or "")[:10],
+                    "aniversario": det.get("anniversaryday"),
+                    "eventos": len(FluxoDaB3(det)),
+                })
 
-        finally:
-            conn.close()
+        GravarLote(escalares, pacotes, fluxos)
+
+        rel.Metrica("Sem cobertura da B3 (caem para a Anbima)", len(semCobertura))
+        if semCobertura:
+            rel.Aviso(f"{len(semCobertura)} ticker(s) a B3 nao cobre — o "
+                      f"scrape_anbima_data_ativos e quem vai preencher.")
+        log.info("%s: concluido. %s", NOME_SCRIPT, rel.contadores)
 
     except Exception:
         success = False
