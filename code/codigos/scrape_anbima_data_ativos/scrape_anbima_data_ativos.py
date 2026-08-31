@@ -1,6 +1,6 @@
 """Scrape Anbima Data: características e agenda de Debs/CRIs/CRAs."""
 
-import argparse, asyncio, json, re, sqlite3, sys
+import argparse, asyncio, json, re, sys
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -10,7 +10,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "Helpers"))
 from playwright.async_api import async_playwright
 
 from config import cfg, ObterProxyPlaywright
-from db import ObterBanco, SincronizarFluxoAtivos
+import pandas as pd
+
+import dados as D
 from email_outlook import EnviarEmailConclusao
 from relatorio_execucao import RelatorioExecucao
 from logger import ObterLogger
@@ -170,48 +172,65 @@ def ProcessarAgenda(ticker: str, agenda: list, log) -> list | None:
 
 # ── db ────────────────────────────────────────────────────────────────────────
 
-def UpsertInfoAtivos(conn: sqlite3.Connection, ticker: str, cdInstrumento: str, info: dict):
+# O que era o `ON CONFLICT(cdTicker) DO UPDATE SET` desta tabela: COALESCE em TUDO, na
+# ordem que preserva o existente. A Anbima preenche buraco, nao sobrescreve — num ativo
+# de fonte B3, vrVNE e dtInicioRentabilidade ja vieram de la e ficam. Dai PREFERIR_ATUAL
+# como padrao, e nao PREFERIR_NOVO.
+#
+# cdFonteCadastro era `COALESCE(cdFonteCadastro, 'AnbimaData')`: quem chegou primeiro
+# fica dono do cadastro. Cai no mesmo PREFERIR_ATUAL.
+#
+# A agenda nao passa por aqui — ela e protegida em dados.SincronizarFluxos.
+POLITICA_INFO = {'dtAtualizacao': D.SOBRESCREVER}
+
+
+def LinhaInfoAtivos(ticker: str, cdInstrumento: str, info: dict) -> dict:
+    """A linha de InfoAtivos que a Anbima Data descreve. Nao grava — o chamador acumula
+    e grava em lote (InfoAtivos e um arquivo unico; gravar por ativo o reescreveria
+    milhares de vezes numa rodada)."""
     emissao = info.get('emissao') or {}
     cdEmissor = (emissao.get('emissor') or {}).get('nome') if cdInstrumento == 'DEB' else info.get('devedor')
 
-    conn.execute("""
-        INSERT INTO InfoAtivos
-            (cdTicker, cdInstrumento, cdEmissor, dtVencimento, cdIndexador,
-             vrTaxaEmissao, vrVNE, dtInicioRentabilidade,
-             cdISIN, vrQuantidadeEmissao, dtEmissao, cdFonteCadastro, dtAtualizacao)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,'AnbimaData',?)
-        ON CONFLICT(cdTicker) DO UPDATE SET
-            -- COALESCE em tudo: a Anbima preenche buraco, nao sobrescreve. Num ativo de
-            -- fonte B3, vrVNE/dtInicioRentabilidade ja vieram de la e ficam. A agenda e
-            -- protegida em db.SincronizarFluxoAtivos.
-            cdFonteCadastro      = COALESCE(cdFonteCadastro,      'AnbimaData'),
-            cdInstrumento        = COALESCE(cdInstrumento,        excluded.cdInstrumento),
-            cdEmissor            = COALESCE(cdEmissor,            excluded.cdEmissor),
-            dtVencimento         = COALESCE(dtVencimento,         excluded.dtVencimento),
-            cdIndexador          = COALESCE(cdIndexador,          excluded.cdIndexador),
-            vrTaxaEmissao       = COALESCE(vrTaxaEmissao,       excluded.vrTaxaEmissao),
-            vrVNE                = COALESCE(vrVNE,                excluded.vrVNE),
-            dtInicioRentabilidade = COALESCE(dtInicioRentabilidade, excluded.dtInicioRentabilidade),
-            cdISIN               = COALESCE(cdISIN,               excluded.cdISIN),
-            vrQuantidadeEmissao  = COALESCE(vrQuantidadeEmissao,  excluded.vrQuantidadeEmissao),
-            dtEmissao            = COALESCE(dtEmissao,            excluded.dtEmissao),
-            dtAtualizacao          = excluded.dtAtualizacao
-    """, (
-        ticker, cdInstrumento, cdEmissor,
-        info.get('data_vencimento'),
-        NormalizarIndexador(info),
-        ParaFloat(info.get('taxa_emissao')),
-        ParaFloat(info.get('vne')),
-        info.get('data_inicio_rentabilidade'),
-        info.get('isin'),
-        float(info['quantidade_emitida']) if info.get('quantidade_emitida') is not None else None,
-        emissao.get('data_emissao'),
-        Agora(),
-    ))
+    return {
+        'cdTicker': ticker,
+        'cdInstrumento': cdInstrumento,
+        'cdEmissor': cdEmissor,
+        'dtVencimento': info.get('data_vencimento'),
+        'cdIndexador': NormalizarIndexador(info),
+        'vrTaxaEmissao': ParaFloat(info.get('taxa_emissao')),
+        'vrVNE': ParaFloat(info.get('vne')),
+        'dtInicioRentabilidade': info.get('data_inicio_rentabilidade'),
+        'cdISIN': info.get('isin'),
+        'vrQuantidadeEmissao': (float(info['quantidade_emitida'])
+                                if info.get('quantidade_emitida') is not None else None),
+        'dtEmissao': emissao.get('data_emissao'),
+        'cdFonteCadastro': 'AnbimaData',
+        'dtAtualizacao': Agora(),
+    }
 
-# A escrita do fluxo passa por db.SincronizarFluxoAtivos: ele so grava se a
-# agenda mudou de verdade e, nesse caso, invalida a validacao do fluxo do ativo
-# (contrato com a calculadora). Re-scrape que devolve a mesma agenda nao escreve.
+# A escrita do fluxo passa por dados.SincronizarFluxos: ele so grava a agenda que mudou
+# de verdade e, nesse caso, invalida a validacao do fluxo do ativo (contrato com a
+# calculadora). Re-scrape que devolve a mesma agenda nao escreve.
+
+# De quantos em quantos ativos o lote e gravado. Alto demais e um crash perde muito
+# trabalho de banco (o de scraping esta salvo no JSON); baixo demais reescreve as duas
+# tabelas com frequencia. 200 poe a gravacao na casa de 1% do tempo de uma rodada.
+TAMANHO_LOTE = 200
+
+
+def Descarregar(pendentes: dict, stats: dict, log) -> None:
+    """Grava o lote acumulado e o esvazia. Chamado com o lock ja tomado."""
+    if not pendentes['info'] and not pendentes['fluxo']:
+        return
+    D.Mesclar('InfoAtivos', pd.DataFrame(pendentes['info']),
+              politica=POLITICA_INFO, padrao=D.PREFERIR_ATUAL)
+    if pendentes['fluxo']:
+        mudaram = D.SincronizarFluxos(pendentes['fluxo'])
+        stats['fluxo_mudou'] += len(mudaram)
+    log.debug('lote gravado: %d InfoAtivos, %d agendas',
+              len(pendentes['info']), len(pendentes['fluxo']))
+    pendentes['info'].clear()
+    pendentes['fluxo'].clear()
 
 # Colunas de InfoAtivos que precisam estar preenchidas para o ticker ser
 # considerado "completo" (não precisa de re-scrape no modo incremental).
@@ -273,35 +292,37 @@ def CarregarSkipTickers() -> set[str]:
             skip.add(tk)
     return skip
 
-SQL_VAR_CHUNK = 500  # limite seguro abaixo do teto de ~999 variáveis do SQLite
+# Chunk das consultas por lista de ticker. O teto de ~999 variaveis era do SQLite; o
+# DuckDB nao o tem, mas manter o chunk evita montar um IN de milhares de marcas.
+SQL_VAR_CHUNK = 500
 
 
-def TickersDeNegociosBrutos(conn: sqlite3.Connection, dates: list[str]) -> list[tuple[str, str | None]]:
+def TickersDeNegociosBrutos(dates: list[str]) -> list[tuple[str, str | None]]:
     """Tickers com trade (não cancelado) nas datas. cdInstrumento cru (pode ser NULL)."""
     ph = ','.join('?' * len(dates))
-    rows = conn.execute(f"""
+    rows = D.Linhas(f"""
         SELECT DISTINCT cdTicker, cdInstrumento FROM NegociosBrutos
         WHERE dtNegocio IN ({ph}) AND cdSituacao != 'Cancelado'
-    """, dates).fetchall()
+    """, dates)
     return [(r['cdTicker'], r['cdInstrumento']) for r in rows]
 
 
-def TickersDaAnbima(conn: sqlite3.Connection, dates: list[str]) -> list[tuple[str, str | None]]:
+def TickersDaAnbima(dates: list[str]) -> list[tuple[str, str | None]]:
     """Tickers com taxa Anbima divulgada nas datas (AnbimaIndicativos.dtReferencia).
 
     AnbimaIndicativos não tem coluna de instrumento — derivamos via LEFT JOIN
     com InfoAtivos (cdInstrumento cru, pode ser NULL)."""
     ph = ','.join('?' * len(dates))
-    rows = conn.execute(f"""
+    rows = D.Linhas(f"""
         SELECT DISTINCT a.cdTicker, i.cdInstrumento
         FROM AnbimaIndicativos a
         LEFT JOIN InfoAtivos i ON i.cdTicker = a.cdTicker
         WHERE a.dtReferencia IN ({ph})
-    """, dates).fetchall()
+    """, dates)
     return [(r['cdTicker'], r['cdInstrumento']) for r in rows]
 
 
-def TickersCompletos(conn: sqlite3.Connection, tickers: list[str]) -> set[str]:
+def TickersCompletos(tickers: list[str]) -> set[str]:
     """Set de tickers já completos: existem em InfoAtivos com todas as colunas
     de INFO_REQUIRED_COLS não-nulas E têm pelo menos uma linha em FluxoAtivos.
 
@@ -313,12 +334,12 @@ def TickersCompletos(conn: sqlite3.Connection, tickers: list[str]) -> set[str]:
     for i in range(0, len(tickers), SQL_VAR_CHUNK):
         part = tickers[i:i + SQL_VAR_CHUNK]
         ph = ','.join('?' * len(part))
-        rows = conn.execute(f"""
+        rows = D.Linhas(f"""
             SELECT i.cdTicker FROM InfoAtivos i
             WHERE i.cdTicker IN ({ph})
               AND {naoNulo}
               AND EXISTS (SELECT 1 FROM FluxoAtivos f WHERE f.cdTicker = i.cdTicker)
-        """, part).fetchall()
+        """, part)
         completos.update(r['cdTicker'] for r in rows)
     return completos
 
@@ -525,7 +546,7 @@ async def RasparAgenda(page, ticker: str, cdInstrumento: str, log) -> list | Non
 # ── worker ────────────────────────────────────────────────────────────────────
 
 async def Trabalhador(wid: int, queue: asyncio.Queue, browser, dirJson: Path,
-                  conn: sqlite3.Connection, lock: asyncio.Lock, stats: dict, args, log):
+                  pendentes: dict, lock: asyncio.Lock, stats: dict, args, log):
     ctx  = await browser.new_context(ignore_https_errors=True)
     page = await ctx.new_page()
 
@@ -610,12 +631,16 @@ async def Trabalhador(wid: int, queue: asyncio.Queue, browser, dirJson: Path,
                     payload['skip_reasons'] = motivosSkip
                     caminhoJson.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
 
-            # ── 4. persistir no DB ────────────────────────────────────────────
+            # ── 4. acumular para o lote ───────────────────────────────────────
+            # InfoAtivos e FluxoAtivos sao arquivos unicos: gravar aqui reescreveria as
+            # duas tabelas uma vez por ativo. O lote e descarregado a cada
+            # TAMANHO_LOTE ativos e no fim da rodada (ver Descarregar). Perder um lote
+            # num crash nao custa scraping: o checkpoint JSON ja foi gravado, e a
+            # re-execucao o le do cache.
             async with lock:
-                UpsertInfoAtivos(conn, ticker, cdInstrumento, info)
+                pendentes['info'].append(LinhaInfoAtivos(ticker, cdInstrumento, info))
                 if linhasFluxo is not None:
-                    if SincronizarFluxoAtivos(conn, ticker, linhasFluxo):
-                        stats['fluxo_mudou'] += 1
+                    pendentes['fluxo'][ticker] = linhasFluxo
                     stats['fluxo_ok'] += 1
                 else:
                     stats['fluxo_skip'] += 1
@@ -626,8 +651,9 @@ async def Trabalhador(wid: int, queue: asyncio.Queue, browser, dirJson: Path,
                     faltantes = CalcularInfoFaltante(info, cdInstrumento)
                     if faltantes:
                         stats['info_faltante'].append((ticker, cdInstrumento, faltantes))
-                conn.commit()
                 stats['inseridos'] += 1
+                if len(pendentes['info']) >= TAMANHO_LOTE:
+                    Descarregar(pendentes, stats, log)
 
             log.info(f'[W{wid}] {ticker} OK ({stats["inseridos"]} inseridos)'
                      + (f' [skip: {motivosSkip}]' if motivosSkip else ''))
@@ -646,7 +672,6 @@ async def Trabalhador(wid: int, queue: asyncio.Queue, browser, dirJson: Path,
 async def PrincipalAsync():
     args = LerArgumentos()
     log  = ObterLogger('scrape_anbima_data_ativos')
-    conn = ObterBanco()
 
     dirJson = Path(cfg['paths']['anbimaDataRaw'])
     dirJson.mkdir(parents=True, exist_ok=True)
@@ -657,6 +682,9 @@ async def PrincipalAsync():
              'anomalias': [],       # [(ticker, [skip_reasons])]
              'info_faltante': [],   # [(ticker, cdInstrumento, [campos_null])]
              'novos_tickers': []}   # tickers novos scrappados nessa run
+
+    # Acumulador do lote de gravacao, compartilhado pelos workers sob o lock.
+    pendentes: dict = {'info': [], 'fluxo': {}}
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True, proxy=ObterProxyPlaywright())
@@ -691,12 +719,11 @@ async def PrincipalAsync():
             else:
                 log.error('Especifique --mode full, --date, --start/--end ou --ticker')
                 await browser.close()
-                conn.close()
                 return
 
             # ── 1. união de fontes: quem teve trade + quem teve taxa Anbima ────
-            dosNegocios = TickersDeNegociosBrutos(conn, dates)
-            daAnbima = TickersDaAnbima(conn, dates)
+            dosNegocios = TickersDeNegociosBrutos(dates)
+            daAnbima = TickersDaAnbima(dates)
             log.info(f'Candidatos brutos — NegociosBrutos: {len(dosNegocios)}, '
                      f'AnbimaIndicativos: {len(daAnbima)}')
 
@@ -724,7 +751,7 @@ async def PrincipalAsync():
                 tickers = candidatos
                 log.info(f'--force: ignora completude — fila: {len(tickers)}')
             else:
-                completos = TickersCompletos(conn, [tk for tk, _ in candidatos])
+                completos = TickersCompletos([tk for tk, _ in candidatos])
                 tickers = [(tk, inst) for tk, inst in candidatos if tk not in completos]
                 log.info(f'Completos na base: {len(completos)} — '
                          f'fila (info faltando): {len(tickers)}')
@@ -747,7 +774,6 @@ async def PrincipalAsync():
         if not tickers:
             log.info('Nada a fazer.')
             await browser.close()
-            conn.close()
             return
 
         # ── fase 2: scraping paralelo ─────────────────────────────────────────
@@ -759,13 +785,16 @@ async def PrincipalAsync():
         lock      = asyncio.Lock()
 
         await asyncio.gather(*[
-            Trabalhador(i, queue, browser, dirJson, conn, lock, stats, args, log)
+            Trabalhador(i, queue, browser, dirJson, pendentes, lock, stats, args, log)
             for i in range(nWorkers)
         ])
 
         await browser.close()
 
-    conn.close()
+    # Descarrega o que sobrou do ultimo lote.
+    async with lock:
+        Descarregar(pendentes, stats, log)
+
     log.info(f'Concluído: {stats}')
 
     lines = [

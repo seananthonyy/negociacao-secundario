@@ -723,6 +723,54 @@ def InvalidarValidacaoFluxo(cdTicker: str) -> None:
     GravarTudo("InfoAtivos", ZerarValidacao(info, info["cdTicker"] == cdTicker))
 
 
+def SincronizarFluxos(porTicker: dict) -> set:
+    """Versao em LOTE do SincronizarFluxoAtivos. Devolve os tickers cuja agenda mudou.
+
+    Mesma regra, ticker a ticker: ativo de cdFonteCadastro='B3' e recusado, agenda
+    identica nao escreve, e quem muda tem a validacao zerada e o stTemFluxo marcado.
+    A diferenca e que le FluxoAtivos e InfoAtivos UMA vez e grava UMA vez, em vez de
+    uma por ativo — o scrape_anbima_data_ativos passa por milhares deles numa rodada, e
+    cada tabela e um arquivo unico."""
+    import pandas as pd
+    if not porTicker:
+        return set()
+
+    fontes = {r["cdTicker"]: r["cdFonteCadastro"] for r in Linhas(
+        'SELECT cdTicker, cdFonteCadastro FROM "InfoAtivos"')}
+
+    atual = Ler("FluxoAtivos")
+    agendas: dict[str, dict] = {}
+    if not atual.empty:
+        for t, e, a, i in atual[["cdTicker", "dtEvento", "vrPctAmortizacao",
+                                 "vrPctIncorporacao"]].itertuples(index=False):
+            agendas.setdefault(t, {})[e] = (SemNaN(a), SemNaN(i))
+
+    mudaram, novas = set(), []
+    for cdTicker, linhas in porTicker.items():
+        if not linhas or fontes.get(cdTicker) == "B3":
+            continue
+        agenda = agendas.get(cdTicker, {})
+        if not any(agenda.get(l["dtEvento"], object())
+                   != (SemNaN(l["vrPctAmortizacao"]), SemNaN(l["vrPctIncorporacao"]))
+                   for l in linhas):
+            continue
+        mudaram.add(cdTicker)
+        novas.extend(linhas)
+
+    if not mudaram:
+        return set()
+
+    Upsert("FluxoAtivos", pd.DataFrame(novas))
+
+    info = Ler("InfoAtivos")
+    alvo = info["cdTicker"].isin(mudaram)
+    if alvo.any():
+        info = ZerarValidacao(info, alvo)
+        info.loc[alvo, "stTemFluxo"] = 1
+        GravarTudo("InfoAtivos", info)
+    return mudaram
+
+
 def SincronizarFluxoAtivos(cdTicker: str, linhas: list) -> bool:
     """Escreve a agenda do ticker em FluxoAtivos SO se ela mudou. Retorna se mudou.
 
