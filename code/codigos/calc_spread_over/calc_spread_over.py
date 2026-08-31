@@ -28,7 +28,9 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "Helpers"))
 
-from db import ObterBanco
+import pandas as pd
+
+import dados as D
 from logger import ObterLogger
 from email_outlook import EnviarEmailConclusao
 from relatorio_execucao import RelatorioExecucao
@@ -54,18 +56,21 @@ SQL_BUSCAR_NEGOCIOS = """
       AND  tp.cdStatus != 'BROKER'
 """
 
-SQL_BUSCAR_TAXA = """
-    SELECT vrTaxa
+# A MtmAnbima inteira, de uma vez. Antes era uma consulta por trade (dezenas de
+# milhares por data); no DuckDB cada uma reabre os parquets. A tabela toda sao poucos
+# milhares de linhas — so as NTN-B e os contratos DI1 —, entao cabe num dict.
+#
+# A busca e por dtNEGOCIO, nao por dtLiquidacao: cada trade tem a sua, e uma so
+# liquidacao mistura varias. Por isso a chave do dict e (cdTicker, dtReferencia), e nao
+# so o ticker como no calc_spread_anbima.
+SQL_BUSCAR_MTM = """
+    SELECT cdTicker, dtReferencia, vrTaxa
     FROM   MtmAnbima
-    WHERE  cdTicker    = ?
-      AND  dtReferencia = ?
 """
 
-SQL_ATUALIZAR_SPREAD = """
-    UPDATE NegociosProcessados
-    SET    vrSpreadOver = ?
-    WHERE  cdIdentificadorNegocio = ?
-"""
+# O que era `UPDATE NegociosProcessados SET vrSpreadOver = ? WHERE
+# cdIdentificadorNegocio = ?`. SOBRESCREVER porque o UPDATE tambem gravava NULL.
+POLITICA_SPREAD = {"vrSpreadOver": D.SOBRESCREVER}
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +96,7 @@ def CalcularSpread(
     dtNegocio: str,
     vrTaxaCalculada: float,
     cdReferencia: Optional[str],
-    conn,
+    taxasRef: dict,
     log,
     stats: EstatisticasData,
 ) -> Optional[float]:
@@ -106,8 +111,8 @@ def CalcularSpread(
         stats.funding += 1
         return vrTaxaCalculada
 
-    row = conn.execute(SQL_BUSCAR_TAXA, (cdReferencia, dtNegocio)).fetchone()
-    if row is None:
+    vrTaxa = taxasRef.get((cdReferencia, dtNegocio))
+    if vrTaxa is None:
         log.debug(
             "spread_over: %s/%s — cdReferencia=%s sem taxa em MtmAnbima, spread=NULL",
             cdTicker, dtNegocio, cdReferencia,
@@ -115,7 +120,6 @@ def CalcularSpread(
         stats.nullSemMtm += 1
         return None
 
-    vrTaxa   = row["vrTaxa"]
     vrSpread = ((1.0 + vrTaxaCalculada / 100.0) / (1.0 + vrTaxa / 100.0) - 1.0) * 100.0
 
     log.debug(
@@ -130,10 +134,10 @@ def CalcularSpread(
 # Processamento por data
 # ---------------------------------------------------------------------------
 
-def ProcessarData(conn, dtLiquidacao: str, log) -> EstatisticasData:
+def ProcessarData(dtLiquidacao: str, log) -> EstatisticasData:
     stats = EstatisticasData(dtLiquidacao=dtLiquidacao)
 
-    trades = conn.execute(SQL_BUSCAR_NEGOCIOS, (dtLiquidacao,)).fetchall()
+    trades = D.Linhas(SQL_BUSCAR_NEGOCIOS, (dtLiquidacao,))
     stats.total = len(trades)
 
     if stats.total == 0:
@@ -142,21 +146,25 @@ def ProcessarData(conn, dtLiquidacao: str, log) -> EstatisticasData:
 
     log.info("spread_over: dtLiquidacao=%s — %d trade(s)", dtLiquidacao, stats.total)
 
-    updates: list[tuple] = []
+    taxasRef = {(r["cdTicker"], r["dtReferencia"]): r["vrTaxa"]
+                for r in D.Linhas(SQL_BUSCAR_MTM)}
+
+    updates: list[dict] = []
     for trade in trades:
         vrSpread = CalcularSpread(
             cdTicker        = trade["cdTicker"],
             dtNegocio       = trade["dtNegocio"],
             vrTaxaCalculada = trade["vrTaxaCalculada"],
             cdReferencia           = trade["cdReferencia"],
-            conn            = conn,
+            taxasRef        = taxasRef,
             log             = log,
             stats           = stats,
         )
-        updates.append((vrSpread, trade["cdIdentificadorNegocio"]))
+        updates.append({"cdIdentificadorNegocio": trade["cdIdentificadorNegocio"],
+                        "dtLiquidacao": dtLiquidacao, "vrSpreadOver": vrSpread})
 
-    conn.executemany(SQL_ATUALIZAR_SPREAD, updates)
-    conn.commit()
+    D.Mesclar("NegociosProcessados", pd.DataFrame(updates),
+              politica=POLITICA_SPREAD, data=dtLiquidacao)
 
     log.info(
         "spread_over: dtLiquidacao=%s — calculado=%d (funding=%d) nullSemRef=%d nullSemMtm=%d",
@@ -242,7 +250,6 @@ def MontarResumo(statsList: list[EstatisticasData]) -> str:
 def Principal() -> None:
     log     = ObterLogger(NOME_SCRIPT)
     args    = LerArgumentos()
-    conn    = ObterBanco()
     rel     = RelatorioExecucao(NOME_SCRIPT)
     erro    = None
     summary = ""
@@ -254,7 +261,7 @@ def Principal() -> None:
 
         statsList: list[EstatisticasData] = []
         for dtLiquidacao in datas:
-            s = ProcessarData(conn, dtLiquidacao, log)
+            s = ProcessarData(dtLiquidacao, log)
             statsList.append(s)
 
         summary = MontarResumo(statsList)
@@ -267,7 +274,6 @@ def Principal() -> None:
         log.exception("spread_over: erro inesperado")
 
     finally:
-        conn.close()
         if summary:
             rel.Secao("Resumo", ["saida"], [[l] for l in summary.splitlines() if l.strip()])
         EnviarEmailConclusao(NOME_SCRIPT, success, rel, tracebackErro=erro, logger=log)
