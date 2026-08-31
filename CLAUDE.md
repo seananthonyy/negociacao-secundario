@@ -2,12 +2,13 @@
 
 Este projeto gera relatórios HTML diários de negócios de crédito privado brasileiro (Debêntures, CRIs, CRAs) consolidando dados da B3, FI Analytics e Anbima.
 
-> 🚧 **LEIA PRIMEIRO — obra em curso (29/08/2026).** O branch **`refactor/split-bases`**
-> reorganizou a estrutura de pastas e trocou o armazenamento de SQLite por **Parquet + DuckDB**
-> (os dados vão para a AWS: bucket S3 + Athena, sem banco SQL). A fundação está pronta e testada;
-> **os 21 scripts ainda não foram convertidos**. **Leia `vault/17 - Armazenamento Parquet e AWS.md`
-> antes de tocar em qualquer código.** As seções "Estrutura" e "Convenções" abaixo já refletem o
-> branch; partes do vault ainda descrevem o `main` e estão marcadas.
+> 🚧 **LEIA PRIMEIRO — branch `refactor/split-bases` (31/08/2026).** Ele reorganizou a
+> estrutura de pastas e trocou o armazenamento de SQLite por **Parquet + DuckDB** (os dados
+> vão para a AWS: bucket S3 + Athena, sem banco SQL). **A conversão está completa**: os 21
+> scripts, os três notebooks e o `tests_fase1.py` falam Parquet, e o `db.py` foi aposentado.
+> O branch **ainda não foi mergeado** e falta o acesso à AWS (depende de Quant/TI).
+> **Leia `vault/17 - Armazenamento Parquet e AWS.md` antes de tocar em qualquer código.**
+> Partes do vault ainda descrevem o `main` e estão marcadas.
 
 > **Instalando/migrando para o PC do banco?** Se o usuário pedir "me diga o que fazer" / "como instalo isto", siga o runbook **`INSTALACAO_BANCO.md`** (raiz) — passo a passo de pastas, dependências, segredos, teste de fluxos e montagem da base. Contexto da migração em `vault/13 - Migracao Banco.md`.
 
@@ -72,14 +73,19 @@ Use `/agents` no Claude Code pra ver/invocar.
     (`InfoAtivos`, `FluxoAtivos`) reescreve o arquivo inteiro. Não existe UPDATE em disco.
   - **Tipo de coluna é declarado, nunca inferido** (`ESQUEMA` em `dados.py`): coluna toda
     NULL num dia seria inferida como tipo `null` e quebraria a leitura das outras partições.
+  - **Escrita parcial vai por `Mesclar()`**, com política por coluna (`SOBRESCREVER` /
+    `PREFERIR_NOVO` / `PREFERIR_ATUAL`) — é o `ON CONFLICT DO UPDATE` do SQLite. `Upsert()`
+    troca a linha inteira e só serve a quem é dono de todas as colunas.
+  - **Grave em LOTE, nunca por ativo:** `InfoAtivos` e `FluxoAtivos` são arquivos únicos.
   - `ipca.db` e `di.db` seguem SQLite — são **contrato com a calculadora**, não nossos.
 - **Chave dos negócios: `cdIdentificadorNegocio`** (a que a B3 manda). O `idTrade`
   (`AUTOINCREMENT`) morreu com o SQLite — fora dele ninguém gera esse número.
 - **Paths ancorados na raiz do projeto**, nunca no cwd (`AncorarPaths` em `Helpers/config.py`).
   Antes eram relativos ao cwd: rodar um script de outra pasta fazia o SQLite criar um banco
-  vazio ali e o script terminava "com sucesso", sobre nada.
-- **Tabelas SQLite**: PascalCase e **em português** (`NegociosBrutos`, `NegociosProcessados`, `InfoAtivos`, `FluxoAtivos`)
-- **Colunas SQLite**: camelCase com prefixos `vr` (valor), `cd` (código/categoria), `dt` (data/hora), `id` (identificador)
+  vazio ali e o script terminava "com sucesso", sobre nada. (O SQLite saiu, mas a âncora
+  continua valendo — sem ela o Parquet nasceria numa raiz errada, com o mesmo silêncio.)
+- **Tabelas**: PascalCase e **em português** (`NegociosBrutos`, `NegociosProcessados`, `InfoAtivos`, `FluxoAtivos`)
+- **Colunas**: camelCase com prefixos `vr` (valor), `cd` (código/categoria), `dt` (data/hora), `id` (identificador)
 - **Nomes de arquivo de script**: snake_case, sem prefixo numérico (`scrape_b3_boletim.py`, não `01_scrape_...`). Nome de arquivo é a **única** coisa em snake_case.
 - **Um código, uma pasta**: `codigos/<nome>/<nome>.py`, com o `logs/` dentro. Cada um roda
   sozinho, de qualquer diretório. **Nenhum script importa outro** — o que dois precisam vai
@@ -103,18 +109,20 @@ Use `/agents` no Claude Code pra ver/invocar.
 
 ## Estado atual
 
-**Em obras no branch `refactor/split-bases` (6 commits, não mergeado).** O que já está feito
-e testado, e o que falta, está em **`vault/17 - Armazenamento Parquet e AWS.md`** — leia antes
-de continuar. Resumo: a camada de dados nova (`Helpers/dados.py`) existe, a base real já foi
-migrada para Parquet (1.582.200 linhas, 388 MB → 41,6 MB), mas **os 21 scripts ainda chamam
-`ObterBanco()` e falam SQLite**.
+**Branch `refactor/split-bases`, não mergeado. A conversão para Parquet está COMPLETA.**
+O detalhe está em **`vault/17 - Armazenamento Parquet e AWS.md`** — leia antes de continuar.
+Resumo: `Helpers/dados.py` é a camada de dados, a base real vive em `files/Parquet`
+(1.582.200 linhas, 388 MB → 41,6 MB), e nada mais fala SQLite fora do `ipca.db`/`di.db`.
 
-Duas armadilhas ao converter:
-1. **O trigger `trgInfoAtivosInvalidaFluxo` não existe no Parquet.** Ele zerava
-   `stFluxoValidado` quando uma coluna do fluxo mudava. Tem de virar código Python em quem
-   escreve `InfoAtivos` — esquecer faz a calc precificar com fluxo velho, **em silêncio**.
-2. **Teste de aceitação de cada etapa:** o relatório geral tem de sair **34 pregões,
-   2.567 ativos, R$ 53.265,83 MM**.
+- **O trigger `trgInfoAtivosInvalidaFluxo` virou código**, dentro de `dados.Mesclar()` — e
+  mora lá pelo mesmo motivo que morava no banco: é o único caminho de escrita coluna a
+  coluna de `InfoAtivos`, então nenhum dos cinco escritores pode esquecer.
+- **Teste de aceitação:** o relatório geral sai em **34 pregões, 2.567 ativos,
+  R$ 53.265,78 MM**. (Era R$ 53.265,83 MM; os R$ 0,05 MM de diferença são dado novo — 50
+  negócios ganharam taxa quando a FI/B3 responderam hoje. Explicado na nota 17.)
+- **Dois achados aguardam sua decisão** — ver `vault/98 - Backlog.md`: negócios que a B3
+  manda sem identificador (a chave da base), e o filtro de cancelado que não pega o
+  vocabulário da B3 (`Cancelado B3`).
 
 Veja `vault/09 - Progresso.md` para saber em que fase está a implementação e o que falta.
 

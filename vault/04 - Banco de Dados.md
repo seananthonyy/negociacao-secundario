@@ -1,5 +1,13 @@
 # Banco de Dados
 
+> ⚠️ **Desatualizada em parte (31/08/2026).** Esta nota descreve o armazenamento em
+> **SQLite** (`lib/db.py`, `trades.db`, triggers, índices). Isso **acabou**: desde o branch
+> `refactor/split-bases` o armazenamento é **Parquet + DuckDB**, o `db.py` foi removido, e o
+> trigger `trgInfoAtivosInvalidaFluxo` virou código dentro de `dados.Mesclar()`.
+> **O que continua valendo aqui é o SCHEMA** — nomes de tabela, de coluna e o significado de
+> cada uma —, porque o Parquet o herdou inteiro. Para tudo que for *como* se lê e se grava,
+> a fonte é **[[17 - Armazenamento Parquet e AWS]]**.
+
 > Ver também: [[00 - Inicio]] | [[03 - Estrutura de Pastas]] | [[07 - Filtro de Duplicados]] | [[14 - Rotinas da Calculadora]]
 
 > 🚧 **29/08/2026 — o armazenamento mudou.** Não é mais um SQLite: as tabelas viraram

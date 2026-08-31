@@ -1,8 +1,10 @@
 # 17 — Armazenamento Parquet e AWS
 
-> **Estado: fundação pronta, scripts ainda não migrados.** A camada de dados existe e está
-> testada; os 21 scripts continuam falando SQLite. Ver §"O que falta".
-> Branch: `refactor/split-bases`. Última sessão: 29/08/2026.
+> **Estado: conversão COMPLETA.** A camada de dados existe, e os 21 scripts, os três
+> notebooks e o `tests_fase1.py` já falam Parquet. O `db.py` foi aposentado. Passa no teste
+> de aceitação (34 pregões, 2.567 ativos). Falta só o acesso à AWS, que depende de
+> terceiros — ver §"Pendências do lado da AWS".
+> Branch: `refactor/split-bases`. Última sessão: 31/08/2026.
 
 ---
 
@@ -148,31 +150,127 @@ Rodado sobre a base real em 28/08:
 
 ---
 
-## O que falta
+## Os scripts, convertidos (31/08/2026)
 
-**Os 21 scripts ainda chamam `ObterBanco()` e falam SQLite.** A fundação está pronta e
-testada, mas nada do pipeline foi convertido.
+**Os 21 scripts falam Parquet.** O `Helpers/db.py` e o `codigos/migrar_split_bases/` foram
+removidos; nada mais importa o SQLite fora do `ipca.db`/`di.db`, que são contrato com a
+calculadora e ficam. Os três notebooks e o `tests_fase1.py` foram junto.
 
-Ordem sugerida:
+Teste de aceitação em cada etapa: **34 pregões, 2.567 ativos**. O volume terminou em
+**R$ 53.265,78 MM** contra os R$ 53.265,83 MM do baseline — a diferença é dado novo, não
+conversão: ver "A deriva de R$ 0,05 MM" abaixo.
 
-1. **Os fáceis** — quem só faz `INSERT`/upsert por data: os scrapers da Anbima, NTN-B,
-   curva DI, boletim. Viram `D.Upsert(tabela, df, data)`.
-2. **Os que dão trabalho** — `filtrar_trades` (marca `cdStatus` linha a linha) e
-   `calc_taxa_negocios` (upsert com `ON CONFLICT`). Os `UPDATE` viram
-   *ler a partição → alterar em pandas → regravar o dia*.
-3. **`gerar_relatorio_credito`** — o SQL sobrevive; troca só a conexão. É o teste de
-   aceitação: tem de sair **34 pregões, 2.567 ativos, R$ 53.265,83 MM**.
-4. **Aposentar** `Helpers/db.py`, `migrar_split_bases.py` e os `.db`.
+### O que a camada de dados ganhou para isso caber
 
-Cuidados:
+O `Upsert` original troca a **linha inteira**. Isso serve a quem é dono de todas as colunas
+(os negócios, o MtM), mas `InfoAtivos` tem **cinco escritores parciais** — b3_bond_details,
+anbima_data, fianalytics_planilha, anbima_debentures, anbima_cri_cra — e cada um só conhece
+um pedaço. Converter um deles para `Upsert` apagaria, em silêncio, o que os outros
+escreveram.
 
-- **O trigger `trgInfoAtivosInvalidaFluxo` não existe mais.** Ele zerava a validação
-  quando uma coluna do fluxo mudava. Vira código Python em quem escreve `InfoAtivos`
-  (ver `COLS_INVALIDAM_FLUXO` no `db.py`). **Se isso for esquecido, a calc local passa a
-  precificar com fluxo desatualizado, em silêncio.**
-- `SincronizarFluxoAtivos()` (só grava se mudou) precisa de equivalente.
-- O **add-in do Excel** lê `InfoAtivos`/`FluxoAtivos` em SQLite. Ficou **fora de escopo por
-  decisão do usuário** (28/08) — ele resolve num código à parte.
+`Mesclar()` traz as três expressões que o `ON CONFLICT DO UPDATE` usava, como **política por
+coluna**:
+
+| política | o SQL que ela traduz |
+|---|---|
+| `SOBRESCREVER` | `coluna = excluded.coluna` |
+| `PREFERIR_NOVO` | `coluna = COALESCE(excluded.coluna, coluna)` |
+| `PREFERIR_ATUAL` | `coluna = COALESCE(coluna, excluded.coluna)` |
+
+Havia uma quarta forma, condicional a **outra** coluna (`CASE WHEN excluded.vrDuration IS
+NOT NULL THEN excluded.dtAtualizacaoDuration ELSE ...`). Ela não precisa de política: quem
+monta o DataFrame deixa a coluna dependente **nula** quando a condição é falsa, e
+`PREFERIR_NOVO` dá o mesmo resultado.
+
+Cada script convertido carrega um mapa `POLITICA_*` ao lado, com a expressão SQL que ele
+substitui. **Três diferenças entre scripts que o SQL escondia** ficaram explícitas:
+
+- `cdIndexador` é `PREFERIR_ATUAL` no cri_cra e no fianalytics, e `PREFERIR_NOVO` no
+  debentures. Não é descuido: o cri_cra **chuta** `PREFIXADO` quando o CSV não traz índice,
+  e a FI Analytics só preenche buraco — nenhum dos dois pode passar por cima do que a
+  Anbima ou a B3 apuraram.
+- `vrDuration` sobrescreve no curva_di e preserva no ntnb: o DI1 tira a duration do próprio
+  vértice e ela sempre vem; a da NTN-B depende da cascata FI→B3, que pode devolver `None`.
+- `vrSpreadAnbima` **sai** do DataFrame de `AnbimaIndicativos`. Quem o calcula é o
+  `calc_spread_anbima`, e como `Mesclar` só toca coluna presente, ele sobrevive.
+
+Outras peças novas: `Ler`, `Linhas`/`Tuplas`/`Linha` (o `fetchall`/`fetchone` do
+`sqlite3.Row`, por nome e por posição), `Apagar` (o `DELETE ... WHERE col IN`),
+`SubstituirFluxo` e `SincronizarFluxos` (versão em lote), e `Geracao` (contador de escrita
+por tabela).
+
+### O trigger, resolvido
+
+`trgInfoAtivosInvalidaFluxo` desceu para `Mesclar()`, e mora lá **pelo mesmo motivo que
+morava no banco**: é o único caminho de escrita coluna a coluna de `InfoAtivos`, então
+nenhum dos cinco escritores pode esquecer. A comparação é null-safe, como o `IS NOT` do
+trigger — reescrever o mesmo valor não invalida; preencher um `NULL` invalida.
+
+### Gravar em LOTE, não por ativo
+
+`InfoAtivos` e `FluxoAtivos` são **arquivos únicos**. Gravar ativo a ativo os reescreveria
+inteiros uma vez por ativo. Todo script que passa por milhares deles acumula em memória e
+grava uma vez — que é o que o `commit()` único do SQLite já era na prática:
+
+- `scrape_b3_bond_details`: `GravarAtivo` virou `PrepararAtivo()` puro + `GravarLote()`.
+- `scrape_anbima_data_ativos`: os workers acumulam num lote compartilhado, descarregado a
+  cada 200 ativos. Perder um lote num crash não custa scraping — o checkpoint JSON já foi
+  gravado.
+- `match_referencias` e `validar_calc_b3`: os `UPDATE` por ativo viraram um `Mesclar` no fim.
+
+**A exceção documentada** é o `RefrescarCadastroB3` do `validar_calc_b3`: ele grava um ativo
+por vez de propósito, porque o resultado da gravação é reavaliado na hora e não há lote a
+formar. Só os reprovados chegam lá, e `--sem-refresh` desliga o passo.
+
+### `CarregarAtivo` ganhou um índice
+
+No SQLite custava dois acertos de índice e ninguém contava. No DuckDB **cada consulta reabre
+os parquets**, e o `match_referencias` e o `validar_calc_b3` chamam isso uma vez por ativo,
+milhares por rodada. `Helpers/calc.py` passa a manter `InfoAtivos` + `FluxoAtivos` (0,55 MB)
+em memória.
+
+A guarda contra dado velho é a **geração** de `dados.py`: quem grava a incrementa, e o
+índice se reconstrói na leitura seguinte. Sem isso o cache devolveria, por exemplo, o
+`stFluxoValidado` de antes da validação.
+
+O mesmo padrão vale para as consultas ponto a ponto: `calc_spread_anbima` e
+`calc_spread_over` passam a ler o `MtmAnbima` de uma vez, e o `match_referencias` busca
+candidatos **por curva**, não por ativo.
+
+### Três armadilhas que morderam de verdade
+
+1. **`Conformar` passava float com NaN para coluna `int64`** e o pyarrow recusa (*"Cannot
+   convert non-finite value"*). Coluna inteira vai por `"Int64"`, o inteiro nulável do
+   pandas. Sem isso, **toda** gravação com linha nova quebraria.
+2. **`NULL` volta como `NaN`, e `NaN != NaN`.** O `SincronizarFluxoAtivos` achava que toda
+   agenda idêntica tinha mudado — reescrevia e **invalidava a validação todo dia**.
+   Resolvido por `SemNaN()`, aplicado também no `Linhas`/`Tuplas` (o consumidor testa
+   `is None` e faz aritmética com o valor; `NaN` passaria calado pelos dois).
+3. **`groupby.nth(-1)` deixou de agregar no pandas 2.** Era como o `Dobrar()` implementava o
+   `SOBRESCREVER` (o único modo que precisa do último valor *inclusive nulo*); passou a
+   devolver as linhas originais com o índice original, e a gravação estourava com
+   `"['cdIdentificadorNegocio'] not in index"`. Agora vai por `agg(iloc[-1])`.
+
+### A deriva de R$ 0,05 MM
+
+Depois de re-rodar `calc_taxa_negocios` e `filtrar_trades` sobre 28/07, o relatório passou de
+R$ 53.265,83 MM para R$ 53.265,78 MM. **Não é a conversão.** Comparando partição a partição
+contra o baseline: **50 negócios** que estavam com `vrTaxaCalculada` NULL ganharam taxa — a
+FI Analytics e a B3 responderam agora para operações que não responderam quando a base foi
+montada, que é exatamente o que o script retenta. Negócio sem taxa fica **fora** dos filtros
+BROKER e PF por construção, então 4 dos 50 passaram a ser dedupáveis e saíram de VALIDO.
+
+### O que este trabalho descobriu — e precisa de decisão
+
+Duas coisas apareceram sozinhas e estão em [[98 - Backlog]]:
+
+- **A B3 manda negócio sem identificador (`-`)** — 25 no pregão de 28/07. Como o campo virou
+  a chave, eles colapsam. E, diferente do SQLite (onde o `UNIQUE` era global), no Parquet a
+  chave só é única **dentro da partição**: com um `-` por pregão, o `JOIN` do relatório
+  conta o negócio duas vezes. Medido: R$ 3,24 MM de inflação. **Essa parte é regressão do
+  Parquet.**
+- **`cdSituacao != 'Cancelado'` não pega o vocabulário da B3**, que escreve `Cancelado B3` e
+  `Cancelado Parcial B3` — 13.854 negócios cancelados contam como bons. Pré-existente.
 
 ---
 

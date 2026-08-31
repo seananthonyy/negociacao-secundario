@@ -6,6 +6,78 @@
 
 ---
 
+## 🔴 A B3 manda negócio SEM identificador — e ele é a chave da base (31/08/2026)
+
+**Origem:** conversão do `scrape_b3_boletim` para Parquet. Apareceu sozinho, ao re-raspar
+o pregão de 28/07/2026.
+
+**O que é:** o CSV do boletim traz o campo *"Cód. identificador do negócio"* como `-` em
+parte das operações. No pregão de **28/07/2026 foram 25**. Esse campo virou a **CHAVE** da
+base quando o `idTrade AUTOINCREMENT` do SQLite foi aposentado (ver
+[[17 - Armazenamento Parquet e AWS]]).
+
+**Duas consequências, ambas silenciosas:**
+
+1. **Perda de negócio.** Todos os `-` de um pregão colapsam numa linha só; os demais não
+   entram. Não é regressão do Parquet — o SQLite tinha `UNIQUE` nessa coluna e fazia
+   exatamente o mesmo, e é por isso que a base migrada tem no máximo **uma** linha `-` por
+   pregão. Só agora ficou visível.
+
+2. **Contagem em dobro no relatório — essa É regressão do Parquet.** No SQLite o `UNIQUE`
+   era **global**: `-` só podia existir uma vez na base inteira. No Parquet a chave só é
+   deduplicada **dentro da partição**, então acumula um `-` por pregão. E o `JOIN` do
+   relatório (`NegociosProcessados` × `NegociosBrutos` por `cdIdentificadorNegocio`) **não
+   é restrito por data** — com dois `-` na base, o negócio é contado duas vezes.
+   Medido: o `-` de 09/06 (EEELA1, R$ 3.242.887,82) inflou o relatório em exatamente
+   R$ 3,24 MM assim que um segundo `-` entrou.
+
+**Estado:** a linha `-` de 28/07 foi **removida** e a base devolvida ao estado anterior
+(680.651 linhas, 680.651 identificadores distintos). O `scrape_b3_boletim` agora **avisa**
+no log quando o pregão traz negócio sem identificador. O `-` de 09/06 continua na base —
+é o que já existia.
+
+**O que precisa ser decidido:**
+- **Sintetizar uma chave** quando a B3 não manda (p.ex. hash de ticker+horário+PU+volume+
+  quantidade), o que recupera os negócios perdidos; **ou descartar** essas linhas
+  explicitamente, o que ao menos para de contar errado.
+- Enquanto não se decide: vale **restringir o JOIN do relatório por data**
+  (`AND tr.dtNegocio = tp.dtNegocio`), que corta o risco de dobra sem depender da chave.
+
+---
+
+## 🔴 O filtro de cancelado não pega o vocabulário da B3 (31/08/2026)
+
+**Origem:** mesma investigação acima.
+
+**O que é:** o projeto inteiro filtra negócio cancelado com `cdSituacao != 'Cancelado'` —
+comparação de string **exata**. Mas a B3 não escreve `'Cancelado'`. Os valores reais na
+base, hoje:
+
+| cdSituacao | linhas |
+|---|---|
+| `Confirmado` | 664.867 |
+| `Cancelado B3` | **13.828** |
+| `Cancelado` | 1.868 |
+| `Ajustado B3` | 63 |
+| `Cancelado Parcial B3` | **26** |
+
+As **13.854** linhas de `Cancelado B3` / `Cancelado Parcial B3` **passam pelo filtro** e são
+tratadas como negócio bom — no `calc_taxa`, no `filtrar_trades`, no `match_referencias` e no
+relatório. As únicas de fato excluídas são as 1.868 `'Cancelado'`, que são as que o **nosso**
+`SoftCancelAusentes` escreve.
+
+**Não é regressão** — está assim no baseline migrado (12.883 + 26) e vinha do `main`.
+
+**Escala:** ao re-raspar 28/07/2026 (um mês depois do pregão), **926 negócios** que estavam
+`Confirmado` haviam virado `Cancelado B3` na revisão da B3. Ou seja: o número cresce a cada
+re-raspagem, e nenhum deles está sendo excluído.
+
+**O que precisa ser decidido:** trocar o filtro por `cdSituacao NOT LIKE 'Cancelado%'` (ou
+uma lista explícita) nos ~6 lugares que o usam. É uma linha em cada, mas **muda os números
+do relatório** — por isso não foi feito sem o seu aval. Convém medir o impacto antes.
+
+---
+
 ## AWS — o que falta liberar e decidir (29/08/2026)
 
 **Origem:** decisao do usuario de 28/08 — os dados precisam viver na AWS, e o acesso

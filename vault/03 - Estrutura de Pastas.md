@@ -1,5 +1,11 @@
 # Estrutura de Pastas
 
+> ⚠️ **Desatualizada (31/08/2026).** Esta nota descreve a árvore do `main`: `lib/`,
+> `scripts/`, `data/` e o `lib/db.py`. O branch `refactor/split-bases` reorganizou tudo em
+> **`Helpers/` + `files/` + `codigos/<nome>/`**, e o `db.py` foi removido (o armazenamento é
+> Parquet + DuckDB, em `Helpers/dados.py`). A árvore corrente está no `CLAUDE.md` §Estrutura;
+> o armazenamento, em **[[17 - Armazenamento Parquet e AWS]]**.
+
 > Ver também: [[00 - Inicio]] | [[04 - Banco de Dados]] | [[02 - Como Rodar]]
 
 > ⚠️ **DESATUALIZADA desde 29/08/2026.** O branch `refactor/split-bases` reorganizou tudo:
