@@ -208,25 +208,30 @@ def Conectar(recriar: bool = False) -> duckdb.DuckDBPyConnection:
         con.execute("CREATE OR REPLACE SECRET segredoS3 (TYPE s3, PROVIDER credential_chain);")
 
     for tabela in TABELAS:
-        if TemDados(tabela):
-            # hive_types: sem isto o DuckDB DEDUZ o tipo da coluna de particao pelo
-            # texto da pasta -- `dtReferencia=2026-07-28` vira DATE, enquanto as
-            # demais datas sao VARCHAR (ISO, como no SQLite). Ai qualquer comparacao
-            # entre as duas quebra com "Cannot compare DATE and VARCHAR". Forcamos
-            # VARCHAR para que particao e coluna comum sejam a mesma coisa.
-            coluna = PARTICAO[tabela]
-            tipos = f", hive_types={{'{coluna}': 'VARCHAR'}}" if coluna else ""
-            con.execute(
-                f'CREATE OR REPLACE VIEW "{tabela}" AS '
-                f"SELECT * FROM read_parquet('{Glob(tabela)}', hive_partitioning=true, "
-                f"union_by_name=true{tipos})")
-        else:
-            colunas = ", ".join(f'NULL::{TipoSql(c.type)} AS "{c.name}"'
-                                for c in ESQUEMA[tabela])
-            con.execute(f'CREATE OR REPLACE VIEW "{tabela}" AS '
-                        f"SELECT {colunas} WHERE false")
+        CriarView(con, tabela)
     conexaoCache = con
     return con
+
+
+def CriarView(con: duckdb.DuckDBPyConnection, tabela: str) -> None:
+    """A view que faz a ponte entre o nome PascalCase do SQL e a pasta snake_case."""
+    if TemDados(tabela):
+        # hive_types: sem isto o DuckDB DEDUZ o tipo da coluna de particao pelo
+        # texto da pasta -- `dtReferencia=2026-07-28` vira DATE, enquanto as
+        # demais datas sao VARCHAR (ISO, como no SQLite). Ai qualquer comparacao
+        # entre as duas quebra com "Cannot compare DATE and VARCHAR". Forcamos
+        # VARCHAR para que particao e coluna comum sejam a mesma coisa.
+        coluna = PARTICAO[tabela]
+        tipos = f", hive_types={{'{coluna}': 'VARCHAR'}}" if coluna else ""
+        con.execute(
+            f'CREATE OR REPLACE VIEW "{tabela}" AS '
+            f"SELECT * FROM read_parquet('{Glob(tabela)}', hive_partitioning=true, "
+            f"union_by_name=true{tipos})")
+    else:
+        colunas = ", ".join(f'NULL::{TipoSql(c.type)} AS "{c.name}"'
+                            for c in ESQUEMA[tabela])
+        con.execute(f'CREATE OR REPLACE VIEW "{tabela}" AS '
+                    f"SELECT {colunas} WHERE false")
 
 
 def TipoSql(tipo: pa.DataType) -> str:
@@ -250,10 +255,25 @@ def Escalar(sql: str, params: tuple | list | None = None):
     return None if df.empty else df.iloc[0, 0]
 
 
-def Invalidar() -> None:
+def Invalidar(tabela: str | None = None) -> None:
     """Recria as views. Chamar depois de gravar, para que a proxima consulta enxergue
     o arquivo novo (a view guarda a lista de arquivos de quando foi criada)."""
-    Conectar(recriar=True)
+    if tabela is None or conexaoCache is None:
+        Conectar(recriar=True)
+    else:
+        CriarView(conexaoCache, tabela)
+
+
+def Ler(tabela: str, data: str | None = None):
+    """A tabela (ou uma particao dela) como DataFrame, sempre com TODAS as colunas
+    do esquema, na ordem do esquema — inclusive quando ainda nao ha arquivo nenhum.
+
+    Usado por quem vai reescrever: mesclar exige ter o retrato atual em maos."""
+    coluna = PARTICAO[tabela]
+    colunas = ", ".join(f'"{c.name}"' for c in ESQUEMA[tabela])
+    if coluna and data is not None:
+        return Consultar(f'SELECT {colunas} FROM "{tabela}" WHERE "{coluna}" = ?', (data,))
+    return Consultar(f'SELECT {colunas} FROM "{tabela}"')
 
 
 # ---------------------------------------------------------------------------
@@ -262,15 +282,27 @@ def Invalidar() -> None:
 
 def Conformar(tabela: str, df) -> pa.Table:
     """DataFrame -> Table no esquema declarado: coluna que falta nasce NULL, coluna
-    a mais e descartada, e a ordem/tipo passa a ser sempre a mesma."""
+    a mais e descartada, e a ordem/tipo passa a ser sempre a mesma.
+
+    Coluna inteira vai por "Int64" (o inteiro NULAVEL do pandas), nao por int64. O
+    pandas representa NULL num int64 promovendo a coluna a float e usando NaN, e o
+    pyarrow se recusa a converter NaN de volta para inteiro ("Cannot convert
+    non-finite value"). Como stTemFluxo/stFluxoValidado/vrAniversario/vrQuantidade
+    ficam NULL em linha recem-criada, sem isto toda gravacao com linha nova
+    quebraria."""
     import pandas as pd
     esquema = ESQUEMA[tabela]
     saida = pd.DataFrame(index=df.index)
     for campo in esquema:
-        if campo.name in df.columns:
-            saida[campo.name] = df[campo.name]
-        else:
+        if campo.name not in df.columns:
             saida[campo.name] = None
+            continue
+        coluna = df[campo.name]
+        if pa.types.is_integer(campo.type):
+            coluna = pd.to_numeric(coluna, errors="coerce").astype("Int64")
+        elif pa.types.is_floating(campo.type):
+            coluna = pd.to_numeric(coluna, errors="coerce").astype("float64")
+        saida[campo.name] = coluna
     return pa.Table.from_pandas(saida, schema=esquema, preserve_index=False)
 
 
@@ -291,7 +323,7 @@ def GravarTudo(tabela: str, df) -> int:
     elas sao o retrato corrente do cadastro e cabem num arquivo so."""
     dados = Conformar(tabela, df)
     GravarArquivo(dados, f"{CaminhoTabela(tabela)}/dados.parquet")
-    Invalidar()
+    Invalidar(tabela)
     return dados.num_rows
 
 
@@ -303,7 +335,7 @@ def GravarDia(tabela: str, df, data: str) -> int:
         raise ValueError(f"{tabela} nao e particionada — use GravarTudo")
     dados = Conformar(tabela, df)
     GravarArquivo(dados, f"{CaminhoTabela(tabela)}/{coluna}={data}/dados.parquet")
-    Invalidar()
+    Invalidar(tabela)
     return dados.num_rows
 
 
@@ -344,3 +376,274 @@ def Datas(tabela: str) -> list[str]:
         return []
     df = Consultar(f'SELECT DISTINCT "{coluna}" AS d FROM "{tabela}" ORDER BY 1')
     return [str(x) for x in df["d"]]
+
+
+# ---------------------------------------------------------------------------
+# Mesclagem coluna a coluna — o `ON CONFLICT DO UPDATE` de verdade
+# ---------------------------------------------------------------------------
+# O Upsert acima troca a LINHA inteira. Isso serve para quem e dono de todas as
+# colunas da tabela (os negocios, o MtM), mas nao serve para InfoAtivos: ela tem
+# cinco escritores (b3_bond_details, anbima_data, fianalytics_planilha,
+# anbima_debentures, anbima_cri_cra) e cada um so conhece um pedaco das colunas.
+# Trocar a linha inteira ali apagaria, em silencio, o que os outros escreveram.
+#
+# No SQLite isso era um `ON CONFLICT(cdTicker) DO UPDATE SET` com uma expressao
+# por coluna. Sao apenas tres expressoes, repetidas:
+#
+#   coluna = excluded.coluna                   -> SOBRESCREVER
+#   coluna = COALESCE(excluded.coluna, coluna) -> PREFERIR_NOVO
+#   coluna = COALESCE(coluna, excluded.coluna) -> PREFERIR_ATUAL
+#
+# Havia uma quarta forma, condicional a OUTRA coluna:
+#
+#   dtAtualizacaoDuration = CASE WHEN excluded.vrDuration IS NOT NULL
+#                           THEN excluded.dtAtualizacaoDuration ELSE ... END
+#
+# Ela nao precisa de politica propria: quem monta o DataFrame deixa a coluna
+# dependente NULA quando a condicao e falsa, e PREFERIR_NOVO da exatamente o
+# mesmo resultado. E o que os scripts convertidos fazem.
+
+SOBRESCREVER   = "sobrescrever"    # o novo manda, mesmo sendo NULL
+PREFERIR_NOVO  = "preferir_novo"   # o novo manda se nao for NULL
+PREFERIR_ATUAL = "preferir_atual"  # so preenche buraco; o que ja existe fica
+
+
+def Dobrar(df, chave: list[str], politica: dict, padrao: str):
+    """Reduz linhas repetidas DENTRO do proprio df, uma so por chave.
+
+    Precisa existir porque o executemany do SQLite aplicava as linhas UMA A UMA:
+    duas linhas da mesma chave no mesmo lote se mesclavam entre si, com a mesma
+    politica. Um drop_duplicates perderia isso.
+
+    O last()/first() do groupby ignora NULL — que e precisamente a semantica do
+    COALESCE. O nth() nao ignora, e por isso serve ao SOBRESCREVER.
+    """
+    import pandas as pd
+    if not df.duplicated(subset=chave).any():
+        return df.reset_index(drop=True)
+
+    ordem  = list(df.columns)
+    grupos = df.groupby(chave, sort=False, dropna=False)
+    partes = {}
+    for col in ordem:
+        if col in chave:
+            continue
+        modo = politica.get(col, padrao)
+        if modo == PREFERIR_ATUAL:
+            partes[col] = grupos[col].first()   # primeiro nao-nulo
+        elif modo == SOBRESCREVER:
+            partes[col] = grupos[col].nth(-1)   # ultimo, nulo inclusive
+        else:
+            partes[col] = grupos[col].last()    # ultimo nao-nulo
+    return pd.DataFrame(partes).reset_index()[ordem]
+
+
+def Mesclar(tabela: str, df, politica: dict | None = None,
+            padrao: str = PREFERIR_NOVO, data: str | None = None) -> int:
+    """Mescla `df` no que ja existe, COLUNA A COLUNA, pela CHAVE da tabela.
+
+    Coluna que nao vier em `df` fica intacta na linha que ja existe (e nasce NULL
+    na linha nova). E isso que permite cinco escritores parciais na mesma tabela.
+
+    `politica`: {coluna: SOBRESCREVER | PREFERIR_NOVO | PREFERIR_ATUAL}; o que nao
+    estiver no mapa usa `padrao`.
+
+    Em InfoAtivos dispara tambem a invalidacao da validacao de fluxo — o que era o
+    trigger trgInfoAtivosInvalidaFluxo. Ver InvalidarSeFluxoMudou.
+    """
+    politica = politica or {}
+    chave    = list(CHAVE[tabela])
+    coluna   = PARTICAO[tabela]
+    if coluna and data is None:
+        raise ValueError(f"{tabela} e particionada por {coluna} — informe a data")
+
+    colunas = [c.name for c in ESQUEMA[tabela]]
+    df = df[[c for c in df.columns if c in colunas]]
+    if any(c not in df.columns for c in chave):
+        raise ValueError(f"{tabela}: df sem a chave {chave}")
+    df = Dobrar(df, chave, politica, padrao)
+
+    atual = Ler(tabela, data)
+    if atual.empty:
+        return GravarDia(tabela, df, data) if coluna else GravarTudo(tabela, df)
+
+    # Alinha pela chave. `indicator` separa quem ja existia (mescla), quem e novo
+    # (entra como veio) e quem existia mas nao veio no lote (fica intacto).
+    juntos = atual.merge(df, on=chave, how="outer", suffixes=("", "Novo"),
+                         indicator="origem")
+    veio   = juntos["origem"] != "left_only"
+
+    for col in df.columns:
+        if col in chave:
+            continue
+        novo = juntos[f"{col}Novo"]
+        modo = politica.get(col, padrao)
+        if modo == PREFERIR_ATUAL:
+            mesclado = juntos[col].combine_first(novo)
+        elif modo == SOBRESCREVER:
+            mesclado = novo
+        else:
+            mesclado = novo.combine_first(juntos[col])
+        juntos[col] = mesclado.where(veio, juntos[col])
+
+    saida = juntos[colunas]
+    if tabela == "InfoAtivos":
+        saida = InvalidarSeFluxoMudou(atual, saida)
+    return GravarDia(tabela, saida, data) if coluna else GravarTudo(tabela, saida)
+
+
+# ---------------------------------------------------------------------------
+# A invalidacao de fluxo — o trigger que o Parquet nao tem
+# ---------------------------------------------------------------------------
+# No SQLite isto era o trgInfoAtivosInvalidaFluxo, um AFTER UPDATE no banco. Ficava
+# la, e nao nos scrapers, porque as colunas abaixo tem cinco escritores e bastava
+# um esquecer para a calculadora passar a precificar com fluxo velho — sem erro,
+# sem log, so um PU errado. O Parquet nao tem trigger, entao a regra desce para
+# ca: Mesclar e o unico caminho pelo qual InfoAtivos e escrita coluna a coluna.
+
+# Colunas que DEFINEM o fluxo de caixa: se qualquer uma mudar de valor, a
+# validacao (stFluxoValidado) deixa de valer. dtVencimento NAO entra — e deduzido
+# do proprio fluxo (ultimo evento).
+COLS_INVALIDAM_FLUXO = (
+    "dtInicioRentabilidade",
+    "vrTaxaEmissao",
+    "cdIndexador",
+    "vrVNE",
+    # A convencao de amortizacao muda a base da amortizacao (logo o VNA/PU), entao
+    # muda o ConferirSaldo da validacao — invalida.
+    "cdTipoAmortizacao",
+    # Nao define o fluxo, mas define como a calc o LE: com o aniversario errado, os
+    # eventos nao caem no aniversario e sao ignorados. Muda o VNA, logo muda o
+    # ConferirSaldo — que faz parte da validacao. Entao invalida.
+    "vrAniversario",
+)
+
+
+def ZerarValidacao(df, mascara=None):
+    """`df` com a validacao de fluxo zerada nas linhas de `mascara`.
+
+    dtValidacaoFluxo vai a NULL junto: o resultado da ultima validacao virou lixo
+    no instante em que o fluxo mudou. Como e essa data que o validar_calc_b3 usa na
+    janela de revalidacao, zera-la devolve o ativo ao topo da fila em vez de deixa-lo
+    esperando o prazo vencer."""
+    import pandas as pd
+    if mascara is None:
+        mascara = pd.Series(True, index=df.index)
+    if not mascara.any():
+        return df
+    df = df.copy()
+    df.loc[mascara, "stFluxoValidado"]       = 0
+    df.loc[mascara, "dtValidacaoFluxo"]      = None
+    df.loc[mascara, "cdFonteValidacaoFluxo"] = None
+    return df
+
+
+def InvalidarSeFluxoMudou(antes, depois):
+    """Zera a validacao das linhas em que uma coluna de COLS_INVALIDAM_FLUXO mudou.
+
+    A comparacao e null-safe, como o `IS NOT` do trigger: reescrever o mesmo valor
+    nao invalida; preencher um NULL invalida, porque isso muda o calculo. Linha nova
+    nao entra — o trigger era AFTER UPDATE, e linha nova ja nasce nao-validada."""
+    chave = list(CHAVE["InfoAtivos"])
+    cols  = [c for c in COLS_INVALIDAM_FLUXO
+             if c in depois.columns and c in antes.columns]
+    if not cols or antes.empty:
+        return depois
+
+    velho = antes.set_index(chave)[cols]
+    novo  = depois.set_index(chave)[cols]
+    comum = novo.index.intersection(velho.index)
+    if comum.empty:
+        return depois
+
+    v, n = velho.loc[comum], novo.loc[comum]
+    # O ne() sozinho diria que NULL != NULL; o & ~(ambos nulos) devolve o IS NOT.
+    difere  = (v.ne(n) & ~(v.isna() & n.isna())).any(axis=1)
+    tickers = set(comum[difere.values])
+    if not tickers:
+        return depois
+    return ZerarValidacao(depois, depois[chave[0]].isin(tickers))
+
+
+# ---------------------------------------------------------------------------
+# Fluxo de caixa — a agenda do ativo
+# ---------------------------------------------------------------------------
+
+def SemNaN(valor):
+    """NaN -> None. O SQLite devolvia None numa coluna NULL; o Parquet devolve NaN,
+    e NaN != NaN. Sem normalizar, comparar dois fluxos identicos dava "mudou" toda
+    vez — e cada "mudou" invalida a validacao e joga o ativo de volta na fila."""
+    import pandas as pd
+    return None if valor is None or (isinstance(valor, float) and pd.isna(valor)) else valor
+
+
+def LerFluxoAtivos(cdTicker: str) -> dict:
+    """Agenda atual do ticker: {dtEvento: (vrPctAmortizacao, vrPctIncorporacao)}."""
+    df = Consultar('SELECT dtEvento, vrPctAmortizacao, vrPctIncorporacao '
+                   'FROM "FluxoAtivos" WHERE cdTicker = ?', (cdTicker,))
+    return {r.dtEvento: (SemNaN(r.vrPctAmortizacao), SemNaN(r.vrPctIncorporacao))
+            for r in df.itertuples()}
+
+
+def MarcarTemFluxo(cdTicker: str, temFluxo: bool = True) -> None:
+    """Mantem InfoAtivos.stTemFluxo em dia. Chamado por quem escreve FluxoAtivos."""
+    info = Ler("InfoAtivos")
+    alvo = info["cdTicker"] == cdTicker
+    if not alvo.any():
+        return
+    info.loc[alvo, "stTemFluxo"] = 1 if temFluxo else 0
+    GravarTudo("InfoAtivos", info)
+
+
+def InvalidarValidacaoFluxo(cdTicker: str) -> None:
+    """Marca o fluxo do ativo como nao-validado e limpa o resultado anterior."""
+    info = Ler("InfoAtivos")
+    GravarTudo("InfoAtivos", ZerarValidacao(info, info["cdTicker"] == cdTicker))
+
+
+def SincronizarFluxoAtivos(cdTicker: str, linhas: list) -> bool:
+    """Escreve a agenda do ticker em FluxoAtivos SO se ela mudou. Retorna se mudou.
+
+    `linhas`: dicts com cdTicker, dtEvento, vrPctAmortizacao, vrPctIncorporacao,
+    dtAtualizacao (o formato que ProcessarAgenda produz).
+
+    Mudou = evento novo, ou evento existente com %amortizacao/%incorporacao
+    diferente. Reescrever a agenda identica (o re-scrape do dia a dia) nao conta como
+    mudanca: nao escreve, nao invalida, nao mexe no dtAtualizacao.
+
+    Quando muda: grava, invalida a validacao do fluxo e atualiza stTemFluxo — numa
+    escrita so de InfoAtivos, em vez das tres do SQLite.
+
+    NAO escreve em ativo de cdFonteCadastro = 'B3'. O fluxo da B3 vem casado com o VNE
+    ja capitalizado e o inicio de rentabilidade DELA (vrVNE + dtInicioRentabilidade +
+    FluxoAtivos sao um pacote indivisivel — ver scrape_b3_bond_details). Se a Anbima
+    reescrevesse a agenda por cima, o VNE capitalizado ficaria orfao e a carencia
+    passaria a contar DUAS vezes, sem erro nenhum, so um PU errado. A guarda mora aqui,
+    e nao no scraper, porque FluxoAtivos tem varios writers e vai ter mais."""
+    import pandas as pd
+    if not linhas:
+        return False
+
+    fonte = Escalar('SELECT cdFonteCadastro FROM "InfoAtivos" WHERE cdTicker = ?',
+                    (cdTicker,))
+    if fonte == "B3":
+        return False
+
+    atual = LerFluxoAtivos(cdTicker)
+    mudou = any(
+        atual.get(l["dtEvento"], object())
+        != (SemNaN(l["vrPctAmortizacao"]), SemNaN(l["vrPctIncorporacao"]))
+        for l in linhas
+    )
+    if not mudou:
+        return False
+
+    Upsert("FluxoAtivos", pd.DataFrame(linhas))
+
+    info = Ler("InfoAtivos")
+    alvo = info["cdTicker"] == cdTicker
+    if alvo.any():
+        info = ZerarValidacao(info, alvo)
+        info.loc[alvo, "stTemFluxo"] = 1
+        GravarTudo("InfoAtivos", info)
+    return True
