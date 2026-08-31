@@ -227,6 +227,7 @@ def AnalisarCsv(textoBruto: str, log) -> list[dict]:
     linhasSaida = []
     linhasPuladas = 0
     linhasInstrumentoErrado = 0
+    linhasSemId = 0
 
     for i, row in enumerate(reader, start=2):  # linha 1 = header
         # Aplica mapeamento com strip nas chaves
@@ -248,6 +249,19 @@ def AnalisarCsv(textoBruto: str, log) -> list[dict]:
         instrumento = mapped.get("cdInstrumento", "").upper().strip()
         if instrumento not in [x.upper() for x in INSTRUMENTOS]:
             linhasInstrumentoErrado += 1
+            continue
+
+        # DESCARTA negocio sem identificador. A B3 manda "-" nesse campo em parte das
+        # operacoes (25 no pregao de 28/07/2026), e ele e a CHAVE da base desde que o
+        # idTrade AUTOINCREMENT do SQLite foi aposentado. Guardar esses negocios nao e
+        # opcao: todos os "-" de um pregao colapsam numa linha so, e — pior — a chave
+        # so e unica DENTRO da particao, entao um "-" por pregao se acumula e o JOIN do
+        # relatorio (que nao filtra data) passa a contar o mesmo negocio varias vezes.
+        # Medido: um negocio de R$ 3,24 MM contado em dobro.
+        # Decisao do usuario (31/08/2026): descartar. Perde-se o negocio, mas nao se
+        # corrompe o total.
+        if not str(mapped.get("cdIdentificadorNegocio", "")).strip(" -"):
+            linhasSemId += 1
             continue
 
         # Converte vrQuantidade
@@ -305,6 +319,12 @@ def AnalisarCsv(textoBruto: str, log) -> list[dict]:
         f"{linhasInstrumentoErrado} outros instrumentos ignorados, "
         f"{linhasPuladas} linhas com erro puladas"
     )
+    if linhasSemId:
+        log.warning(
+            f"{linhasSemId} negocio(s) DESCARTADOS por virem sem identificador da B3 "
+            f"('-'). Esse campo e a chave da base; sem ele o negocio nao tem como ser "
+            f"guardado sem colidir com os outros do mesmo pregao. Ver [[98 - Backlog]]."
+        )
     return linhasSaida
 
 
@@ -370,26 +390,13 @@ def UpsertLinhas(rows: list[dict], log) -> tuple[int, int]:
             D.Mesclar("NegociosBrutos", pd.DataFrame(atualizados),
                       politica=POLITICA_UPSERT, data=dtNegocio)
 
-        # Conta IDENTIFICADORES, nao linhas do CSV. O CSV traz negocios cujo
-        # "Cod. identificador do negocio" vem como "-" (a B3 nao o preenche em toda
-        # operacao), e todos eles colapsam numa linha so — em 28/07/2026 foram 25 linhas
-        # virando uma. Contar linhas dizia "25 inseridos" onde entrou 1. Ver o aviso de
-        # SemIdentificador.
+        # Conta IDENTIFICADORES, nao linhas do CSV: se a B3 repetir um numero, as duas
+        # linhas viram uma so e o contador tem de dizer 1.
         inserted += len({r["cdIdentificadorNegocio"] for r in novos})
         updated  += len({r["cdIdentificadorNegocio"] for r in atualizados})
 
     log.info(f"UPSERT: {inserted} inseridos, {updated} atualizados")
     return inserted, updated
-
-
-def SemIdentificador(rows: list[dict]) -> int:
-    """Quantos negocios do CSV vieram sem `cdIdentificadorNegocio` (a B3 manda "-").
-
-    Importa porque esse campo e a CHAVE da base desde que o idTrade AUTOINCREMENT do
-    SQLite foi aposentado: todos os "-" de um pregao colapsam numa unica linha, e os
-    demais somem. Nao e regressao do Parquet — o SQLite tinha UNIQUE nessa coluna e
-    fazia o mesmo —, mas so agora ficou visivel. Ver [[98 - Backlog]]."""
-    return sum(1 for r in rows if not (r.get("cdIdentificadorNegocio") or "").strip("-").strip())
 
 
 def SoftCancelAusentes(dataStr: str, idsBaixados: set, log) -> int:
@@ -800,14 +807,6 @@ async def RasparData(
     if not rows:
         log.warning(f"Nenhum trade DEB/CRI/CRA encontrado para {dataStr}")
         return 0, 0, 0
-
-    semId = SemIdentificador(rows)
-    if semId:
-        log.warning(
-            f"{dataStr}: {semId} negocio(s) vieram SEM identificador da B3 ('-'). "
-            f"Como esse campo e a chave da base, todos colapsam numa linha so e os "
-            f"demais nao entram. Ver [[98 - Backlog]]."
-        )
 
     ins, upd = UpsertLinhas(rows, log)
     idsBaixados = {r["cdIdentificadorNegocio"] for r in rows}

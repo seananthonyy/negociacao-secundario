@@ -6,42 +6,27 @@
 
 ---
 
-## 🔴 A B3 manda negócio SEM identificador — e ele é a chave da base (31/08/2026)
+## ✅ RESOLVIDO (31/08/2026) — negócio sem identificador é descartado
 
-**Origem:** conversão do `scrape_b3_boletim` para Parquet. Apareceu sozinho, ao re-raspar
-o pregão de 28/07/2026.
+A B3 manda o campo *"Cód. identificador do negócio"* como `-` em parte das operações (25 no
+pregão de 28/07/2026). Esse campo é a **chave** da base desde que o `idTrade AUTOINCREMENT`
+do SQLite foi aposentado.
 
-**O que é:** o CSV do boletim traz o campo *"Cód. identificador do negócio"* como `-` em
-parte das operações. No pregão de **28/07/2026 foram 25**. Esse campo virou a **CHAVE** da
-base quando o `idTrade AUTOINCREMENT` do SQLite foi aposentado (ver
-[[17 - Armazenamento Parquet e AWS]]).
+Duas consequências, ambas silenciosas: (a) todos os `-` de um pregão colapsavam numa linha
+só — o SQLite fazia o mesmo, com `UNIQUE`; (b) no Parquet a chave só é única **dentro da
+partição**, então acumulava um `-` por pregão, e o `JOIN` do relatório (que não filtra data)
+passava a contar o mesmo negócio várias vezes. Medido: R$ 3,24 MM em dobro.
 
-**Duas consequências, ambas silenciosas:**
+**Decisão do usuário (31/08):** descartar. Perde-se o negócio, mas não se corrompe o total.
+O `scrape_b3_boletim` agora descarta no parse e **avisa** quantos foram. A linha `-` que
+estava na base (EEELA1, 09/06) foi removida de `NegociosBrutos` e `NegociosProcessados`; o
+relatório caiu R$ 3,25 MM, que era exatamente a contagem dobrada.
 
-1. **Perda de negócio.** Todos os `-` de um pregão colapsam numa linha só; os demais não
-   entram. Não é regressão do Parquet — o SQLite tinha `UNIQUE` nessa coluna e fazia
-   exatamente o mesmo, e é por isso que a base migrada tem no máximo **uma** linha `-` por
-   pregão. Só agora ficou visível.
+A chave voltou a ser única de verdade: **680.650 linhas / 680.650 identificadores** em
+`NegociosBrutos`, e 645.318/645.318 em `NegociosProcessados`.
 
-2. **Contagem em dobro no relatório — essa É regressão do Parquet.** No SQLite o `UNIQUE`
-   era **global**: `-` só podia existir uma vez na base inteira. No Parquet a chave só é
-   deduplicada **dentro da partição**, então acumula um `-` por pregão. E o `JOIN` do
-   relatório (`NegociosProcessados` × `NegociosBrutos` por `cdIdentificadorNegocio`) **não
-   é restrito por data** — com dois `-` na base, o negócio é contado duas vezes.
-   Medido: o `-` de 09/06 (EEELA1, R$ 3.242.887,82) inflou o relatório em exatamente
-   R$ 3,24 MM assim que um segundo `-` entrou.
-
-**Estado:** a linha `-` de 28/07 foi **removida** e a base devolvida ao estado anterior
-(680.651 linhas, 680.651 identificadores distintos). O `scrape_b3_boletim` agora **avisa**
-no log quando o pregão traz negócio sem identificador. O `-` de 09/06 continua na base —
-é o que já existia.
-
-**O que precisa ser decidido:**
-- **Sintetizar uma chave** quando a B3 não manda (p.ex. hash de ticker+horário+PU+volume+
-  quantidade), o que recupera os negócios perdidos; **ou descartar** essas linhas
-  explicitamente, o que ao menos para de contar errado.
-- Enquanto não se decide: vale **restringir o JOIN do relatório por data**
-  (`AND tr.dtNegocio = tp.dtNegocio`), que corta o risco de dobra sem depender da chave.
+> Se um dia a perda incomodar, o caminho é **sintetizar** a chave (hash de
+> ticker+horário+PU+volume+quantidade) em vez de descartar.
 
 ---
 
@@ -62,10 +47,8 @@ participava do pareamento de duplicados, e tirá-lo reclassifica — em 28/07 o 
 
 ### Duas pontas soltas que sobraram
 
-1. **`Cancelado Parcial B3` está sendo tratado como cancelado integral.** São 23 negócios
-   entre VALIDO/BROKER (R$ 54 MM). Se "parcial" significar que parte da quantidade continua
-   valendo, eles deveriam entrar — e aí o predicado tem de listar os dois valores em vez de
-   usar o prefixo. **Precisa de confirmação com a B3 ou com a mesa.**
+1. ~~`Cancelado Parcial B3` tratado como cancelado integral~~ — **decidido pelo usuário
+   (31/08): é isso mesmo, conta como cancelado.** O prefixo `'Cancelado%'` fica.
 
 2. **O `filtrar_trades` só foi re-rodado para 28/07.** Os outros 33 pregões ainda têm o
    `cdStatus` calculado com os cancelados dentro do pareamento. O relatório já sai certo
