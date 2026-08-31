@@ -42,7 +42,7 @@ import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -51,7 +51,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "Helpers"))
 
 from calc import CalcularTaxa as CalcularTaxaLocal, CarregarAtivo
 from config import cfg
-from db import ObterBanco
+import pandas as pd
+
+import dados as D
 from logger import ObterLogger
 from email_outlook import EnviarEmailConclusao
 from fianalytics_api import CalcularTaxa
@@ -64,7 +66,7 @@ from relatorio_execucao import RelatorioExecucao
 # ---------------------------------------------------------------------------
 
 # Ativos com fluxo validado, prontos para a calc. Carregado uma vez por rodada, na
-# thread principal: a conexao do SQLite nao e thread-safe, e os workers so leem daqui.
+# thread principal; os workers so leem daqui.
 ativosValidados: dict[str, dict] = {}
 
 # (cdTicker, dtLiquidacao, vrPU) -> taxa. E ele que viabiliza a troca: num pregao cheio,
@@ -86,14 +88,14 @@ calcFalhas: dict[str, int] = {}
 INDEXADORES_CALC = frozenset(cfg["calc"].get("indexadores", ["CDI+", "IPCA", "PREFIXADO"]))
 
 
-def CarregarAtivosValidados(conn, log) -> None:
+def CarregarAtivosValidados(log) -> None:
     global ativosValidados
-    tickers = [r["cdTicker"] for r in conn.execute(
+    tickers = [r["cdTicker"] for r in D.Linhas(
         "SELECT cdTicker FROM InfoAtivos WHERE stFluxoValidado = 1")]
     ativosValidados = {}
     pulados = 0
     for cdTicker in tickers:
-        ativo = CarregarAtivo(conn, cdTicker)
+        ativo = CarregarAtivo(cdTicker)
         if not ativo:
             continue
         if ativo["cdIndexador"] not in INDEXADORES_CALC:
@@ -188,21 +190,23 @@ WHERE dtLiquidacao = ?
   AND vrTaxaCalculada IS NOT NULL
 """
 
-SQL_UPSERT = """
-INSERT INTO NegociosProcessados (
-    cdIdentificadorNegocio, cdTicker, cdEmissor, dtNegocio, dtLiquidacao,
-    vrQuantidade, vrPU, vrVolume, vrTaxaCalculada, cdFonteTaxa,
-    vrDuration, vrSpreadOver, idGrupoNegocio, cdStatus, dtProcessamento
-) VALUES (
-    :cdIdentificadorNegocio, :cdTicker, :cdEmissor, :dtNegocio, :dtLiquidacao,
-    :vrQuantidade, :vrPU, :vrVolume, :vrTaxaCalculada, :cdFonteTaxa,
-    NULL, NULL, NULL, 'VALIDO', CURRENT_TIMESTAMP
-)
-ON CONFLICT(cdIdentificadorNegocio) DO UPDATE SET
-    vrTaxaCalculada = excluded.vrTaxaCalculada,
-    cdFonteTaxa    = excluded.cdFonteTaxa,
-    dtProcessamento   = excluded.dtProcessamento
+SQL_IDS_EXISTENTES = """
+SELECT cdIdentificadorNegocio
+FROM NegociosProcessados
+WHERE dtLiquidacao = ?
 """
+
+# O `ON CONFLICT(cdIdentificadorNegocio) DO UPDATE` daqui atualizava TRES colunas apenas
+# — vrTaxaCalculada, cdFonteTaxa e dtProcessamento —, deixando cdStatus, idGrupoNegocio,
+# vrDuration e vrSpreadOver como estavam. E o que separa este script dos que vem depois:
+# quem escreve cdStatus e o filtrar_trades, e quem escreve vrSpreadOver e o
+# calc_spread_over. Sobrescrever aqui apagaria o trabalho dos dois.
+#
+# Como Mesclar aplica a politica a toda coluna PRESENTE no DataFrame, o lote e partido em
+# dois: linha nova entra inteira (com cdStatus='VALIDO', que e o default do INSERT), e
+# linha que ja existe leva so as tres colunas do DO UPDATE.
+COLS_ATUALIZAVEIS = ("vrTaxaCalculada", "cdFonteTaxa", "dtProcessamento")
+POLITICA_UPSERT = {c: D.SOBRESCREVER for c in COLS_ATUALIZAVEIS}
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +261,7 @@ def AplicarCascata(trade: NegocioBruto, log, usarCalc: bool = True) -> tuple[Opt
 # Processamento por data
 # ---------------------------------------------------------------------------
 
-def ProcessarData(conn, dtLiquidacao: str, log, workers: int, force: bool,
+def ProcessarData(dtLiquidacao: str, log, workers: int, force: bool,
                  limit: Optional[int] = None, usarCalc: bool = True) -> EstatisticasData:
     """Processa todos os trades de uma dtLiquidacao e faz UPSERT em NegociosProcessados.
 
@@ -267,7 +271,7 @@ def ProcessarData(conn, dtLiquidacao: str, log, workers: int, force: bool,
     """
     stats = EstatisticasData(dtLiquidacao=dtLiquidacao)
 
-    rows = conn.execute(SQL_BUSCAR_NEGOCIOS, (dtLiquidacao,)).fetchall()
+    rows = D.Linhas(SQL_BUSCAR_NEGOCIOS, (dtLiquidacao,))
 
     if limit is not None and len(rows) > limit:
         # trades sem taxa (precisam de API) primeiro — o resto completa o lote
@@ -300,7 +304,7 @@ def ProcessarData(conn, dtLiquidacao: str, log, workers: int, force: bool,
     # Carrega taxa já calculada (exceto se --force)
     existing: dict[int, tuple[Optional[float], Optional[str]]] = {}
     if not force:
-        for row in conn.execute(SQL_BUSCAR_EXISTENTES, (dtLiquidacao,)).fetchall():
+        for row in D.Linhas(SQL_BUSCAR_EXISTENTES, (dtLiquidacao,)):
             existing[row["cdIdentificadorNegocio"]] = (row["vrTaxaCalculada"], row["cdFonteTaxa"])
 
     # Separa trades que já têm taxa (cached) dos que precisam de API
@@ -384,22 +388,45 @@ def ProcessarData(conn, dtLiquidacao: str, log, workers: int, force: bool,
     for trade, vrTaxaCalculada, cdFonteTaxa in cached:
         ContarEstatisticas(trade, vrTaxaCalculada, cdFonteTaxa)
 
+    jaExistem = {r[0] for r in D.Tuplas(SQL_IDS_EXISTENTES, (dtLiquidacao,))}
+    agora     = datetime.now().isoformat(sep=" ", timespec="seconds")
+    novos, atualizados = [], []
+
     for trade, vrTaxaCalculada, cdFonteTaxa in resultadosApi:
         ContarEstatisticas(trade, vrTaxaCalculada, cdFonteTaxa)
-        conn.execute(SQL_UPSERT, {
-            "cdIdentificadorNegocio":         trade.cdIdentificadorNegocio,
-            "cdTicker":        trade.cdTicker,
-            "cdEmissor":       trade.cdEmissor,
-            "dtNegocio":       trade.dtNegocio,
-            "dtLiquidacao":    trade.dtLiquidacao,
-            "vrQuantidade":    trade.vrQuantidade,
-            "vrPU":            trade.vrPU,
-            "vrVolume":        trade.vrVolume,
-            "vrTaxaCalculada": vrTaxaCalculada,
-            "cdFonteTaxa":    cdFonteTaxa,
-        })
+        if trade.cdIdentificadorNegocio in jaExistem:
+            atualizados.append({
+                "cdIdentificadorNegocio": trade.cdIdentificadorNegocio,
+                "dtLiquidacao":    trade.dtLiquidacao,
+                "vrTaxaCalculada": vrTaxaCalculada,
+                "cdFonteTaxa":     cdFonteTaxa,
+                "dtProcessamento": agora,
+            })
+        else:
+            novos.append({
+                "cdIdentificadorNegocio": trade.cdIdentificadorNegocio,
+                "cdTicker":        trade.cdTicker,
+                "cdEmissor":       trade.cdEmissor,
+                "dtNegocio":       trade.dtNegocio,
+                "dtLiquidacao":    trade.dtLiquidacao,
+                "vrQuantidade":    trade.vrQuantidade,
+                "vrPU":            trade.vrPU,
+                "vrVolume":        trade.vrVolume,
+                "vrTaxaCalculada": vrTaxaCalculada,
+                "cdFonteTaxa":     cdFonteTaxa,
+                "vrDuration":      None,
+                "vrSpreadOver":    None,
+                "idGrupoNegocio":  None,
+                "cdStatus":        "VALIDO",
+                "dtProcessamento": agora,
+            })
 
-    conn.commit()
+    if novos:
+        D.Mesclar("NegociosProcessados", pd.DataFrame(novos),
+                  padrao=D.SOBRESCREVER, data=dtLiquidacao)
+    if atualizados:
+        D.Mesclar("NegociosProcessados", pd.DataFrame(atualizados),
+                  politica=POLITICA_UPSERT, data=dtLiquidacao)
 
     log.info(
         "calc_taxa: dtLiquidacao=%s — direta=%d calc=%d fianalytics=%d b3=%d semTaxa=%d",
@@ -543,7 +570,6 @@ def MontarRelatorio(statsList: list[EstatisticasData], args, rel) -> None:
 def Principal() -> None:
     log = ObterLogger("calc_taxa_negocios")
     args = LerArgumentos()
-    conn = ObterBanco()
     rel = RelatorioExecucao("calc_taxa_negocios", args=vars(args))
     success = True
     erro = None
@@ -560,12 +586,12 @@ def Principal() -> None:
             usarCalc = True
         log.info("calc_taxa: calculadora local %s", "LIGADA" if usarCalc else "desligada")
         if usarCalc:
-            CarregarAtivosValidados(conn, log)
+            CarregarAtivosValidados(log)
             rel.Metrica("Ativos prontos para a calc (fluxo validado)", len(ativosValidados))
 
         statsList: list[EstatisticasData] = []
         for dtLiquidacao in datas:
-            s = ProcessarData(conn, dtLiquidacao, log, args.workers, args.force, args.limit, usarCalc)
+            s = ProcessarData(dtLiquidacao, log, args.workers, args.force, args.limit, usarCalc)
             statsList.append(s)
 
         MontarRelatorio(statsList, args, rel)
@@ -578,7 +604,6 @@ def Principal() -> None:
         log.exception("calc_taxa: erro inesperado")
 
     finally:
-        conn.close()
         EnviarEmailConclusao("calc_taxa_negocios", success, rel, tracebackErro=erro, logger=log)
 
     if not success:
