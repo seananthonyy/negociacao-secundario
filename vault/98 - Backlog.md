@@ -45,36 +45,32 @@ no log quando o pregão traz negócio sem identificador. O `-` de 09/06 continua
 
 ---
 
-## 🔴 O filtro de cancelado não pega o vocabulário da B3 (31/08/2026)
+## ✅ RESOLVIDO (31/08/2026) — o filtro de cancelado não pegava o vocabulário da B3
 
-**Origem:** mesma investigação acima.
+O projeto filtrava com `cdSituacao != 'Cancelado'`, comparação **exata**. A B3 escreve
+`Cancelado B3` (13.828) e `Cancelado Parcial B3` (26) — o literal `'Cancelado'` (1.868) é
+**nosso**, do `SoftCancelAusentes`. Resultado: **13.854 negócios cancelados pela B3
+passavam por bons** em todo o pipeline.
 
-**O que é:** o projeto inteiro filtra negócio cancelado com `cdSituacao != 'Cancelado'` —
-comparação de string **exata**. Mas a B3 não escreve `'Cancelado'`. Os valores reais na
-base, hoje:
+O predicado passou a viver em **`dados.NaoCancelado()`**, com prefixo `'Cancelado%'` — um
+lugar só, cobre os três e não quebra se a B3 inventar um quarto. Nove call sites.
 
-| cdSituacao | linhas |
-|---|---|
-| `Confirmado` | 664.867 |
-| `Cancelado B3` | **13.828** |
-| `Cancelado` | 1.868 |
-| `Ajustado B3` | 63 |
-| `Cancelado Parcial B3` | **26** |
+**Impacto medido no relatório geral:** R$ 53.265,78 MM → **R$ 52.318,42 MM** (−947,36 MM,
+−1,8%); ativos 2.567 → **2.568**. O ativo a mais não é contradição: negócio cancelado também
+participava do pareamento de duplicados, e tirá-lo reclassifica — em 28/07 o FUNDO caiu de
+11.575 para 11.534 e o VALIDO subiu de 5.145 para 5.173.
 
-As **13.854** linhas de `Cancelado B3` / `Cancelado Parcial B3` **passam pelo filtro** e são
-tratadas como negócio bom — no `calc_taxa`, no `filtrar_trades`, no `match_referencias` e no
-relatório. As únicas de fato excluídas são as 1.868 `'Cancelado'`, que são as que o **nosso**
-`SoftCancelAusentes` escreve.
+### Duas pontas soltas que sobraram
 
-**Não é regressão** — está assim no baseline migrado (12.883 + 26) e vinha do `main`.
+1. **`Cancelado Parcial B3` está sendo tratado como cancelado integral.** São 23 negócios
+   entre VALIDO/BROKER (R$ 54 MM). Se "parcial" significar que parte da quantidade continua
+   valendo, eles deveriam entrar — e aí o predicado tem de listar os dois valores em vez de
+   usar o prefixo. **Precisa de confirmação com a B3 ou com a mesa.**
 
-**Escala:** ao re-raspar 28/07/2026 (um mês depois do pregão), **926 negócios** que estavam
-`Confirmado` haviam virado `Cancelado B3` na revisão da B3. Ou seja: o número cresce a cada
-re-raspagem, e nenhum deles está sendo excluído.
-
-**O que precisa ser decidido:** trocar o filtro por `cdSituacao NOT LIKE 'Cancelado%'` (ou
-uma lista explícita) nos ~6 lugares que o usam. É uma linha em cada, mas **muda os números
-do relatório** — por isso não foi feito sem o seu aval. Convém medir o impacto antes.
+2. **O `filtrar_trades` só foi re-rodado para 28/07.** Os outros 33 pregões ainda têm o
+   `cdStatus` calculado com os cancelados dentro do pareamento. O relatório já sai certo
+   (ele filtra na leitura), mas a classificação **gravada** não. Re-rodar a base inteira
+   muda número histórico — decisão do usuário.
 
 ---
 

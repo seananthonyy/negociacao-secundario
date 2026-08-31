@@ -308,7 +308,7 @@ ORDER BY dtLiquidacao
 # Anbima casado por dtNegocio: cada trade compara com a indicativa mais recente
 # com dtReferencia <= o próprio dtNegocio do trade (reflete o mercado no momento
 # em que o negócio foi fechado). Simétrico ao MtM de calc_spread_over.
-SQL_BUSCAR_VALIDO = """
+SQL_BUSCAR_VALIDO = f"""
 WITH AnbimaMatch AS (
     SELECT tp.cdIdentificadorNegocio AS cdIdentificadorNegocio, ai.vrTaxaAnbima, ai.vrSpreadAnbima,
            ROW_NUMBER() OVER (PARTITION BY tp.cdIdentificadorNegocio ORDER BY ai.dtReferencia DESC) AS rn
@@ -325,10 +325,10 @@ FROM NegociosProcessados tp
 JOIN NegociosBrutos tr ON tr.cdIdentificadorNegocio = tp.cdIdentificadorNegocio
 LEFT JOIN InfoAtivos ia ON ia.cdTicker = tp.cdTicker
 LEFT JOIN AnbimaMatch am ON am.cdIdentificadorNegocio = tp.cdIdentificadorNegocio AND am.rn = 1
-WHERE tp.dtLiquidacao = ? AND tp.cdStatus = 'VALIDO' AND tr.cdSituacao != 'Cancelado'
+WHERE tp.dtLiquidacao = ? AND tp.cdStatus = 'VALIDO' AND {D.NaoCancelado('tr.')}
 """
 
-SQL_BUSCAR_BROKER = """
+SQL_BUSCAR_BROKER = f"""
 WITH AnbimaMatch AS (
     SELECT tp.cdIdentificadorNegocio AS cdIdentificadorNegocio, ai.vrTaxaAnbima, ai.vrSpreadAnbima,
            ROW_NUMBER() OVER (PARTITION BY tp.cdIdentificadorNegocio ORDER BY ai.dtReferencia DESC) AS rn
@@ -346,7 +346,7 @@ JOIN NegociosBrutos tr ON tr.cdIdentificadorNegocio = tp.cdIdentificadorNegocio
 LEFT JOIN InfoAtivos ia ON ia.cdTicker = tp.cdTicker
 LEFT JOIN AnbimaMatch am ON am.cdIdentificadorNegocio = tp.cdIdentificadorNegocio AND am.rn = 1
 WHERE tp.dtLiquidacao = ? AND tp.cdStatus = 'BROKER'
-  AND tp.idGrupoNegocio IS NOT NULL AND tr.cdSituacao != 'Cancelado'
+  AND tp.idGrupoNegocio IS NOT NULL AND {D.NaoCancelado('tr.')}
 """
 
 SQL_MTM_TAXA = "SELECT vrTaxa FROM MtmAnbima WHERE cdTicker = ? AND dtReferencia = ?"

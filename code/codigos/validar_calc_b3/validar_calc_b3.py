@@ -343,7 +343,7 @@ def Principal() -> None:
             corte = (date.today() - timedelta(days=args.negociadosDias)).isoformat()
             sql = ("SELECT DISTINCT i.cdTicker FROM InfoAtivos i "
                    "JOIN NegociosBrutos nb ON nb.cdTicker = i.cdTicker "
-                   "WHERE nb.dtLiquidacao >= ? AND nb.cdSituacao != 'Cancelado'")
+                   f"WHERE nb.dtLiquidacao >= ? AND {D.NaoCancelado('nb.')}")
             params = [corte]
             if corteReval:
                 sql += " AND " + recente

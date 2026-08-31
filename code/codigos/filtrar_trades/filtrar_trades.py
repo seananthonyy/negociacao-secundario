@@ -42,7 +42,7 @@ Ordem de execução por data:
   3. PF       — entre os não-pareados restantes; taxa e taxa de referência
 
 Cada rodada recalcula do zero para a dtLiquidacao — idempotente.
-Trades com cdSituacao = 'Cancelado' em NegociosBrutos são ignorados.
+Trades cancelados pela B3 em NegociosBrutos são ignorados (ver dados.NaoCancelado).
 
 CLI:
     python scripts/filtrar_trades.py --date 2026-05-27
@@ -103,7 +103,7 @@ class EstatisticasData:
 # SQL
 # ---------------------------------------------------------------------------
 
-SQL_BUSCAR_NEGOCIOS = """
+SQL_BUSCAR_NEGOCIOS = f"""
 SELECT tp.cdIdentificadorNegocio, tp.cdTicker, tp.dtLiquidacao,
        tp.vrQuantidade, tp.vrVolume, tp.vrTaxaCalculada,
        ia.cdIndexador
@@ -111,7 +111,7 @@ FROM NegociosProcessados tp
 JOIN NegociosBrutos tr ON tr.cdIdentificadorNegocio = tp.cdIdentificadorNegocio
 LEFT JOIN InfoAtivos ia ON ia.cdTicker = tp.cdTicker
 WHERE tp.dtLiquidacao = ?
-  AND tr.cdSituacao != 'Cancelado'
+  AND {D.NaoCancelado('tr.')}
 """
 
 SQL_BUSCAR_ANBIMA = """

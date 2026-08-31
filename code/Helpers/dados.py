@@ -145,6 +145,32 @@ CHAVE: dict[str, tuple[str, ...]] = {
 COMPRESSAO = "zstd"
 
 
+# ---------------------------------------------------------------------------
+# Negocio cancelado — o vocabulario da B3
+# ---------------------------------------------------------------------------
+# A B3 nao escreve "Cancelado". Ela escreve:
+#
+#     Cancelado B3           13.828 linhas   negocio cancelado por ela
+#     Cancelado Parcial B3       26 linhas   cancelamento parcial
+#
+# O literal "Cancelado" (1.868) e nosso: e o que o SoftCancelAusentes grava quando um
+# negocio some do arquivo da B3.
+#
+# O projeto inteiro filtrava com `cdSituacao != 'Cancelado'`, comparacao EXATA — entao
+# so pegava os nossos. Os 13.854 cancelados pela B3 passavam por bons, no calc_taxa, no
+# filtrar_trades, no match_referencias e no relatorio. Eram 2.402 deles so entre os
+# VALIDO/BROKER de um relatorio (~R$ 1,17 bi de volume bruto).
+#
+# O numero cresce a cada re-raspagem: a B3 revisa o boletim depois do pregao. Re-raspar
+# 28/07/2026 um mes depois trouxe 926 negocios que eram 'Confirmado' e viraram
+# 'Cancelado B3'.
+#
+# O prefixo cobre os tres de uma vez e nao quebra se a B3 inventar um quarto.
+def NaoCancelado(alias: str = "") -> str:
+    """Predicado SQL de 'negocio que vale'. `alias` e o prefixo da tabela ('tr.')."""
+    return f"{alias}cdSituacao NOT LIKE 'Cancelado%'"
+
+
 def NomePasta(tabela: str) -> str:
     """PascalCase -> snake_case. `NegociosBrutos` vira `negocios_brutos`, que e a
     convencao de nome que o Athena espera."""

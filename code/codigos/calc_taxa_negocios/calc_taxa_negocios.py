@@ -26,7 +26,7 @@ banco (onde cada chamada paga proxy). A calc e CPU-bound, entao o ThreadPoolExec
 nao a paraleliza (GIL) — quem faz o servico e o cache.
 
 Grava resultado em NegociosProcessados via UPSERT.
-Trades com cdSituacao = 'Cancelado' sao ignorados.
+Trades cancelados pela B3 sao ignorados (ver dados.NaoCancelado).
 
 CLI:
     python scripts/calc_taxa_negocios.py --date 2026-05-29
@@ -175,12 +175,12 @@ class EstatisticasData:
 # SQL
 # ---------------------------------------------------------------------------
 
-SQL_BUSCAR_NEGOCIOS = """
+SQL_BUSCAR_NEGOCIOS = f"""
 SELECT cdIdentificadorNegocio, cdTicker, cdEmissor, cdInstrumento,
        dtNegocio, dtLiquidacao, vrQuantidade, vrPU, vrVolume, vrTaxaNegocio
 FROM NegociosBrutos
 WHERE dtLiquidacao = ?
-  AND cdSituacao != 'Cancelado'
+  AND {D.NaoCancelado()}
 """
 
 SQL_BUSCAR_EXISTENTES = """

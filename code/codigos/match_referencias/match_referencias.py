@@ -140,11 +140,11 @@ def MelhorMatch(durAtivo: float, candidatos: list) -> str | None:
     return min(candidatos, key=lambda c: abs(c["vrDuration"] - durAtivo))["cdTicker"]
 
 
-SQL_DURATION_FALTANTE = """
+SQL_DURATION_FALTANTE = f"""
     SELECT DISTINCT ia.cdTicker, ia.cdIndexador, ia.stFluxoValidado, ia.vrTaxaEmissao,
            ia.vrDuration, ia.dtAtualizacaoDuration, ia.cdReferencia, ia.cdFonteReferencia
     FROM   InfoAtivos ia
-    JOIN   NegociosBrutos nb ON nb.cdTicker = ia.cdTicker AND nb.cdSituacao != 'Cancelado'
+    JOIN   NegociosBrutos nb ON nb.cdTicker = ia.cdTicker AND {D.NaoCancelado('nb.')}
     WHERE  ia.cdIndexador IN ('IPCA', 'PREFIXADO')
       AND  ia.vrTaxaEmissao IS NOT NULL
       AND  (ia.vrDuration IS NULL

@@ -7,7 +7,7 @@ Bloomberg e popula a tabela Outstanding.
 Para cada dia do intervalo informado, monta o conjunto de tickers a buscar a
 partir de duas fontes:
   1. Negociados  — tickers com dtNegocio naquele dia em NegociosBrutos
-                   (exclui cdSituacao = 'Cancelado').
+                   (exclui os cancelados pela B3 — ver dados.NaoCancelado).
   2. Anbima      — tickers com dtReferencia naquele dia em AnbimaIndicativos
                    (debentures / CRI / CRA divulgados pela Anbima).
 
@@ -53,11 +53,11 @@ NOME_SCRIPT = "scrape_outstanding_bloomberg"
 # Prefixos de tickers que nao sao ativos de credito privado (vem de MtmAnbima).
 PREFIXOS_EXCLUIDOS = ("NTN-B", "DI1")
 
-SQL_TICKERS_NEGOCIADOS = """
+SQL_TICKERS_NEGOCIADOS = f"""
 SELECT DISTINCT cdTicker
 FROM NegociosBrutos
 WHERE dtNegocio = ?
-  AND cdSituacao != 'Cancelado'
+  AND {D.NaoCancelado()}
 """
 
 SQL_TICKERS_ANBIMA = """

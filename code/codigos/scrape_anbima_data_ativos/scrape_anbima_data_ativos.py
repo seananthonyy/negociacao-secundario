@@ -302,7 +302,7 @@ def TickersDeNegociosBrutos(dates: list[str]) -> list[tuple[str, str | None]]:
     ph = ','.join('?' * len(dates))
     rows = D.Linhas(f"""
         SELECT DISTINCT cdTicker, cdInstrumento FROM NegociosBrutos
-        WHERE dtNegocio IN ({ph}) AND cdSituacao != 'Cancelado'
+        WHERE dtNegocio IN ({ph}) AND {D.NaoCancelado()}
     """, dates)
     return [(r['cdTicker'], r['cdInstrumento']) for r in rows]
 

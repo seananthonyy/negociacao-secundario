@@ -141,7 +141,7 @@ class TickerAgregado:
 # SQL
 # ---------------------------------------------------------------------------
 
-SQL_BUSCAR = """
+SQL_BUSCAR = f"""
 WITH AnbimaLatest AS (
     SELECT cdTicker,
            vrTaxaAnbima,
@@ -170,10 +170,10 @@ LEFT JOIN InfoAtivos ia ON ia.cdTicker = tp.cdTicker
 LEFT JOIN AnbimaLatest al ON al.cdTicker = tp.cdTicker AND al.rn = 1
 WHERE tp.dtLiquidacao = ?
   AND tp.cdStatus = 'VALIDO'
-  AND tr.cdSituacao != 'Cancelado'
+  AND {D.NaoCancelado('tr.')}
 """
 
-SQL_BUSCAR_BROKER = """
+SQL_BUSCAR_BROKER = f"""
 WITH AnbimaLatest AS (
     SELECT cdTicker,
            vrTaxaAnbima,
@@ -204,7 +204,7 @@ LEFT JOIN AnbimaLatest al ON al.cdTicker = tp.cdTicker AND al.rn = 1
 WHERE tp.dtLiquidacao = ?
   AND tp.cdStatus = 'BROKER'
   AND tp.idGrupoNegocio IS NOT NULL
-  AND tr.cdSituacao != 'Cancelado'
+  AND {D.NaoCancelado('tr.')}
 """
 
 SQL_MTM_TAXA = """

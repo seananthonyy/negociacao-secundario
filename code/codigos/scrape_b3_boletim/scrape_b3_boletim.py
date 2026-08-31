@@ -402,7 +402,7 @@ def SoftCancelAusentes(dataStr: str, idsBaixados: set, log) -> int:
     # A chave e uma so desde a migracao para Parquet (era idTrade + identificador).
     aCancelar = [r[0] for r in D.Tuplas(
         "SELECT cdIdentificadorNegocio FROM NegociosBrutos "
-        "WHERE dtNegocio = ? AND cdSituacao != 'Cancelado'", (dataStr,))
+        f"WHERE dtNegocio = ? AND {D.NaoCancelado()}", (dataStr,))
         if r[0] not in idsBaixados]
 
     if not aCancelar:
