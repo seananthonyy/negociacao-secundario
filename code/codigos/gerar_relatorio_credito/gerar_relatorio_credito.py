@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "Helpers"))
 from jinja2 import Environment, FileSystemLoader
 
 from config import cfg, ObterListaEmails
-from db import ObterBanco
+import dados as D
 from email_outlook import EnviarEmailConclusao, EnviarEmailHtml
 from relatorio_execucao import RelatorioExecucao
 from logger import ObterLogger
@@ -406,13 +406,13 @@ ORDER BY tt.cdTicker
 # Data loading — Visão Geral / Por Ticker / Duration
 # ---------------------------------------------------------------------------
 
-def EscolherFontePeso(conn) -> tuple[str, str]:
+def EscolherFontePeso() -> tuple[str, str]:
     """Escolhe a fonte do peso da Visão Anbima: outstanding real quando a tabela
     `Outstanding` está populada (PC do banco, via Bloomberg); senão a quantidade
     de emissão como proxy. Escolha global — as escalas nunca se misturam."""
-    temOutstanding = conn.execute(
+    temOutstanding = D.Escalar(
         "SELECT EXISTS(SELECT 1 FROM Outstanding WHERE vrOutstanding > 0)"
-    ).fetchone()[0]
+    )
     if temOutstanding:
         return PESO_CTE_OUTSTANDING, "outstanding"
     return PESO_CTE_EMISSAO, "emissao"
@@ -489,7 +489,7 @@ def DerivarDiario(boletim: dict) -> tuple[list[dict], list[dict]]:
     return diario, diarioIdx
 
 
-def CarregarAnbimaIdx(conn, ctePeso: str, dtCorte: str) -> list[dict]:
+def CarregarAnbimaIdx(ctePeso: str, dtCorte: str) -> list[dict]:
     """Linha por ticker (spread Anbima + peso) por (dia, indexador). A média ponderada
     pelo peso é feita no cliente, sobre os tickers selecionados no filtro manual.
     spreadRaw em % para os não-%CDI (×100 = bps no template); direto para %CDI."""
@@ -503,11 +503,11 @@ def CarregarAnbimaIdx(conn, ctePeso: str, dtCorte: str) -> list[dict]:
             "spreadRaw": round(r[5], 6) if r[5] is not None else None,
             "peso":      r[6],
         }
-        for r in conn.execute(SQL_ANBIMA_IDX.format(peso=ctePeso), (dtCorte,)).fetchall()
+        for r in D.Tuplas(SQL_ANBIMA_IDX.format(peso=ctePeso), (dtCorte,))
     ]
 
 
-def CarregarAnbimaDur(conn, ctePeso: str, dtCorte: str) -> list[dict]:
+def CarregarAnbimaDur(ctePeso: str, dtCorte: str) -> list[dict]:
     """Linha por ticker (duration + spread + taxa nominal Anbima) para CDI+ e %CDI.
     Alimenta as curvas por duration da Visão Anbima (x = duration, y = spread/nominal,
     uma curva por data). spreadRaw em % para CDI+ (×100 = bps no template); direto
@@ -522,11 +522,11 @@ def CarregarAnbimaDur(conn, ctePeso: str, dtCorte: str) -> list[dict]:
             "spreadRaw": round(r[5], 6) if r[5] is not None else None,
             "taxa":      round(r[6], 6) if r[6] is not None else None,
         }
-        for r in conn.execute(SQL_ANBIMA_DUR.format(peso=ctePeso), (dtCorte,)).fetchall()
+        for r in D.Tuplas(SQL_ANBIMA_DUR.format(peso=ctePeso), (dtCorte,))
     ]
 
 
-def CarregarAnbimaRef(conn, ctePeso: str, dtCorte: str) -> list[dict]:
+def CarregarAnbimaRef(ctePeso: str, dtCorte: str) -> list[dict]:
     """Linha por ticker (spread + taxa nominal Anbima + tipo de instrumento) por
     (dia, ref NTN-B/DI1). A mediana por vértice é feita no cliente (robusta a outlier),
     filtrável por tipo de instrumento (DEB/DEB 12.431/CRI/CRA)."""
@@ -539,12 +539,12 @@ def CarregarAnbimaRef(conn, ctePeso: str, dtCorte: str) -> list[dict]:
             "spreadRaw": round(r[5], 6) if r[5] is not None else None,
             "taxa":      round(r[6], 6) if r[6] is not None else None,
         }
-        for r in conn.execute(SQL_ANBIMA_REF.format(peso=ctePeso), (dtCorte,)).fetchall()
+        for r in D.Tuplas(SQL_ANBIMA_REF.format(peso=ctePeso), (dtCorte,))
     ]
 
 
-def CarregarTicker(conn, dtCorte: str) -> list[dict]:
-    rows = conn.execute(SQL_TICKER, (dtCorte,)).fetchall()
+def CarregarTicker(dtCorte: str) -> list[dict]:
+    rows = D.Tuplas(SQL_TICKER, (dtCorte,))
     return [
         {
             "dt":        r[0],
@@ -558,8 +558,8 @@ def CarregarTicker(conn, dtCorte: str) -> list[dict]:
     ]
 
 
-def CarregarDuration(conn, dtCorte: str) -> list[dict]:
-    rows = conn.execute(SQL_DURATION, (dtCorte,)).fetchall()
+def CarregarDuration(dtCorte: str) -> list[dict]:
+    rows = D.Tuplas(SQL_DURATION, (dtCorte,))
     return [
         {
             "dt":        r[0],
@@ -574,9 +574,9 @@ def CarregarDuration(conn, dtCorte: str) -> list[dict]:
     ]
 
 
-def CarregarInfoAtivos(conn, dtCorte: str) -> list[dict]:
+def CarregarInfoAtivos(dtCorte: str) -> list[dict]:
     """Uma linha por ticker negociado: cadastro + taxa Anbima e taxa de trade mais recentes."""
-    rows = conn.execute(SQL_INFO_ATIVOS, (dtCorte, dtCorte, dtCorte)).fetchall()
+    rows = D.Linhas(SQL_INFO_ATIVOS, (dtCorte, dtCorte, dtCorte))
     return [
         {
             "ticker":     r["cdTicker"],
@@ -605,8 +605,8 @@ def TickersPorVolume(tickerRows: list[dict]) -> list[str]:
 # Boletim Diário — agrega por pregão, replica lógica de gerar_relatorio_html
 # ---------------------------------------------------------------------------
 
-def BuscarNegocios(conn, dtLiquidacao: str) -> list[LinhaNegocio]:
-    rows = conn.execute(SQL_BUSCAR_VALIDO, (dtLiquidacao, dtLiquidacao)).fetchall()
+def BuscarNegocios(dtLiquidacao: str) -> list[LinhaNegocio]:
+    rows = D.Linhas(SQL_BUSCAR_VALIDO, (dtLiquidacao, dtLiquidacao))
     return [
         LinhaNegocio(
             cdTicker=r["cdTicker"],
@@ -627,8 +627,8 @@ def BuscarNegocios(conn, dtLiquidacao: str) -> list[LinhaNegocio]:
     ]
 
 
-def BuscarGruposBroker(conn, dtLiquidacao: str) -> list[LinhaNegocio]:
-    rows = conn.execute(SQL_BUSCAR_BROKER, (dtLiquidacao, dtLiquidacao)).fetchall()
+def BuscarGruposBroker(dtLiquidacao: str) -> list[LinhaNegocio]:
+    rows = D.Linhas(SQL_BUSCAR_BROKER, (dtLiquidacao, dtLiquidacao))
     if not rows:
         return []
     grupos: dict[str, list] = {}
@@ -648,7 +648,7 @@ def BuscarGruposBroker(conn, dtLiquidacao: str) -> list[LinhaNegocio]:
         if cdReferencia == "FUNDING":
             vrSpreadOver = taxaMedia
         elif cdReferencia is not None:
-            mtm = conn.execute(SQL_MTM_TAXA, (cdReferencia, rep["dtNegocio"])).fetchone()
+            mtm = D.Linha(SQL_MTM_TAXA, (cdReferencia, rep["dtNegocio"]))
             if mtm:
                 vrSpreadOver = ((1 + taxaMedia / 100) / (1 + mtm["vrTaxa"] / 100) - 1) * 100
         result.append(LinhaNegocio(
@@ -698,15 +698,15 @@ def AgregarTicker(cdTicker: str, grupo: list[LinhaNegocio]) -> dict:
     }
 
 
-def CarregarBoletim(conn, log, dtCorte: str) -> dict:
+def CarregarBoletim(log, dtCorte: str) -> dict:
     """Retorna {dtLiquidacao: {tickers, resumo, totais}} para os pregões até dtCorte."""
-    datas     = [r[0] for r in conn.execute(SQL_DATAS_BOLETIM, (dtCorte,)).fetchall()]
+    datas     = [r[0] for r in D.Tuplas(SQL_DATAS_BOLETIM, (dtCorte,))]
     ordemInstr = {"DEB": 0, "DEB 12.431": 1, "CRI": 2, "CRA": 3}
     boletim: dict[str, dict] = {}
 
     for dt in datas:
-        linhas   = BuscarNegocios(conn, dt)
-        linhas.extend(BuscarGruposBroker(conn, dt))
+        linhas   = BuscarNegocios(dt)
+        linhas.extend(BuscarGruposBroker(dt))
         if not linhas:
             continue
 
@@ -1024,28 +1024,24 @@ def Principal() -> None:
         log.info("%s: corte em dtLiquidacao <= %s%s", NOME_SCRIPT, dtCorte,
                  "" if args.ate else " (D-1 — o pregão de hoje não fechou)")
 
-        conn = ObterBanco()
-        try:
-            ctePeso, pesoFonte = EscolherFontePeso(conn)
-            log.info("%s: peso da Visão Anbima = %s", NOME_SCRIPT,
-                     "outstanding real (tabela Outstanding)" if pesoFonte == "outstanding"
-                     else "quantidade de emissão (PROXY — Outstanding vazia)")
+        ctePeso, pesoFonte = EscolherFontePeso()
+        log.info("%s: peso da Visão Anbima = %s", NOME_SCRIPT,
+                 "outstanding real (tabela Outstanding)" if pesoFonte == "outstanding"
+                 else "quantidade de emissão (PROXY — Outstanding vazia)")
 
-            anbimaIdx = CarregarAnbimaIdx(conn, ctePeso, dtCorte)
-            anbimaRef = CarregarAnbimaRef(conn, ctePeso, dtCorte)
-            anbimaDur = CarregarAnbimaDur(conn, ctePeso, dtCorte)
-            ticker    = CarregarTicker(conn, dtCorte)
-            duration = CarregarDuration(conn, dtCorte)
-            log.info("%s: carregando boletim por pregão...", NOME_SCRIPT)
-            boletim  = CarregarBoletim(conn, log, dtCorte)
-            # Visão Mercado deriva do boletim (VALIDO + BROKER) — ver DerivarDiario
-            diario, diarioIdx = DerivarDiario(boletim)
-            log.info("%s: %d pregões | %d ticker-dias | %d duration-rows",
-                     NOME_SCRIPT, len(diario), len(ticker), len(duration))
-            infoAtivos = CarregarInfoAtivos(conn, dtCorte)
-            log.info("%s: %d ativos em Info Ativos", NOME_SCRIPT, len(infoAtivos))
-        finally:
-            conn.close()
+        anbimaIdx = CarregarAnbimaIdx(ctePeso, dtCorte)
+        anbimaRef = CarregarAnbimaRef(ctePeso, dtCorte)
+        anbimaDur = CarregarAnbimaDur(ctePeso, dtCorte)
+        ticker    = CarregarTicker(dtCorte)
+        duration = CarregarDuration(dtCorte)
+        log.info("%s: carregando boletim por pregão...", NOME_SCRIPT)
+        boletim  = CarregarBoletim(log, dtCorte)
+        # Visão Mercado deriva do boletim (VALIDO + BROKER) — ver DerivarDiario
+        diario, diarioIdx = DerivarDiario(boletim)
+        log.info("%s: %d pregões | %d ticker-dias | %d duration-rows",
+                 NOME_SCRIPT, len(diario), len(ticker), len(duration))
+        infoAtivos = CarregarInfoAtivos(dtCorte)
+        log.info("%s: %d ativos em Info Ativos", NOME_SCRIPT, len(infoAtivos))
 
         diasBoletim = sorted(boletim.keys())
         dtStart = diario[0]["dt"]  if diario else date.today().isoformat()

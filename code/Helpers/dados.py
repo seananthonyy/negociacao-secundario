@@ -255,6 +255,39 @@ def Escalar(sql: str, params: tuple | list | None = None):
     return None if df.empty else df.iloc[0, 0]
 
 
+def Linhas(sql: str, params: tuple | list | None = None) -> list[dict]:
+    """Resultado como lista de dicts — o que `fetchall()` devolvia com sqlite3.Row.
+
+    Serve a quem consome linha a linha (o relatorio) em vez de em bloco: o acesso
+    por nome, `r["cdTicker"]`, continua identico. O que NAO sobrevive e o acesso
+    POSICIONAL (`r[0]`), que no sqlite3.Row tambem funcionava — as poucas
+    ocorrencias viraram acesso por nome.
+
+    Um NULL volta como None, e nao como o NaN do pandas: o codigo que le estas
+    linhas testa `is None` e faz aritmetica com o valor, e NaN passaria calado
+    pelos dois."""
+    df = Consultar(sql, params)
+    return [{k: SemNaN(v) for k, v in linha.items()}
+            for linha in df.to_dict(orient="records")]
+
+
+def Linha(sql: str, params: tuple | list | None = None) -> dict | None:
+    """A primeira linha como dict, ou None — o `fetchone()`."""
+    linhas = Linhas(sql, params)
+    return linhas[0] if linhas else None
+
+
+def Tuplas(sql: str, params: tuple | list | None = None) -> list[tuple]:
+    """Resultado como lista de tuplas — o acesso POSICIONAL do sqlite3.Row (`r[0]`).
+
+    O sqlite3.Row atendia por nome e por posicao; um dict so atende por nome. Onde o
+    consumidor le por posicao (as consultas do relatorio, cujas colunas sao expressoes
+    com alias e nao colunas de tabela), esta e a leitura fiel. Mesma normalizacao de
+    nulo do Linhas."""
+    df = Consultar(sql, params)
+    return [tuple(SemNaN(v) for v in linha) for linha in df.itertuples(index=False)]
+
+
 def Invalidar(tabela: str | None = None) -> None:
     """Recria as views. Chamar depois de gravar, para que a proxima consulta enxergue
     o arquivo novo (a view guarda a lista de arquivos de quando foi criada)."""
@@ -570,11 +603,18 @@ def InvalidarSeFluxoMudou(antes, depois):
 # ---------------------------------------------------------------------------
 
 def SemNaN(valor):
-    """NaN -> None. O SQLite devolvia None numa coluna NULL; o Parquet devolve NaN,
-    e NaN != NaN. Sem normalizar, comparar dois fluxos identicos dava "mudou" toda
-    vez — e cada "mudou" invalida a validacao e joga o ativo de volta na fila."""
+    """Qualquer sabor de nulo do pandas (NaN, NaT, pd.NA) -> None.
+
+    O SQLite devolvia None numa coluna NULL; o Parquet devolve NaN, e NaN != NaN.
+    Sem normalizar, comparar dois fluxos identicos dava "mudou" toda vez — e cada
+    "mudou" invalida a validacao e joga o ativo de volta na fila do validador."""
     import pandas as pd
-    return None if valor is None or (isinstance(valor, float) and pd.isna(valor)) else valor
+    if valor is None:
+        return None
+    try:
+        return None if pd.isna(valor) else valor
+    except (TypeError, ValueError):
+        return valor   # array/lista: pd.isna devolve vetor, nao escalar
 
 
 def LerFluxoAtivos(cdTicker: str) -> dict:
