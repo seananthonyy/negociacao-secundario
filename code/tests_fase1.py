@@ -10,7 +10,8 @@ Cobre:
 
 Rodar de code/:
     python tests_fase1.py
-Sai 0 se tudo passa, 1 se algo falha. Nao toca o trades.db real (usa temp).
+Sai 0 se tudo passa, 1 se algo falha. Nao toca a base real (aponta [dados] raiz
+para uma pasta temporaria).
 """
 import sys
 import tempfile
@@ -19,8 +20,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "Helpers"))
 
+import pandas as pd
+
+import config
+import dados
 from calc import ImportarCalc, CarregarAtivo, CalcularPu, CalcularTaxa
-from db import ObterBancoAvulso
 
 C = ImportarCalc()   # modulo calculadora_rf, com CALCRF_FILES_DIR ja apontado p/ data/
 
@@ -129,36 +133,43 @@ def TestMercado() -> None:
 def TestIntegracao() -> None:
     print("\n== #2b Integracao: coluna cdTipoAmortizacao + propagacao ==")
     with tempfile.TemporaryDirectory() as tmp:
-        dbPath = str(Path(tmp) / "teste.db")
-        conn = ObterBancoAvulso(dbPath, "ativos")
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(InfoAtivos)")}
-        Checar("schema tem cdTipoAmortizacao", "cdTipoAmortizacao" in cols)
+        # Aponta o armazenamento para uma raiz vazia ANTES de escrever: o teste nao
+        # pode encostar na base real. `config.cfg` e o unico lugar que diz onde ela
+        # fica, entao trocar essa chave basta.
+        raizOriginal = config.cfg["dados"]["raiz"]
+        config.cfg["dados"]["raiz"] = str(Path(tmp)).replace("\\", "/")
+        dados.Invalidar()
+        try:
+            Checar("schema tem cdTipoAmortizacao",
+                   "cdTipoAmortizacao" in {c.name for c in dados.ESQUEMA["InfoAtivos"]})
 
-        conn.execute(
-            "INSERT INTO InfoAtivos (cdTicker, cdIndexador, vrTaxaEmissao, vrVNE, "
-            "dtInicioRentabilidade, cdTipoAmortizacao, dtAtualizacao) "
-            "VALUES ('TESTE11','PREFIXADO',10.0,1000.0,'2024-01-15','saldo_restante','2024-06-17')")
-        conn.executemany(
-            "INSERT INTO FluxoAtivos (cdTicker, dtEvento, vrPctAmortizacao, "
-            "vrPctIncorporacao, dtAtualizacao) VALUES (?,?,?,?,?)",
-            [("TESTE11", "2025-01-15", 50.0, 0.0, "2024-06-17"),
-             ("TESTE11", "2026-01-15", 50.0, 0.0, "2024-06-17")])
-        conn.commit()
+            dados.Mesclar("InfoAtivos", pd.DataFrame([{
+                "cdTicker": "TESTE11", "cdIndexador": "PREFIXADO", "vrTaxaEmissao": 10.0,
+                "vrVNE": 1000.0, "dtInicioRentabilidade": "2024-01-15",
+                "cdTipoAmortizacao": "saldo_restante", "dtAtualizacao": "2024-06-17"}]))
+            dados.Upsert("FluxoAtivos", pd.DataFrame([
+                {"cdTicker": "TESTE11", "dtEvento": "2025-01-15", "vrPctAmortizacao": 50.0,
+                 "vrPctIncorporacao": 0.0, "dtAtualizacao": "2024-06-17"},
+                {"cdTicker": "TESTE11", "dtEvento": "2026-01-15", "vrPctAmortizacao": 50.0,
+                 "vrPctIncorporacao": 0.0, "dtAtualizacao": "2024-06-17"}]))
 
-        ativo = CarregarAtivo(conn, "TESTE11")
-        Checar("CarregarAtivo devolve cdTipoAmortizacao do cadastro",
-               ativo is not None and ativo["cdTipoAmortizacao"] == "saldo_restante")
+            ativo = CarregarAtivo("TESTE11")
+            Checar("CarregarAtivo devolve cdTipoAmortizacao do cadastro",
+                   ativo is not None and ativo["cdTipoAmortizacao"] == "saldo_restante")
 
-        # A precificacao via lib/calc deve respeitar o cadastro (saldo_restante),
-        # diferindo do que a heuristica (saldo_original, soma 100) daria.
-        dataCalc = date(2024, 6, 17)
-        puCadastro = CalcularPu(ativo, dataCalc, 12.0)
-        puInfer = C.CalcularPuOperacao(dataCalc, date(2024, 1, 15), 10.0, 12.0,
-                                       ativo["fluxo"], 1000.0, "PREFIXADO")  # None -> infere
-        Checar("PU via lib/calc usa o cadastro (difere do inferido)",
-               abs(puCadastro - puInfer) > 1e-4,
-               f"cadastro={puCadastro:.6f} inferido={puInfer:.6f}")
-        conn.close()
+            # A precificacao via Helpers/calc deve respeitar o cadastro
+            # (saldo_restante), diferindo do que a heuristica (saldo_original, soma
+            # 100) daria.
+            dataCalc = date(2024, 6, 17)
+            puCadastro = CalcularPu(ativo, dataCalc, 12.0)
+            puInfer = C.CalcularPuOperacao(dataCalc, date(2024, 1, 15), 10.0, 12.0,
+                                           ativo["fluxo"], 1000.0, "PREFIXADO")  # None -> infere
+            Checar("PU via Helpers/calc usa o cadastro (difere do inferido)",
+                   abs(puCadastro - puInfer) > 1e-4,
+                   f"cadastro={puCadastro:.6f} inferido={puInfer:.6f}")
+        finally:
+            config.cfg["dados"]["raiz"] = raizOriginal
+            dados.Invalidar()
 
 
 def TestRisco() -> None:
