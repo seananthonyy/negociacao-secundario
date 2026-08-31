@@ -6,6 +6,58 @@
 
 ---
 
+## Mostrar o %par dos negócios (31/08/2026)
+
+**Origem:** pedido do usuário.
+
+**O que é:** o preço do negócio como percentual do **PU par** — o PU que o papel valeria
+precificado na própria taxa de emissão. `%par = vrPU / puPar × 100`. É como a mesa lê "caro
+ou barato" sem depender de spread: 100% é no par, acima é ágio, abaixo é deságio.
+
+**De onde tirar:**
+- **Calc local** — `CalcularPu(ativo, dtLiquidacao, vrTaxaEmissao)` já devolve o PU par; é
+  exatamente o que o `validar_calc_b3` usa no teste "PU no par". Só serve para ativo com
+  `stFluxoValidado = 1`.
+- **FI Analytics** — a planilha que o `scrape_fianalytics_planilha` já baixa **tem a coluna
+  `% PU Par`**, pronta. Hoje ela é ignorada no parse.
+
+**O que precisa ser decidido:**
+- Qual fonte manda, e o que fazer no não-validado que a FI também não cobre (deixar NULL?).
+- Onde aparece: coluna no Boletim Diário, no "Por Ativo", ou nos dois.
+- Guardar em `NegociosProcessados` (coluna nova, ex. `vrPctPar`) ou calcular na hora do
+  relatório? Guardar é mais barato de ler e deixa o número auditável; calcular na hora evita
+  coluna que envelhece.
+
+---
+
+## Relatório: incluir o dia de hoje, marcado como PRÉVIA (31/08/2026)
+
+**Origem:** pedido do usuário.
+
+**O que é:** hoje o relatório **corta em D-1** (`CalcularDtCorte()`), então a liquidação do
+próprio dia nunca aparece. O pedido é passar a incluí-la, com um aviso de **"prévia"** na
+tela.
+
+**Por que o corte existia** (ver [[09 - Progresso]]): o pregão de hoje não fechou. Os
+negócios que já estão na base para a liquidação de hoje são a **perna D+1 do pregão
+anterior** — um dia pela metade. Publicá-los sem aviso mostrava volume e spread de um dia
+incompleto como se fosse fechado.
+
+**O aviso resolve a objeção** — o dado deixa de ser enganoso quando está rotulado. Mas o
+corte não deve simplesmente sumir:
+
+- O dia de hoje **não pode entrar nas médias e agregados** como um pregão normal (ele
+  puxaria a média de volume para baixo e o gráfico teria um degrau no fim).
+- A flag `--ate` continua valendo para quem quer a foto fechada.
+
+**O que precisa ser decidido:**
+- O aviso é um selo na aba/linha do dia, um banner no topo, ou os dois?
+- O dia-prévia entra nos gráficos de série (com marcação visual) ou só no Boletim Diário?
+- Ele entra no "Volume Total" do topo? (Sugiro que **não** — ou que apareça separado.)
+- O email do dia (`--email-dia`) também passa a poder ser de hoje?
+
+---
+
 ## ✅ RESOLVIDO (31/08/2026) — negócio sem identificador é descartado
 
 A B3 manda o campo *"Cód. identificador do negócio"* como `-` em parte das operações (25 no
@@ -85,26 +137,40 @@ parquets.
 
 ## Capturar o campo `note` do getBondDetails da B3
 
-**Origem:** 28/08/2026, investigando o OVTL15 a pedido do usuario.
+**Origem:** 28/08/2026, investigando o OVTL15. **Medido em 31/08/2026.**
 
-**O que e:** a B3 devolve, no `getBondDetails`, um campo `note` em texto livre com ressalvas
-sobre o fluxo do papel. O OVTL15 traz:
+**O que é:** o `getBondDetails` devolve um campo `note` em texto livre — é a **própria B3
+avisando onde o dado de fluxo dela está incompleto ou onde o papel foge do padrão**. Hoje
+descartamos esse campo.
 
-> `"Eventuais amortizacoes extraordinarias nao estao sendo consideradas no fluxo."`
+**O que foi medido** (amostra de 292 ativos de `cdFonteCadastro='B3'`): **~1% tem `note`
+não-vazio** — em 3.093 ativos, algo como 30. Duas frases distintas até agora:
 
-Hoje **descartamos esse campo**. Ele e a propria fonte dizendo onde o dado dela e incompleto
-— exatamente o tipo de coisa que explica divergencia de PU depois.
+| frase | o que significa |
+|---|---|
+| `Eventuais amortizações extraordinárias não estão sendo consideradas no fluxo.` | a agenda da B3 está incompleta para aquele papel (OVTL15) |
+| `O ativo considera apenas a variação positiva do IPCA.` | **piso de deflação** — o VNA não cai em mês de IPCA negativo |
+
+**A segunda é a preocupante, e não é sobre dado faltando — é sobre PRECIFICAÇÃO.** A nossa
+calc, até onde sei, **não modela o piso de deflação**: ela aplica a variação do IPCA com
+sinal. Num mês de IPCA negativo o VNA da calc cai e o do papel não, e o PU diverge.
+
+**E isso já passou pelo gate.** Dos 3 ativos com essa nota na amostra, **um
+(`22D1289011`) está `stFluxoValidado = 1`, validado contra a B3**. Ou seja: a calc
+reproduziu o PU dele — mas só porque a janela de teste não teve deflação. O gate não pode
+pegar isso: ele compara contra a B3 em 3 datas, e se nenhuma delas cruza um mês negativo,
+os dois modelos concordam. É uma divergência que fica **dormindo** até o primeiro IPCA
+negativo.
 
 **O que precisa ser decidido:**
-- Gravar em `InfoAtivos` (coluna nova, ex.: `cdNotaCadastro`) ou so reportar no log/email do
-  `scrape_b3_bond_details`?
-- Se vale alimentar o `validar_calc_b3`: papel com ressalva de amortizacao extraordinaria
-  talvez nao devesse ser promovido a validado sem conferencia humana.
-- Levantar quantos ativos da base tem `note` nao-vazio e quantos valores distintos existem
-  (pode ser um punhado de frases padrao, e ai da para classificar).
+- Gravar em `InfoAtivos` (coluna nova, ex. `cdNotaCadastro`) ou só reportar no log/email?
+- **Papel com piso de deflação deveria poder ser validado?** Ou entra numa lista de
+  exceção até a calc modelar o piso?
+- Levantar a base inteira (3.093 chamadas, ~5 min com 10 workers) para saber quantos são e
+  quantas frases distintas existem de verdade — a amostra de 292 pode não ter visto todas.
 
-**Conversa com:** [[15 - Cadastro dos Ativos]] e [[10 - Scripts/scrape_b3_bond_details]].
-
+**Conversa com:** [[15 - Cadastro dos Ativos]], [[10 - Scripts/scrape_b3_bond_details]] e
+[[16 - Confianca nos Validados (WIP)]].
 ---
 
 ## ✅ RESOLVIDO (29/08/2026) — flag `--sem-email` para execucoes em lote
