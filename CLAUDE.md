@@ -2,6 +2,10 @@
 
 Este projeto gera relatórios HTML diários de negócios de crédito privado brasileiro (Debêntures, CRIs, CRAs) consolidando dados da B3, FI Analytics e Anbima.
 
+> ▶️ **RETOMANDO O TRABALHO? Leia `RETOMAR_AQUI.md` na raiz.** É o handoff da última
+> sessão: onde o projeto parou, o que mudou nos números e por quê, o que fazer a seguir, e
+> as armadilhas da camada de dados nova.
+
 > 🚧 **LEIA PRIMEIRO — branch `refactor/split-bases` (31/08/2026).** Ele reorganizou a
 > estrutura de pastas e trocou o armazenamento de SQLite por **Parquet + DuckDB** (os dados
 > vão para a AWS: bucket S3 + Athena, sem banco SQL). **A conversão está completa**: os 21
@@ -117,12 +121,10 @@ Resumo: `Helpers/dados.py` é a camada de dados, a base real vive em `files/Parq
 - **O trigger `trgInfoAtivosInvalidaFluxo` virou código**, dentro de `dados.Mesclar()` — e
   mora lá pelo mesmo motivo que morava no banco: é o único caminho de escrita coluna a
   coluna de `InfoAtivos`, então nenhum dos cinco escritores pode esquecer.
-- **Teste de aceitação:** o relatório geral sai em **34 pregões, 2.567 ativos,
-  R$ 53.265,78 MM**. (Era R$ 53.265,83 MM; os R$ 0,05 MM de diferença são dado novo — 50
-  negócios ganharam taxa quando a FI/B3 responderam hoje. Explicado na nota 17.)
-- **Dois achados aguardam sua decisão** — ver `vault/98 - Backlog.md`: negócios que a B3
-  manda sem identificador (a chave da base), e o filtro de cancelado que não pega o
-  vocabulário da B3 (`Cancelado B3`).
+- **Teste de aceitação:** o relatório geral sai em **34 pregões, 2.568 ativos,
+  R$ 52.315,17 MM**. Esse número **não** é o R$ 53.265,83 MM que o vault citava antes — ele
+  mudou três vezes, por motivo verificado. A tabela com os três passos está em
+  `RETOMAR_AQUI.md` §4.
 
 Veja `vault/09 - Progresso.md` para saber em que fase está a implementação e o que falta.
 
@@ -139,6 +141,10 @@ O projeto é dividido em **fases** (uma por script principal). Em cada fase:
 
 ## Como começar
 
-Diga: **"Leia PLANEJAMENTO_v5.md e vault/09 - Progresso.md, depois proponha a próxima fase de implementação"**.
+**Retomando de uma sessão anterior** (o caso normal hoje), diga:
+**"Leia `RETOMAR_AQUI.md`, `vault/17 - Armazenamento Parquet e AWS.md` e
+`vault/98 - Backlog.md`. Depois me diga o que você faria primeiro."**
+
+Para uma fase nova do zero: **"Leia PLANEJAMENTO_v5.md e vault/09 - Progresso.md, depois proponha a próxima fase de implementação"**.
 
 Se for a primeira vez (vault ainda vazio), diga: **"Despache o documenter para popular o vault baseado em PLANEJAMENTO_v5.md, depois comece a Fase 1 com o coder"**.
