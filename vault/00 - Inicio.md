@@ -45,6 +45,7 @@ Sistema Python local que gera relatórios HTML diários consolidando negócios s
 - [[10 - Scripts/filtrar_trades]]
 - [[10 - Scripts/scrape_anbima_ntnb]]
 - [[10 - Scripts/scrape_b3_curva_di]]
+- [[10 - Scripts/calc_pu_par]]
 - [[10 - Scripts/calc_spread_anbima]]
 - [[10 - Scripts/match_referencias]]
 - [[10 - Scripts/calc_spread_over]]

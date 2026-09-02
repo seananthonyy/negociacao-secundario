@@ -70,11 +70,36 @@ ambiente da sessão (nunca do config).
 Pasta em `snake_case` e partição no estilo **Hive** (`coluna=valor`) — é o que o Athena
 entende. O nome de tabela visto pelo SQL continua PascalCase; a view faz a ponte.
 
+### A tabela `PuPar` (02/09/2026)
+
+`PuPar` (`cdTicker`, `dtReferencia`, `vrPuPar`, `cdFontePuPar`, `dtCriacao`) guarda o **PU
+par** de cada ativo que negociou, por data. É de **SÉRIE** porque o PU par acreta todo dia
+útil — não é propriedade do ativo, é do par (ativo, data). Medido: reusar um valor por 7 dias
+úteis erra **0,368% na mediana** (249 ativos), sempre para cima, e ignora evento de fluxo na
+janela (5% dos ativos negociados em 7 dias; o MATD23 amortizou 100%).
+
+O `%par` do negócio (`vrPU / vrPuPar × 100`) **não é gravado** — sai na leitura do relatório.
+Assim, quando `dados.DescartarPuPar` apaga o puPar de um ativo cujo cadastro mudou, o %par
+some junto em vez de sobrar sobre um denominador descartado.
+
+### Evoluir o `ESQUEMA` exige `Reconformar`
+
+A view do DuckDB é `SELECT *` sobre os parquets. Uma coluna nova no `ESQUEMA` **não existe
+em arquivo nenhum** até alguém reescrever, e nesse meio-tempo todo `Ler()` (que lista as
+colunas do esquema uma a uma) estoura com *column not found*. `dados.Reconformar(tabela)`
+reescreve cada partição no esquema atual e resolve — nos dois sentidos, inclusive remoção de
+coluna. É idempotente.
+
+⚠️ **Não use `SUM()` de float como checksum de regressão.** Reconformar `NegociosProcessados`
+deu diferença de **R$ 0,01 em R$ 163 bi** — é ordem de acumulação de ponto flutuante, não
+perda de dado. A verificação certa é diferença simétrica linha a linha (`EXCEPT` nos dois
+sentidos), que deu **zero**.
+
 ### Duas naturezas de tabela
 
 | natureza | tabelas | como se escreve |
 |---|---|---|
-| **SÉRIE** (particionada por data) | `NegociosBrutos` (`dtNegocio`), `NegociosProcessados` (`dtLiquidacao`), `AnbimaIndicativos` (`dtReferencia`) | reescreve **o dia inteiro**. Reprocessar uma data é trocar a partição, nunca dar UPDATE em linha |
+| **SÉRIE** (particionada por data) | `NegociosBrutos` (`dtNegocio`), `NegociosProcessados` (`dtLiquidacao`), `AnbimaIndicativos` (`dtReferencia`), `PuPar` (`dtReferencia`) | reescreve **o dia inteiro**. Reprocessar uma data é trocar a partição, nunca dar UPDATE em linha |
 | **ESTADO** (arquivo único) | `InfoAtivos`, `FluxoAtivos`, `MtmAnbima`, `Outstanding` | reescreve o arquivo **inteiro** |
 
 Reescrever tudo funciona porque as tabelas de estado são minúsculas: `InfoAtivos` 0,20 MB

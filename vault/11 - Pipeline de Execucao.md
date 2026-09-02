@@ -1,6 +1,7 @@
 # Pipeline de Execução — Relatório de Liquidação X
 
-> ℹ️ **29/08/2026 — a ORDEM dos 18 passos continua exatamente esta.** O que mudou foi onde
+> ℹ️ **02/09/2026 — o `calc_pu_par` entrou como passo 15;** os seguintes andaram um.
+> ℹ️ **29/08/2026 — a ORDEM dos passos continua exatamente esta.** O que mudou foi onde
 > os scripts moram (`codigos/<nome>/<nome>.py`) e o armazenamento (Parquet, não SQLite).
 > O `pipeline_core` já resolve o caminho novo. Ver [[17 - Armazenamento Parquet e AWS]].
 
@@ -17,7 +18,7 @@ O relatório **agrupa por `dtLiquidacao`** (não `dtNegocio`). Para uma data de 
   - **`X`** → liquidam em X por **D+0** (mesmo dia);
   - ocasionalmente datas anteriores (trades *forward*), cujo MtM já costuma estar na base.
 
-## Os 18 passos
+## Os 19 passos
 
 | # | Script | Parâmetro | Data(s) | Rede? | Por quê |
 |---|---|---|---|---|---|
@@ -35,12 +36,19 @@ O relatório **agrupa por `dtLiquidacao`** (não `dtNegocio`). Para uma data de 
 | 12 | `validar_calc_b3` | *(sem args — base inteira)* | 3 datas c/ curva + D+1 | ✅ B3/FI | **ÚNICO VALIDADOR.** Gate de confiança: a calc reproduz a B3 (ou FI) em PU (par+fora, ≤1e-5)? Promove/rebaixa `stFluxoValidado`; não-confirmável → inválido. Revalida a cada 15d. `--negociados-dias N` encurta a rodada. Ver [[16 - Confianca nos Validados (WIP)]] |
 | 13 | `calc_taxa_negocios` | `--date X` | X | ✅ APIs FI/B3 | taxa por trade. Cascata: direta → **calc local (LIGADA p/ CDI+/IPCA/PREFIXADO validados)** → FI → B3. %CDI e não-validados seguem em FI/B3 |
 | 14 | `filtrar_trades` | `--date X` | X | ❌ local | classifica VALIDO / FUNDO / BROKER / PF |
-| 15 | `calc_spread_anbima` | `--date X-1u` | X-1u | ❌ local | spread Anbima das indicativas (mesma data que o relatório exibe) |
-| 16 | `match_referencias` | *(sem data)* | — | ❌ local | preenche `cdReferencia` faltante via duration vs MtmAnbima |
-| 17 | `calc_spread_over` | `--date X` | X | ❌ local | spread dos trades — **casa MtM por `dtNegocio`** |
-| 18 | `gerar_relatorio_credito` | *(sem args)* | — | ❌ local | regenera `data/relatorios/relatorio_secundario.html` (toda a base) |
+| 15 | `calc_pu_par` | `--date X` | X | ✅ APIs B3/FI | **PU par por (ativo, data)** em `PuPar`. Cascata calc local → B3 → FI. Idempotente: par que já existe não custa chamada. O `%par` do negócio **não é gravado** — sai na leitura do relatório |
+| 16 | `calc_spread_anbima` | `--date X-1u` | X-1u | ❌ local | spread Anbima das indicativas (mesma data que o relatório exibe) |
+| 17 | `match_referencias` | *(sem data)* | — | ❌ local | preenche `cdReferencia` faltante via duration vs MtmAnbima |
+| 18 | `calc_spread_over` | `--date X` | X | ❌ local | spread dos trades — **casa MtM por `dtNegocio`** |
+| 19 | `gerar_relatorio_credito` | *(sem args)* | — | ❌ local | regenera `files/relatorios/relatorio_secundario.html` (toda a base). Calcula o `%par` na leitura, a partir de `PuPar` |
 
-> **Ordem do passo 5:** `scrape_anbima_data_ativos` roda **depois** de boletim (1) e Anbima deb/cri (2-3) — porque monta a fila de tickers a partir da união `NegociosBrutos.dtNegocio` + `AnbimaIndicativos.dtReferencia` — e **antes** de `match_referencias` (16), que usa `InfoAtivos.vrDuration` que este passo pode preencher. Rodar o FI Analytics (4) antes reduz o trabalho dele (menos tickers "incompletos").
+> **Ordem do passo 15 (`calc_pu_par`):** depois do `validar_calc_b3` (12), que decide
+> em quais ativos a calc local vale, e do `calc_taxa_negocios` (13), que cria as linhas
+> em `NegociosProcessados` de onde sai a fila. **Não depende** do `match_referencias`
+> nem do spread — é preço, não curva —, então poderia rodar antes; fica aqui só para
+> manter o bloco por-liquidação junto.
+
+> **Ordem do passo 5:** `scrape_anbima_data_ativos` roda **depois** de boletim (1) e Anbima deb/cri (2-3) — porque monta a fila de tickers a partir da união `NegociosBrutos.dtNegocio` + `AnbimaIndicativos.dtReferencia` — e **antes** de `match_referencias` (17), que usa `InfoAtivos.vrDuration` que este passo pode preencher. Rodar o FI Analytics (4) antes reduz o trabalho dele (menos tickers "incompletos").
 
 > **Passo 2 (cadastro pela B3, adotado em 13/07/2026):** roda logo depois do boletim e **antes** do `scrape_anbima_data_ativos` — a B3 é a fonte **primária** do cadastro e do fluxo; a Anbima só preenche o que ela não cobriu. O fluxo da B3 **não nasce mais validado** (mudou em 24/08/2026): quem concede `stFluxoValidado = 1` é só o `validar_calc_b3`. Tem gate próprio (só chama a API para ticker com campo faltante): sem ele seriam ~2.900 chamadas por rodada. Ver [[15 - Cadastro dos Ativos]].
 
@@ -72,7 +80,7 @@ Por isso `scrape_anbima_debentures`/`cri_cra` (3-4) e `calc_spread_anbima` (16) 
 1. **MtM precisa de X-1u E X** (passos 7-8). `calc_spread_over` (passo 18) busca a taxa de referência em `MtmAnbima WHERE dtReferencia = dtNegocio` — não pela liquidação. Como os negócios de X liquidam tanto pela ponta X-1u quanto X, ambas as datas de MtM têm de existir. **Sintoma de erro:** `nullSemMtm > 0` no resumo do passo 18.
 2. **AnbimaIndicativos só precisa de X-1u** (passos 3-4) para ESTE relatório — ver §"Por que D-1". Numa cadência diária, a Anbima de X que você raspar hoje vira o D-1 do relatório de amanhã (liq X+1u).
 3. **Pular o que já está na base.** Se `X-1u` já foi processado num dia anterior, boletim/MtM/Anbima de `X-1u` já existem — não re-scrapar. Só rode os passos cujos dados faltam + a cadeia de cálculo (13-19).
-4. **Ordem obrigatória:** `calc_taxa_negocios` (13) **antes** de `filtrar_trades` (14) — o filtro só atualiza `cdStatus` em linhas já existentes em `NegociosProcessados`. E `match_referencias` (16) **antes** de `calc_spread_over` (17) — o spread depende de `cdReferencia`. E `scrape_anbima_data_ativos` (6) **antes** de `validar_calc_b3` (12) — quem valida um fluxo que o ingestor vai mudar em seguida perde a validação. E `validar_calc_b3` (12) **antes** de `calc_taxa_negocios` (13) — o gate decide quais ativos a calc local pode precificar.
+4. **Ordem obrigatória:** `calc_taxa_negocios` (13) **antes** de `filtrar_trades` (14) — o filtro só atualiza `cdStatus` em linhas já existentes em `NegociosProcessados`. E `match_referencias` (17) **antes** de `calc_spread_over` (18) — o spread depende de `cdReferencia`. E `scrape_anbima_data_ativos` (6) **antes** de `validar_calc_b3` (12) — quem valida um fluxo que o ingestor vai mudar em seguida perde a validação. E `validar_calc_b3` (12) **antes** de `calc_taxa_negocios` (13) — o gate decide quais ativos a calc local pode precificar.
 5. **Relatório usa o geral** (`gerar_relatorio_credito`, passo 19) — cobre toda a base e tem aba/filtro por data. O relatório diário (`gerar_relatorio_html --date X`) existe mas não é o caminho padrão de validação.
 6. **Projeção de IPCA antes das 17h30** (passo 9). A Anbima republica as projeções por volta desse horário nos dias de divulgação do IPCA/IPCA-15 — rodar depois pega o valor certo, mas o ciclo diário costuma rodar de manhã.
 

@@ -390,6 +390,38 @@ CREATE INDEX IF NOT EXISTS idxOutstandingDtOutstanding ON Outstanding(dtOutstand
 
 Populada por: [[scrape_outstanding_bloomberg|scrape_outstanding_bloomberg.py]] — para cada dia, busca os tickers da união de negociados (`NegociosBrutos.dtNegocio`) + divulgados Anbima (`AnbimaIndicativos.dtReferencia`), excluindo NTN-B/DI1. Consultada pela aba **Visão Anbima** do [[gerar_relatorio_credito]] (`_PESO_CTE` → peso da média ponderada por indexador, com casa de data `dtOutstanding = dtReferencia`). Só roda no PC do banco (Bloomberg); vazia no PC pessoal.
 
+### PuPar (02/09/2026)
+
+**PU par** por ativo e data: o PU que o papel valeria precificado na **própria taxa de
+emissão**. É o denominador do `%par` do negócio — que **não é gravado**, sai na leitura do
+[[gerar_relatorio_credito]] (`vrPU / vrPuPar × 100`).
+
+| coluna | tipo | papel |
+|---|---|---|
+| `cdTicker` | TEXT | o papel |
+| `dtReferencia` | TEXT | **a data** — e é a partição |
+| `vrPuPar` | REAL | o PU no par |
+| `cdFontePuPar` | TEXT | `Calc` (calculadora local, só validados), `B3` ou `FI` |
+| `dtCriacao` | TEXT | quando foi gravado |
+
+Chave: `(cdTicker, dtReferencia)`. Tabela de **SÉRIE**, particionada por `dtReferencia`.
+
+**A data está na chave porque o PU par acreta todo dia útil** — não é propriedade do ativo,
+é do par (ativo, data). Reusar um valor por 7 dias úteis erra **0,368% na mediana** (medido
+em 249 ativos validados), sempre para cima, e ignora evento de fluxo na janela: **5% dos
+ativos negociados** tiveram evento em 7 dias, e o `MATD23` amortizou **100%**.
+
+Guarda **só valor real** — nada sintético. Papel que sai do cadastro das calculadoras
+(emissor perto do default) simplesmente para de ganhar linha; a leitura pega o último com
+`dtReferencia <= dtLiquidacao` e exibe a **idade** dessa referência. Não há status
+"congelado" gravado: a idade é o status.
+
+Populada por: [[calc_pu_par|calc_pu_par.py]] (passo 15), em cascata calc local → B3 → FI.
+Invalidada por `dados.DescartarPuPar`, chamado de dentro do `Mesclar` /
+`SincronizarFluxos` / `SincronizarFluxoAtivos` quando o cadastro ou o fluxo do ativo muda —
+aí o histórico inteiro daquele ticker sai, porque a agenda velha valia para as datas
+passadas também.
+
 ---
 
 ## Módulo `lib/db.py`

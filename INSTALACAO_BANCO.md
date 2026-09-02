@@ -165,6 +165,57 @@ Abra **`setup_teste.ipynb`** a partir de `code\` e dê **`Run All`**. Ele **cria
 ## Passo 6 — Montar a base (`setup_inicial.ipynb`)
 Com os fluxos validados, abra **`setup_inicial.ipynb`** a partir de `code\` e **defina `INICIO`/`FIM` na primeira célula** — é a janela da carga. Dê **`Run All`** (é demorado — dá pra deixar rodando). As fontes de histórico curto (deb/NTN-B ~4 meses, DI ~20 pregões, CRI/CRA ~5 pregões) já têm a janela máxima **hardcoded** na config; você não mexe nelas. **Anbima Data (o mais pesado) roda por último.** Cada bloco é idempotente e confere no `.db` quantos pregões ficaram cobertos: se um falhar, corrija e **re-rode só ele**.
 
+## Passo 6-B — Aproveitar a base SQLite que já existe no banco (em vez de raspar tudo de novo)
+
+**Faça este passo ANTES do Passo 6 se o PC do banco já roda o projeto em produção.** A base
+SQLite de lá tem histórico que **não é re-raspável**: as fontes online guardam janela curta
+(deb/NTN-B ~4 meses, curva DI ~20 pregões, CRI/CRA ~5 pregões) e as chamadas de cálculo da
+B3 são **contadas** — re-derivar taxa de pregão antigo custa consumo de verdade. Converter
+leva minutos; raspar de novo não recupera o que saiu do ar.
+
+Quem faz é o **`migrar_para_parquet`**, uma vez só:
+
+```
+cd <raiz>\code
+python codigos\migrar_para_parquet\migrar_para_parquet.py                 # dry-run
+python codigos\migrar_para_parquet\migrar_para_parquet.py --executar
+```
+
+**O dry-run é obrigatório** — ele roda as duas conferências prévias e não escreve nada:
+
+1. **Chave natural.** O `idTrade` (`AUTOINCREMENT`) morreu com o SQLite; a chave passou a ser
+   o `cdIdentificadorNegocio` que a B3 manda. O script exige que ele esteja **presente e
+   único** em `NegociosBrutos`. Uma base montada **antes de 31/08/2026** pode ter negócio
+   sem identificador (a B3 manda; o fix daquela data passou a descartar na entrada, mas os
+   que já estavam continuam lá). Se acusar, limpe no SQLite antes — o comando sai no log.
+2. **Destino ocupado.** A gravação **substitui** arquivo/partição inteiros. Se a pasta
+   Parquet já tem dados, o script **aborta** e pede `--sobrescrever` explícito. Isso importa
+   numa segunda tentativa depois de meio caminho andado: sem a trava, ela apagaria o que a
+   primeira trouxe.
+
+O script confere sozinho, no fim: contagem SQLite × Parquet tabela a tabela (aborta se
+alguma linha sumiu) e **releitura pelo DuckDB** (prova que o que foi escrito volta a ser
+lido). Ele também traduz o vínculo `NegociosProcessados → NegociosBrutos` de `idTrade` para
+`cdIdentificadorNegocio`, e aborta se alguma linha ficar órfã.
+
+**Ordem importa:** converta **antes** de ligar o pipeline. Assim a primeira rodada em
+Parquet já encontra o histórico no lugar e não tenta re-raspar a janela toda.
+
+**Depois de converter, rode uma vez:**
+
+```
+python codigos\calc_pu_par\calc_pu_par.py --tudo
+```
+
+A tabela `PuPar` é nova (02/09/2026) e nasce vazia no histórico convertido — este passo a
+preenche, em cascata calc local → B3 → FI. Leva ~40 s por pregão. É idempotente: rodar de
+novo não custa chamada de API nenhuma. Se a leitura reclamar de coluna inexistente em alguma
+tabela depois de uma mudança de esquema, o conserto é `dados.Reconformar("<Tabela>")`, que
+reescreve os arquivos no esquema atual.
+
+**Fora de escopo:** o add-in do Excel da calculadora, que lê `InfoAtivos`/`FluxoAtivos` em
+SQLite por ticker. Decisão do usuário: resolver num código à parte.
+
 ## Passo 7 — Rotina diária (`run_secundario.ipynb`)
 No dia a dia abra **`run_secundario.ipynb`** a partir de `code\` e dê **`Run All`**: 1 bloco por fluxo, processando as liquidações **D-3 .. D-1** (dias úteis) e regenerando o relatório no fim.
 

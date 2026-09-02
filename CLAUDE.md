@@ -32,6 +32,7 @@ negociacao-secundario/
 │   │   ├── config.py        Lê files/config.toml; ANCORA todo [paths] na raiz
 │   │   ├── cadastro_b3.py   Leitura do getBondDetails (dois donos: scraper e validador)
 │   │   ├── pipeline_core.py Orquestrador (resolve codigos/<n>/<n>.py)
+│   │   ├── datas.py         Dias uteis + feriados Anbima (fonte unica; era copiado 4x)
 │   │   └── calc.py, logger.py, email_outlook.py, b3_calc_api.py, fianalytics_api.py
 │   ├── files/
 │   │   ├── config.toml, .env
@@ -84,6 +85,7 @@ Use `/agents` no Claude Code pra ver/invocar.
   - `ipca.db` e `di.db` seguem SQLite — são **contrato com a calculadora**, não nossos.
 - **Chave dos negócios: `cdIdentificadorNegocio`** (a que a B3 manda). O `idTrade`
   (`AUTOINCREMENT`) morreu com o SQLite — fora dele ninguém gera esse número.
+  ⚠️ O `PLANEJAMENTO_v5.md` ainda cita `idTrade` em 12 lugares — é texto histórico.
 - **Paths ancorados na raiz do projeto**, nunca no cwd (`AncorarPaths` em `Helpers/config.py`).
   Antes eram relativos ao cwd: rodar um script de outra pasta fazia o SQLite criar um banco
   vazio ali e o script terminava "com sucesso", sobre nada. (O SQLite saiu, mas a âncora
@@ -106,10 +108,37 @@ Use `/agents` no Claude Code pra ver/invocar.
 - **Cada script é independente**, idempotente, com CLI próprio (`--date` ou `--start --end`)
 - **Email no fim de cada script** via Outlook (`pywin32`), sucesso ou erro
 - **Filtro de duplicados**: union-find, status só `PRIMARY` ou `DUPLICATE`
-- **Cascata de taxa** (19/07/2026): taxa direta do boletim → **calc local** (`[calc].usarCalcTaxa=true`, só `stFluxoValidado=1` e indexador em `["CDI+","IPCA","PREFIXADO"]`) → FI Analytics → B3 → NULL (só Deb/CRI/CRA). A confiança da calc é garantida pelo gate **`validar_calc_b3`** (passo 13 do pipeline). **%CDI e não-validados seguem em FI→B3** (a calc não reproduz o desconto de %CDI fora do par). Ver [[16 - Confianca nos Validados (WIP)]] e [[14 - Rotinas da Calculadora]].
+- **Cascata de taxa** (19/07/2026): taxa direta do boletim → **calc local** (`[calc].usarCalcTaxa=true`, só `stFluxoValidado=1` e indexador em `["CDI+","IPCA","PREFIXADO"]`) → FI Analytics → B3 → NULL (só Deb/CRI/CRA). A confiança da calc é garantida pelo gate **`validar_calc_b3`** (passo 13 do pipeline). **%CDI e não-validados seguem em FI→B3.** ⚠️ **A justificativa do %CDI foi re-medida em 01/09/2026 e não se sustenta mais**: em 40 ativos de maior volume, a taxa da calc reproduz a B3 com mediana de 0,05 bps e pior caso de 0,46 bps (40/40 dentro de 1 bp). O que os reprova é a régua de PU (`TOL_PU = 1e-5`), mais apertada em termos econômicos que a própria `TOL_TAXA_BPS = 5,0` do mesmo gate. Decisão pendente do usuário — ver o backlog. Ver [[16 - Confianca nos Validados (WIP)]] e [[14 - Rotinas da Calculadora]].
 - **Cadastro dos ativos**: a **B3** (`getBondDetails`) é a fonte **primária**; a Anbima Data é fallback, só para o que negociou e a B3 não cobriu. `vrVNE` + `dtInicioRentabilidade` + `FluxoAtivos` são um **pacote indivisível** por ativo — a coluna `cdFonteCadastro` diz de quem é, e misturar as duas fontes conta a carência duas vezes, em silêncio.
 - **Match de referência** (`IPCA→NTN-B`, `PREFIXADO→DI1`): script separado (`match_referencias.py`), sem args — roda idempotente sobre a base toda a cada ciclo do pipeline. Duration-match data-exata contra `MtmAnbima`; não sobrescreve refs da Anbima (`cdFonteReferencia='Anbima'`)
 - **Relatório agrupa por `dtLiquidacao`**, não `dtNegocio`
+- **O relatório geral inclui o pregão de HOJE, marcado como PRÉVIA** (01/09/2026). Ele é meio
+  dia de dado — a perna D+1 do pregão anterior fechou, a do pregão em curso não. O selo viaja
+  no payload (`dtPrevia`) e aparece no banner do topo, na opção do seletor do Boletim e no
+  email do dia; `--sem-previa` volta ao corte em D-1. Mesma paleta do `badge-previa` que o
+  relatório diário (`--mode previa`) já usava.
+- **PU par e %par** (02/09/2026). A tabela **`PuPar`** guarda o PU par por **(ativo, data)**,
+  escrita pelo `calc_pu_par` logo depois do `filtrar_trades`, em cascata
+  **calc local → B3 → FI**. O **`%par` do negócio NÃO é gravado** — sai na leitura do
+  relatório (`vrPU / vrPuPar × 100`), para que corrigir um cadastro não deixe um %par velho
+  de pé sobre um denominador descartado.
+  - **A chave inclui a data porque o PU par acreta todo dia útil.** Reusar um valor por
+    alguns dias injeta erro sistemático (mediana 0,368% em 7 dias úteis, medido em 249
+    ativos) e ignora evento de fluxo na janela (5% dos ativos negociados; o MATD23
+    amortizou 100%). Indexar por data também é **mais barato**: cada par se calcula uma vez.
+  - **Idempotente:** par `(ticker, data)` que existe não é recalculado nem consultado em API.
+    Quem invalida é `dados.DescartarPuPar`, chamado de dentro do `Mesclar`/`Sincronizar*`.
+  - **Papel que sai do cadastro** (emissor perto do default): as calculadoras removem o
+    título e o mercado passa a usar o **último PU par conhecido**, em *cents on the dollar*.
+    A leitura pega o último com `dtReferencia <= dtLiquidacao` e mostra a **idade**. Não há
+    status "congelado" gravado — a idade é o status (`PREGOES_CONGELADO = 5`).
+  - TODOS os indexadores, **%CDI inclusive**: no par não há desconto envolvido. A coluna
+    `% PU Par` da FI Analytics **não** serve de fonte — numerador e denominador diferentes.
+- **Dias úteis e feriados vêm de `Helpers/datas.py`** — e ele LEVANTA se o CSV faltar, em vez
+  de devolver conjunto vazio (o que faria todo sábado virar pregão, em silêncio).
+- **Evoluir o `ESQUEMA` exige `dados.Reconformar(tabela)`**: a view é `SELECT *` sobre os
+  parquets, então coluna nova não existe até alguém reescrever os arquivos, e todo `Ler()`
+  quebra com "column not found" nesse meio-tempo.
 
 ## Estado atual
 

@@ -6,27 +6,124 @@
 
 ---
 
-## Mostrar o %par dos negócios (31/08/2026)
+## ✅ FEITO (02/09/2026) — %par dos negócios, sobre a tabela `PuPar`
 
-**Origem:** pedido do usuário.
+**Origem:** pedido do usuário (31/08). Implementado em 01/09 numa v1 que o desenho de 02/09
+substituiu por inteiro. **Está tudo no código; falta só o usuário apontar em que outros
+lugares do relatório quer ver o número.**
+
+**O que ficou no disco:**
+
+| | |
+|---|---|
+| `Helpers/dados.py` | tabela `PuPar` no `ESQUEMA`/`PARTICAO`/`CHAVE`; `DescartarPuPar()` ligado ao `InvalidarSeFluxoMudou`, ao `SincronizarFluxos` e ao `SincronizarFluxoAtivos` |
+| `codigos/calc_pu_par/` | script novo (substitui o `calc_pct_par`, removido). Cascata calc → B3 → FI, fase de API em 10 workers, idempotente por (ticker, data) |
+| `gerar_relatorio_credito` | CTE `PuParVigente` nas duas consultas do boletim; `CalcularPctPar()` e `PregoesEntre()`; `%par`, idade e selo de congelada no boletim e no email |
+| `relatorio_secundario.html` | coluna **% Par** com ágio/deságio, selo `Np` de referência congelada, pílula de contagem e disclaimer |
+| `pipeline_core` | passo `PuPar(X)` nas três rotinas |
 
 **O que é:** o preço do negócio como percentual do **PU par** — o PU que o papel valeria
 precificado na própria taxa de emissão. `%par = vrPU / puPar × 100`. É como a mesa lê "caro
-ou barato" sem depender de spread: 100% é no par, acima é ágio, abaixo é deságio.
+ou barato" sem depender de spread nem de match de curva. 100 é no par, acima é ágio, abaixo
+é deságio.
 
-**De onde tirar:**
-- **Calc local** — `CalcularPu(ativo, dtLiquidacao, vrTaxaEmissao)` já devolve o PU par; é
-  exatamente o que o `validar_calc_b3` usa no teste "PU no par". Só serve para ativo com
-  `stFluxoValidado = 1`.
-- **FI Analytics** — a planilha que o `scrape_fianalytics_planilha` já baixa **tem a coluna
-  `% PU Par`**, pronta. Hoje ela é ignorada no parse.
+### Por que a v1 sai
 
-**O que precisa ser decidido:**
-- Qual fonte manda, e o que fazer no não-validado que a FI também não cobre (deixar NULL?).
-- Onde aparece: coluna no Boletim Diário, no "Por Ativo", ou nos dois.
-- Guardar em `NegociosProcessados` (coluna nova, ex. `vrPctPar`) ou calcular na hora do
-  relatório? Guardar é mais barato de ler e deixa o número auditável; calcular na hora evita
-  coluna que envelhece.
+A v1 gravava `vrPctPar` em `NegociosProcessados` e só cobria `stFluxoValidado = 1` (86,3%).
+Dois problemas:
+
+1. **Cobertura.** O ativo que o gate rebaixou é justamente aquele em que a **B3 respondeu** e
+   a nossa calc não reproduziu — ou seja, o puPar da B3 está disponível e é autoritativo.
+   Faltava a cascata.
+2. **Duas verdades.** Com o `vrPctPar` gravado, corrigir o fluxo de um ativo (que apaga o
+   puPar dele) deixaria o %par velho de pé em `NegociosProcessados`, calculado com um
+   denominador em que ninguém mais acredita. É o mesmo problema que fez o trigger virar
+   código dentro do `Mesclar()`.
+
+### O desenho fechado
+
+| | |
+|---|---|
+| **Tabela nova** | `PuPar`: `cdTicker`, `dtReferencia`, `vrPuPar`, `cdFontePuPar`, `dtCriacao`. Série, particionada por `dtReferencia`. Só valores REAIS — nada sintético |
+| **Cascata** | calc local (só validados) → **B3** (`CalcularPuGov(tk, dt, vrTaxaEmissao)`) → **FI** (`ChamarCompleto(tk, dt, vrTaxaEmissao)`, campo `m2m`) |
+| **Idempotência** | par `(cdTicker, dtReferencia)` que já existe não recalcula nem chama API. O valor de um par não muda nunca |
+| **Invalidação** | correção de fluxo apaga os `PuPar` daquele ticker, dentro do `Mesclar()` — junto do trigger que já mora lá |
+| **`%par`** | **calculado na LEITURA**, `vrPU / vrPuPar × 100`. Não é gravado. A fórmula vive num helper só, no estilo do `dados.NaoCancelado()` |
+| **Script** | `calc_pct_par` vira **`calc_pu_par`** — o nome passa a descrever o que ele grava |
+| **`vrPctPar`** | **sai** do `ESQUEMA` de `NegociosProcessados`, via `Reconformar` |
+
+### Por que puPar é indexado por DATA (e não por ativo)
+
+Foi a decisão central. O puPar **acreta todo dia útil** na taxa de emissão, então guardar um
+valor por ativo e reusá-lo por N dias injeta erro **sistemático** (sempre para cima — puPar
+velho é menor, então o %par lê alto). Medido em 249 ativos validados, 17/07 → 28/07 (7 dias
+úteis):
+
+| indexador | n | mediana | p90 | máx |
+|---|---|---|---|---|
+| CDI+ | 109 | 0,411% | 0,462% | 4,73% |
+| %CDI | 18 | 0,372% | 0,387% | 0,405% |
+| PREFIXADO | 7 | 0,364% | 0,382% | 0,382% |
+| IPCA | 115 | 0,250% | 0,292% | 0,382% |
+| **TODOS** | **249** | **0,368%** | 0,437% | 4,73% |
+
+Isso entra direto no %par. E dói mais onde o número é mais útil: CDI+ e %CDI vivem entre 99
+e 101 — a faixa inteira do sinal são ~2 pontos, e 0,4 come 20% dela.
+
+**Segundo modo de falha, pior:** evento de fluxo dentro da janela. Entre 17/07 e 28/07,
+**128 dos 2.583 ativos negociados (5%)** tiveram evento — MATD23 amortizou **100%**, MOVI34
+33%, JHSFA1 11%. Não é deriva, é degrau.
+
+**E indexar por data é mais BARATO:** a base inteira tem **50.628 pares distintos**. Cada um
+se calcula uma vez na vida. Com janela de N dias você re-paga a mesma chamada de API para
+sempre — e recebe um número errado.
+
+### Papel que sai do cadastro (distress) — a parte mais delicada
+
+Quando o emissor se aproxima do default, **as calculadoras removem o papel do cadastro**. O
+mercado passa a usar o **último puPar disponível** como referência, e negocia em *cents on
+the dollar*. Para esses nomes taxa e spread somem — **o %par vira o único número que a mesa
+tem**.
+
+**A regra:** o relatório busca o último puPar com `dtReferencia <= dtLiquidacao` (padrão que
+já existe no `SQL_BUSCAR_VALIDO`, com `ROW_NUMBER` sobre a Anbima) e **mostra sempre a
+idade** quando ela é > 0.
+
+**Não existe status `Congelado` gravado** — decisão do usuário, e está certa: a idade *é* o
+status. A `PuPar` guarda só o que foi realmente calculado, e o `cdFontePuPar` fica só com a
+procedência, sem misturar estado. A objeção original era contra referência velha
+**invisível**; com a idade na tela, o leitor julga sozinho — 2 pregões é soluço de API
+(deriva ~0,1%), 30 pregões é papel que saiu do cadastro.
+
+**Limiar de exibição: 5 pregões.** Abaixo disso a idade aparece discreta; a partir daí o
+ativo é marcado como **referência congelada**, com a idade em destaque, e fica **fora das
+médias** — antes do congelamento o %par é ágio/deságio contra o par corrente, depois é
+*cents on the dollar* contra referência fixa. São grandezas diferentes.
+
+Descongela **sozinho** se o papel voltar às calculadoras (é o comportamento natural do
+desenho), e carrega **sem prazo**, sempre com a idade visível.
+
+**Custo aceito:** sem linha gravada para o papel congelado, o script re-tenta B3/FI todo
+pregão e falha sempre. São ~2 chamadas por pregão por nome em default — punhado de ativos.
+
+### ⚠️ Furo declarado: até 15 pregões de atraso para perceber o congelamento
+
+O `validar_calc_b3` roda com `--revalidar-dias 15`: ativo validado há pouco não é re-testado.
+Se a B3 largar o papel hoje, podemos levar até 15 pregões para descobrir — e nesse
+meio-tempo a **nossa** calc continua acretando um par contratual para um emissor que parou de
+pagar.
+
+Fechar isso exigiria sondar a B3 em todo pregão para todo ativo validado. **Decisão: aceitar
+o atraso.** O mecanismo já existe (o gate desvalida quem é não-confirmável), só tem latência.
+Se incomodar, o caminho é reduzir o `--revalidar-dias` só para quem negociou.
+
+### Onde exibe — ⚠️ PENDENTE
+
+Boletim Diário e email do dia já mostram. **O usuário ainda vai apontar os outros lugares**
+(Por Ativo? Spread × Duration? Visão Mercado?).
+
+**Conversa com:** [[10 - Scripts/validar_calc_b3]], [[16 - Confianca nos Validados (WIP)]],
+[[06 - Calculadoras/B3 Calculator API]] e [[17 - Armazenamento Parquet e AWS]].
 
 ---
 
@@ -109,70 +206,6 @@ participava do pareamento de duplicados, e tirá-lo reclassifica — em 28/07 o 
 
 ---
 
-## AWS — o que falta liberar e decidir (29/08/2026)
-
-**Origem:** decisao do usuario de 28/08 — os dados precisam viver na AWS, e o acesso
-disponivel e bucket S3 + Athena (sem banco SQL). Ver [[17 - Armazenamento Parquet e AWS]].
-
-**Bloqueado por terceiros:** o PC do banco precisa que Quant/TI configurem o acesso a AWS
-antes de qualquer teste. **Nada foi testado contra a AWS de verdade.**
-
-**O que precisa ser confirmado, em ordem de importancia:**
-1. **Escrever no bucket.** E o unico requisito real. Se isso funciona, o resto e detalhe.
-2. **Registrar tabela no Glue/Athena.** Se o usuario nao puder, os parquets vao para o S3
-   do mesmo jeito e outra equipe registra depois — nao bloqueia o desenvolvimento.
-3. Ao registrar: **coluna de particao declarada como `string`** (o mesmo motivo do
-   `hive_types` no DuckDB — senao `2026-07-28` vira DATE e a comparacao com as outras datas
-   quebra), e **partition projection** em vez de crawler (dispensa `MSCK REPAIR TABLE` a
-   cada carga, e exige menos permissao).
-
-**Fora de escopo por decisao do usuario:** o **add-in do Excel** da calculadora, que le
-`InfoAtivos`/`FluxoAtivos` em SQLite por ticker. O usuario resolve num codigo a parte.
-
-**O relatorio HTML** vai para um dashboard que o time de Quant ja tem e liberou espaco.
-Enquanto nao sobe, o `gerar_relatorio_credito` segue gerando o HTML local, lendo dos
-parquets.
-
----
-
-## Capturar o campo `note` do getBondDetails da B3
-
-**Origem:** 28/08/2026, investigando o OVTL15. **Medido em 31/08/2026.**
-
-**O que é:** o `getBondDetails` devolve um campo `note` em texto livre — é a **própria B3
-avisando onde o dado de fluxo dela está incompleto ou onde o papel foge do padrão**. Hoje
-descartamos esse campo.
-
-**O que foi medido** (amostra de 292 ativos de `cdFonteCadastro='B3'`): **~1% tem `note`
-não-vazio** — em 3.093 ativos, algo como 30. Duas frases distintas até agora:
-
-| frase | o que significa |
-|---|---|
-| `Eventuais amortizações extraordinárias não estão sendo consideradas no fluxo.` | a agenda da B3 está incompleta para aquele papel (OVTL15) |
-| `O ativo considera apenas a variação positiva do IPCA.` | **piso de deflação** — o VNA não cai em mês de IPCA negativo |
-
-**A segunda é a preocupante, e não é sobre dado faltando — é sobre PRECIFICAÇÃO.** A nossa
-calc, até onde sei, **não modela o piso de deflação**: ela aplica a variação do IPCA com
-sinal. Num mês de IPCA negativo o VNA da calc cai e o do papel não, e o PU diverge.
-
-**E isso já passou pelo gate.** Dos 3 ativos com essa nota na amostra, **um
-(`22D1289011`) está `stFluxoValidado = 1`, validado contra a B3**. Ou seja: a calc
-reproduziu o PU dele — mas só porque a janela de teste não teve deflação. O gate não pode
-pegar isso: ele compara contra a B3 em 3 datas, e se nenhuma delas cruza um mês negativo,
-os dois modelos concordam. É uma divergência que fica **dormindo** até o primeiro IPCA
-negativo.
-
-**O que precisa ser decidido:**
-- Gravar em `InfoAtivos` (coluna nova, ex. `cdNotaCadastro`) ou só reportar no log/email?
-- **Papel com piso de deflação deveria poder ser validado?** Ou entra numa lista de
-  exceção até a calc modelar o piso?
-- Levantar a base inteira (3.093 chamadas, ~5 min com 10 workers) para saber quantos são e
-  quantas frases distintas existem de verdade — a amostra de 292 pode não ter visto todas.
-
-**Conversa com:** [[15 - Cadastro dos Ativos]], [[10 - Scripts/scrape_b3_bond_details]] e
-[[16 - Confianca nos Validados (WIP)]].
----
-
 ## ✅ RESOLVIDO (29/08/2026) — flag `--sem-email` para execucoes em lote
 
 Ja existia e ninguem tinha registrado: **`NEGSEC_SEM_EMAIL=1`** no ambiente faz qualquer
@@ -243,104 +276,148 @@ dezenas de milhares de chamadas, e cada uma paga handshake (pior atrás do proxy
 
 ---
 
-## Ponto cego aberto em 24/08/2026 — ninguém mais audita a B3 contra a FI
+## Melhorar a precisão da calc local (PU e taxa fora do par)
 
-**Origem:** remoção do `validar_fluxos` (decisão do usuário, 24/08).
+**Origem:** 13/07/2026 (taxa fora do par) e 14/07/2026 (erro de PU). **Fundidos em
+01/09/2026** — são a mesma pergunta: onde a calc local ainda não reproduz a B3/FI, e por quê.
 
-**O que se perdeu:** o `ConferirSaldo` era o único teste que confrontava **B3 × FI** — duas
-fontes independentes. O `validar_calc_b3` pergunta "a nossa calc reproduz a B3?", usando o
-cadastro da B3: se a B3 tiver cadastro errado, a nossa calc reproduz o erro dela a 1e-5 e o
-ativo **passa no gate**. Só consulta a FI quando a B3 **não** confirma.
+**Onde já estamos.** A calc está **LIGADA** desde 19/07 (`config.toml [calc] usarCalcTaxa =
+true`) para **CDI+, IPCA e PREFIXADO**, como degrau 2 da cascata, só em `stFluxoValidado=1`.
+Quem garante a confiança é o gate `validar_calc_b3`: a calc só precifica ativo cuja calc
+reproduz a B3/FI em PU a ≤1e-5, testado **no par** (valida fluxo e VNA) **e a 100 bps do
+par** (valida o desconto). **97,8% dos ativos batem.** O que segue aberto são duas frentes.
 
-**O caso conhecido:** FGEN13 — a B3 diz 1.280, a FI diz 508, o mercado negocia a 503.
+### Frente 1 — %CDI fora do par  ⬅️ MEDIDO EM 01/09/2026, e o numero mudou tudo
 
-**Por que foi removido mesmo assim:** o teste de agenda evento a evento é redundante com o PU
-(no par valida fluxo+VNA, fora do par valida o desconto), e a cobertura da FI era magra (146
-de ~1.670 que a B3 não cobre). O que se perdeu foi só o cruzamento independente.
+O %CDI nao entrou na calc local porque ela nao reproduzia o desconto fora do par. **Mas a
+medicao que motivou isso estava inflada ~10x**: os "bps" da tabela original eram pontos de
+%CDI (multiplicador do CDI), nao taxa a.a. — o `−13,74 bps` do CRA02300MJ7 e `0,1374` ponto
+de %CDI, que com CDI ~14,9% vale **~2 bps** de yield.
 
-**Opção se voltar a incomodar:** rodar o round-trip da FI **sempre**, não só quando a B3
-falha, e reportar (sem desvalidar) o desacordo B3×FI. Custa uma chamada FI por ativo/rodada.
+**A re-medicao foi feita.** O `validar_calc_b3` ja tinha o `--com-taxa` e o `DiffTaxaEmBps`,
+mas o `piorTaxa` era **calculado e jogado fora**: entrava na decisao (`b3Pass` exige
+`piorTaxa <= TOL_TAXA_BPS`) e nao saia em relatorio nenhum — por isso a medicao nunca
+acontecia. Agora ele sai no CSV (`piorTaxaBps`) e numa secao propria do email.
 
----
+Rodado em **40 ativos %CDI validados, os de maior volume negociado** (R$ 7,16 bi somados),
+em 3 datas (16/07, 28/07, 29/07), `--dry-run --com-taxa --sem-fi`:
 
-## 🔴 PRIORIDADE — a calc não reproduz a taxa fora do par (2 a 14 bps)
+| metrica | mediana | p90 | pior |
+|---|---|---|---|
+| **taxa round-trip vs B3 (bps de yield)** | **0,054** | **0,219** | **0,458** |
+| PU (erro relativo) | 2,5e-05 | 5,7e-05 | 8,0e-05 |
 
-**Origem:** 13/07/2026, na tentativa de trocar o `calc_taxa_negocios` pela calculadora local.
+**40 de 40 dentro de 1 bp na taxa.** A divergencia de taxa do %CDI nao e 13,7 bps, nem os
+~2 bps da ressalva de escala: e **meio bp no pior caso**.
 
-**O que é:** a calc reproduz o **PU par** das fontes com precisão (**86,4%** dos 2.861 ativos validados batem a 1e-6 — medido com o gate da época), mas **não reproduz a taxa implícita num PU fora do par**.
+**O que reprova o %CDI hoje nao e a taxa — e a regua de PU.** 25 dos 40 sao REPROVADOS, e
+todos por `piorPU > TOL_PU` (1e-5 = R$ 0,01 por R$ 1.000). Os erros ficam entre 2e-05 e
+8e-05, ou seja **R$ 0,02 a R$ 0,08 por R$ 1.000** — que, convertidos em taxa, sao os 0,05 a
+0,46 bps da tabela. Nenhum passa de 1e-4.
 
-Triangulando 4 negócios de 16/06/2026:
+**Ou seja: o gate reprova em PU um ativo cuja TAXA ele mesmo aceitaria com folga de 10x**
+(`TOL_TAXA_BPS = 5,0` contra 0,46 medido). As duas reguas do mesmo gate discordam sobre o
+que e material, e no %CDI e a mais apertada que decide.
 
-| ativo | calc | FI | B3 | calc − B3 | FI − B3 |
-|---|---|---|---|---|---|
-| TRGP13 (IPCA) | 7,3838 | 7,3620 | 7,3620 | **+2,18 bps** | 0,00 |
-| CRA02300MJ7 (%CDI) | 99,0308 | 98,9105 | 98,8934 | **+13,74 bps** | +1,71 |
-| 22J0346710 (%CDI) | 91,9606 | 92,0145 | 92,0015 | **−4,09 bps** | +1,30 |
-| CRA025002S1 (%CDI) | 113,7916 | 113,8021 | 113,8011 | −0,95 bps | +0,10 |
+**A decisao que sobrou (do usuario, nao do codigo):** para %CDI, o gate deveria julgar por
+PU ou por TAXA? Tres caminhos:
+1. **Gate por taxa no %CDI** — e a grandeza que vai para o relatorio; o PU e meio de prova.
+2. **`TOL_PU` proprio para %CDI** (1e-4 cobriria os 40) — mais simples, mas escolhe um
+   numero por conveniencia, que e como a regua errada nasce.
+3. **Deixar como esta** — o %CDI segue na cascata FI→B3, custando ~25 min/dia de API por
+   uma diferenca de meio bp.
 
-**FI e B3 concordam entre si; a calc discorda das duas.** O erro é nosso.
+**Ressalva de amostra:** os 40 sao os de MAIOR VOLUME entre os 157 %CDI validados, nao uma
+amostra uniforme. E o recorte certo para decidir (sao os que movem o relatorio), mas a cauda
+dos 117 restantes nao foi medida. Repetir com `--tickers` da lista inteira antes de mexer na
+regua.
 
-**⚠️ Ressalva de escala (18/07):** os "bps" da tabela acima estão **inflados ~10× no %CDI**. Os valores são pontos de %CDI (multiplicador do CDI), não taxa a.a. — o `−13,74 bps` do CRA02300MJ7 é `0,1374` ponto de %CDI, que vale **~1,4-2 bps** de yield (convenção do `filtrar_trades`: 1 ponto %CDI ≈ 10 bps; conversão exata com CDI ~14,9% dá ~2 bps). Ou seja, a **divergência de %CDI existe mas é ~7-10× menor** do que parecia. O `validar_calc_b3` já foi corrigido (`DiffTaxaEmBps`); **falta re-medir o %CDI com a métrica certa e decidir se ele volta pra calc local** (hoje está fora por causa desse número inflado). O bug de desconto do IPCA/CDI+ fora do par continua real e não é afetado por essa ressalva (aqueles são taxa a.a.).
+**O IPCA fora do par foi RESOLVIDO (21/07).** Reproduz a B3 a 1e-8 no par **e** fora dele,
+provado termo a termo em 6 IPCA-I com o `comparar_calcpu_b3.py`; a causa era a incorporacao
+futura, ja corrigida. Os 28 papeis IPCA que erravam ~1,3% a 100 bps do par (TRGP13, SABP13,
+PLAC23, RALM11, BARU11, MNAU18...) sairam da lista.
 
-**O detalhe que aponta a causa:** o TRGP13 **bate o PU par a 1e-6** e mesmo assim erra a taxa em 2,18 bps. Se os fluxos e o VNA estão certos (e estão — o PU par fecha), a diferença só pode estar no **desconto**. Candidatos: o truncamento de 6 casas em cada VP (`Trunca(FV_i / fatorDesc, 6)`), a contagem de DU do fator de desconto, ou a convenção do %CDI (onde a taxa muda o fluxo **e** o desconto).
+### Frente 2 — 68 ativos ainda erram o PU acima de 1e-3 (era 114)
 
-**Estado (19/07):** a calc foi **LIGADA** (`config.toml [calc] usarCalcTaxa = true`) para **CDI+/IPCA/PREFIXADO** — mas o **%CDI ficou de fora exatamente por este bug** (erra o desconto fora do par). Ou seja: este item passou a ser **só sobre o %CDI** (os demais indexadores a calc reproduz a B3/FI e já precificam local). Ver [[16 - Confianca nos Validados (WIP)]].
+Medido com `validar_calc_b3 --dry-run`, contra a régua certa (`calcYield`/`calcPU` da B3),
+**só em data com curva DI na base**. 14/07 levou 114 → 68 (97,8% OK) em duas frentes: faxina
+de cadastro (cupom errado em 20 ativos, indexador em 4, fluxo defasado/espúrio em 19 — raízes
+corrigidas, scrapers viraram fill-only) e o **snap no `CalcularVna`** (a amortização passou a
+encostar no aniversário mais próximo), que matou os casos catastróficos (TPER11 70%→0,3%).
 
-**O gate foi consertado (13/07) e a medição mudou tudo.** Ele passou a testar em **duas** taxas: no par (valida o fluxo e o VNA) e a **100 bps do par** (valida o desconto). Rodando nos 3.023 validados:
-
-| | ativos |
-|---|---|
-| batem **no par E fora dele** (≤1e-6) | **1.919 — 63,5%** |
-| batem **só no par** (fluxo ok, desconto errado) | **628** |
-| investigar (> 1e-3) | 135 |
-
-**O gate antigo aprovava 86,4%. O certo aprova 63,5%** — os 628 teriam entrado com o desconto errado, e é o desconto que produz a **taxa** que vai para o relatório.
-
-**E os 628 se separam limpo em dois fenômenos diferentes:**
-
-- **596 erram por um fio** (1e-6 a 1e-5): **579 CDI+, 16 %CDI, 1 PREFIXADO — zero IPCA.** Em taxa dá ~0,02 bps. É ruído numérico da projeção DI, não bug. Tolerável.
-- **30 erram de forma material** (> 1e-4): **28 IPCA**, 2 CDI+.
-
-**Ou seja: o bug de desconto é do IPCA, e é uma lista de 28 papéis** (TRGP13, SABP13, PLAC23, RALM11, BARU11, MNAU18...). Todos batem o PU par com precisão absurda (5e-09 no TRGP13!) e erram ~1,3% a 100 bps do par. Fluxo e VNA perfeitos, desconto quebrado.
-
-**Próximo passo:** pegar um desses 28 e comparar o desconto termo a termo com o `/calcPU` da B3 (que devolve o `cashFlowList` com `presentValue` de cada evento). A diferença tem que aparecer num termo específico.
-
-**Prêmio se fechar:** medido no pregão mais cheio (16/06, 8.065 negócios validados), só há **598 pares (ticker, PU) distintos** — o cache corta 93% do trabalho, e a ~0,7s por par dá **~7 min/dia num core**, contra os ~25 min/dia da cascata de API no banco. A calc é mais rápida **e** offline.
-
----
-
-## 68 ativos ainda erram o PU acima de 1e-3 (era 114) — sem mais casos catastróficos
-
-**Origem:** 13/07/2026, atualizado 14/07. Rodar `python scripts/validar_calc_b3.py --dry-run` (o `conferir_pu` foi removido em 24/08; o gate faz a mesma medição). **Contra a régua certa** (calcYield/calcPU da B3), não a taxa gravada na base. Rodar **só em data com curva DI na base**.
-
-**14/07 — 114 → 68 (97,8% OK)** em duas frentes (detalhe em [[14 - Rotinas da Calculadora]]):
-1. **Faxina de cadastro** (só dado nosso): cupom errado 20 ativos (FI sobre B3; RED711 250 vs 2,5), indexador 4 (CRA02300MJ8 %CDI→CDI+ errava 565%), fluxo defasado/espúrio 19. Raízes corrigidas no código (scrapers viraram fill-only).
-2. **Snap no `CalcularVna`** (autorizado, mexeu na `calculadora_rf.py`): amortização passou a **encostar no aniversário mais próximo** em vez de exigir data exata → matou os erros catastróficos (TPER11 70%→0,3%, 22D1226341 30%→0). Gabaritos seguem 11 OK/1 FAIL, zero regressão.
-
-**Restam 68, todos pequenos (pior 3,8%):**
+Os 68 que restam são todos pequenos (pior 3,8%):
 
 | # | grupo | erro | de quem é |
 |---|---|---|---|
-| **57** | IPCA pro-rata/índice | 0,1-2,8% (quase tudo <1%) | metodologia fina — **oscila com a data** em torno de 1e-3 (projeção/pró-rata do IPCA corrente). NÃO corrigir `vrAniversario` por minimização: é superajuste (testado). Poucos maiores = fluxo incompleto (24G1674104: 121 vs 151 eventos) |
-| **7** | CDI+ | até 3,8% | batem no par, erram **fora do par** → é a [[#🔴 PRIORIDADE — a calc não reproduz a taxa fora do par (2 a 14 bps)\|taxa fora do par]], não novo |
-| **4** | PREFIXADO | — | B3 devolve `getBondDetails` vazio hoje (TSSS15/VAMOA4/RDORE7/CEPEA5) — gap da B3 |
+| **57** | IPCA pro-rata/índice | 0,1-2,8% (quase tudo <1%) | metodologia fina — **oscila com a data** em torno de 1e-3. NÃO corrigir `vrAniversario` por minimização: é superajuste (testado). Poucos maiores = fluxo incompleto (24G1674104: 121 vs 151 eventos) |
+| **7** | CDI+ | até 3,8% | batem no par, erram fora dele |
+| **4** | PREFIXADO | — | B3 devolve `getBondDetails` vazio (TSSS15/VAMOA4/RDORE7/CEPEA5) — gap da B3, não nosso |
 
-**Raiz de processo não fechada:** `scrape_b3_bond_details.py` só re-scrapeia quem tem info **faltando**; fluxo que já existe **nunca é atualizado** → deriva (foi o que causou os 19 fluxos defasados). Falta um refresh periódico do fluxo da B3.
+### Raiz de processo, não fechada
 
-**Item fechado em 24/08/2026:** o `conferir_pu --desvalidar` foi removido junto com o script. O `validar_calc_b3` já faz isso por padrão e **está** no pipeline — desvalida quem não reproduz a B3/FI, e esses caem na cascata de API. Não há mais o que decidir.
+`scrape_b3_bond_details.py` só re-scrapeia quem tem info **faltando**; **fluxo que já existe
+nunca é atualizado** → deriva silenciosa. Foi exatamente o que produziu os 19 fluxos
+defasados da faxina de 14/07. Falta um refresh periódico do fluxo da B3.
+
+### Prêmio se fechar
+
+Medido no pregão mais cheio (16/06, 8.065 negócios validados), só há **598 pares (ticker, PU)
+distintos** — o cache corta 93% do trabalho, e a ~0,7s por par dá **~7 min/dia num core**,
+contra os ~25 min/dia da cascata de API no banco. A calc é mais rápida **e** offline.
+
+**Conversa com:** [[16 - Confianca nos Validados (WIP)]], [[14 - Rotinas da Calculadora]] e
+[[10 - Scripts/validar_calc_b3]].
 
 ---
-
 ## Migração e instalação no ambiente do Banco (Itaú BBA)
 
-**Origem:** 20/06/2026.
+**Origem:** 20/06/2026. **Atualizado em 01/09/2026** com a parte de dados.
 
-**O que é:** planejar a migração do projeto do PC pessoal para o ambiente corporativo (PC trabalho / rede do banco). Inclui: instalação de dependências (Python, Playwright, pacotes), ajuste de paths, configuração de variáveis de ambiente (.env), acesso às fontes (B3, Anbima, FI Analytics — verificar se há bloqueios de proxy/firewall), permissões de Outlook (pywin32), e possível ajuste de credenciais.
+**O que é:** levar o projeto do PC pessoal para o ambiente corporativo. São **duas coisas
+distintas** que sempre andaram juntas nesta nota: o **ambiente** (instalar e rodar) e os
+**dados** (não recomeçar do zero).
 
-**Decisão pendente:** levantar restrições do ambiente (proxy, Python disponível, permissões de instalação, etc.) antes de planejar os passos.
+### Parte A — ambiente
+
+Instalação de dependências (Python, Playwright, pacotes), ajuste de paths, variáveis de
+ambiente (`.env`), acesso às fontes (B3, Anbima, FI Analytics — verificar bloqueios de
+proxy/firewall), permissões de Outlook (`pywin32`) e ajuste de credenciais.
+
+O passo a passo já existe: **`INSTALACAO_BANCO.md`** na raiz. O que continua pendente é
+levantar as restrições reais do ambiente (proxy, Python disponível, permissão de instalação).
+
+### Parte B — aproveitar os dados da arquitetura antiga no Parquet
+
+**Isto é o que falta decidir.** O PC do banco roda em produção sobre o **SQLite** (`trades.db`
+e companhia) e tem histórico que a base local não tem; o branch `refactor/split-bases` trocou
+o armazenamento por **Parquet + DuckDB**. Na virada, esse histórico ou é **convertido** ou é
+**perdido** — e boa parte dele **não é re-scrapeável**: as fontes online guardam janela curta
+(deb/NTN-B ~4 meses, curva DI ~20 pregões, CRI/CRA ~5 pregões), e as chamadas de cálculo da
+B3 são **contadas**, então re-derivar taxa de pregão antigo custa consumo de verdade.
+
+**O que precisa ser decidido/feito:**
+- **Um conversor SQLite → Parquet**, uma vez só, tabela a tabela. O SQL não muda (as views do
+  DuckDB têm o nome das tabelas antigas), então o trabalho é de **tipo e partição**, não de
+  query: aplicar o `ESQUEMA` do `dados.py` coluna a coluna (**tipo é declarado, nunca
+  inferido**) e particionar por data as tabelas de série.
+- **A chave dos negócios muda.** O `idTrade` (`AUTOINCREMENT`) morreu com o SQLite; a chave
+  passou a ser o `cdIdentificadorNegocio` que a B3 manda. Conferir se **todo** negócio
+  histórico do banco tem esse campo preenchido — o que não tiver é descartado (é a mesma
+  regra do RESOLVIDO de 31/08), e é melhor descobrir o volume disso **antes** da virada.
+- **Quem prevalece na sobreposição** entre o histórico do banco e o que já existe no Parquet
+  local (1.582.200 linhas). O caminho seguro é `Mesclar()` com política por coluna, não
+  `Upsert()` — ninguém é dono de todas as colunas de `InfoAtivos`.
+- **Ordem da virada:** converter **antes** de ligar o pipeline novo no banco, para que a
+  primeira rodada em Parquet já ache o histórico no lugar e não tente re-scrapear a janela
+  toda.
+- Conferir se `InfoAtivos`/`FluxoAtivos` (tabelas **estado**, arquivo único) precisam de
+  reconciliação com o cadastro atual da B3, ou se entram como estão e o pipeline atualiza.
+
+**Conversa com:** [[17 - Armazenamento Parquet e AWS]], [[13 - Migracao Banco]],
+`INSTALACAO_BANCO.md` e o item de importação de histórico de planilhas abaixo (é o mesmo
+problema pela outra ponta: lá a fonte é Excel, aqui é o SQLite de produção).
 
 ---
-
 ## ✅ RESOLVIDO (19/07/2026) — `scrape_fianalytics_planilha` quebrado (layout novo do site)
 
 **Consertado em 19/07** com base no tutorial do usuário (`instrucoes.txt`). O site refez o layout: (1) o download não é mais por URL `?type=deb`/`cri_cra` — agora é botão **"Exportar"** na lista (login cai na lista de debêntures); (2) CRI/CRA se acessa pelo item de menu **"Lista"** (há dois; o de CRI/CRA é o **último**, ~640; o 1º é debêntures ~1.5k); (3) o formato mudou de **xlsx → CSV** (separador `;`, decimal vírgula, UTF-8 BOM) e a coluna do emissor virou **`Emissor`** (era `issuer`). Seletores agora por **texto/role** (`get_by_role("button", name="Exportar")`, `button:has-text("Lista").last`), nunca por classe CSS. Adicionado **exit 1 se nenhuma planilha gravar tickers** (mata a falha silenciosa). **Validado ao vivo: 1.507 deb + 640 CRI/CRA = 2.147 tickers.** Texto original abaixo (contexto).
@@ -408,34 +485,6 @@ Fecha metade do item "Auditar falha silenciosa nos demais scrapers" abaixo.
 
 ---
 
-## Usar o `getBondDetails` da B3 como fonte de cadastro (complementar à Anbima)
-
-**Origem:** 11/07/2026, ao ler a spec `D:\ItauBBA\calculadora-renda-fixa\PLANO_VALIDACAO_FLUXOS.md`.
-
-**✅ Atualização (12/07/2026):** o endpoint **já está ligado** — `lib/b3_calc_api.ObterDetalhesAtivo(cdTicker)` (com cache por ticker, reusando token/keepalive/retry-401). Quem o consome hoje é o `validar_calc_b3` e o `scrape_b3_bond_details`. **O que falta é o outro uso:** virar **segunda fonte de cadastro** na cascata do `scrape_anbima_data_ativos` (Anbima → B3 → NULL), fechando o buraco de `InfoAtivos` descrito abaixo.
-
-**O que é:** endpoint da API da B3 que já temos token (`lib/b3_calc_api.py`):
-
-```
-GET https://api.calculadorarendafixa.com.br/getBondDetails/{cdTicker}
-Header: Authorization: <token de login>      # sem data, sem taxa — cadastro estático
-```
-
-Devolve o **cadastro completo** do ativo: `startingdate` (início de rentabilidade — pode diferir da emissão), `issuedate`, `expiredate`, `yield` (taxa de emissão em unidade nativa), `method` (indexador: `IPCA-I`→IPCA · `DI-PERC`→%CDI · `DI-SPREAD`→CDI+ · `PRE`→PREFIXADO), `anniversaryday`, `vne`, `tipoIF`, `issuer` — **e a agenda cadastrada** (`events`: `{date, eventType, yield}`, com `A` = %amortização e `J` = %incorporação).
-
-**Por que interessa (2 usos):**
-1. **Fechar o buraco de cadastro da `InfoAtivos`.** Ativo que negocia mas não está no indicativo Anbima fica hoje com cadastro NULL permanente — e, por tabela, sem `vrDuration` → sem `cdReferencia` → sem spread. O `getBondDetails` cobre quase todos os campos de `INFO_REQUIRED_COLS` (indexador, VNE, taxa de emissão, início de rentabilidade, vencimento, emissor, instrumento) **e** o fluxo. Vira uma **segunda fonte na cascata** do `scrape_anbima_data_ativos`: Anbima → B3 → NULL. Conversa direto com o item "Calcular duration de corporates" acima.
-2. **É a fonte primária da validação de fluxo** que a calculadora vai exigir (ver abaixo).
-
-**Limitações conhecidas (da spec):**
-- As datas vêm no **dia-15 cru**, mesmo caindo em fim de semana/feriado → aplicar `ProximoDu` antes de comparar/gravar (nossa base às vezes já tem o DU-ajustado).
-- Os eventos `A` **não incluem o principal do vencimento** (somam ~92% no FGEN13; os ~8% finais saem como evento `V` no `calcPU`).
-- Não cadastra tudo — CRI/CRA tem cobertura pior (a spec usa FI Analytics como fallback nesses).
-
-**Não fornece:** `cdISIN` e `vrQuantidadeEmissao` — justamente os 2 campos que a Anbima também não dá para ~120 ativos. Ou seja, não resolve o re-enfileiramento eterno desses; a skip-list continua sendo o remédio.
-
----
-
 ## ✅ RESOLVIDO (12/07/2026) — Validação de fluxo + rotinas da calculadora migradas
 
 O `validar_fluxos.py` **veio para cá** (`code/scripts/validar_fluxos.py`, passo 11 do pipeline), junto com as 3 rotinas de dados da calculadora (`scrape_ipca_ibge`, `scrape_ipca_projetado_anbima`, `scrape_di_bcb`) e a curva DI completa arquivada pelo `scrape_b3_curva_di`. O lado do ingestor (5 colunas, trigger, `SincronizarFluxoAtivos`) já estava pronto desde 11/07. Detalhes em [[14 - Rotinas da Calculadora]].
@@ -448,7 +497,7 @@ O `validar_fluxos.py` **veio para cá** (`code/scripts/validar_fluxos.py`, passo
 
 ## Trocar a precificação (`calc_taxa_negocios`) pela calculadora local
 
-**✅ FEITO (15-19/07/2026) para CDI+/IPCA/PREFIXADO.** A calc está **LIGADA** (`config.toml [calc] usarCalcTaxa = true`, `indexadores = ["CDI+","IPCA","PREFIXADO"]`) como degrau 2 da cascata, só em `stFluxoValidado=1`. A confiança é garantida pelo gate **`validar_calc_b3`** (ver [[16 - Confianca nos Validados (WIP)]] e [[11 - Pipeline de Execucao]] passo 13): a calc só precifica ativo cuja calc reproduz a B3/FI em PU a ≤1e-5. **%CDI segue de fora** (a calc não reproduz o desconto fora-do-par — ver item do topo). O texto abaixo é o registro da investigação que levou a isso.
+**✅ FEITO (15-19/07/2026) para CDI+/IPCA/PREFIXADO.** A calc está **LIGADA** (`config.toml [calc] usarCalcTaxa = true`, `indexadores = ["CDI+","IPCA","PREFIXADO"]`) como degrau 2 da cascata, só em `stFluxoValidado=1`. A confiança é garantida pelo gate **`validar_calc_b3`** (ver [[16 - Confianca nos Validados (WIP)]] e [[11 - Pipeline de Execucao]] passo 13): a calc só precifica ativo cuja calc reproduz a B3/FI em PU a ≤1e-5. **%CDI segue de fora** (a calc não reproduz o desconto fora-do-par — ver [[#Melhorar a precisão da calc local (PU e taxa fora do par)|Melhorar a precisão da calc local]]). O texto abaixo é o registro da investigação que levou a isso.
 
 **Origem:** 12/07/2026 — é o **item 5** do `MIGRACAO.md` da calculadora, deixado fora da migração das rotinas por decisão do usuário.
 
@@ -472,25 +521,71 @@ Conversa direto com o item "Calcular duration de corporates" (a calc também exp
 
 ---
 
-## Importar histórico de taxas (Anbima, NTN-B/DI, DI projetado) de planilhas existentes
+## Importar histórico de taxas de planilhas — LEVANTADO em 01/09/2026, e o item encolheu
 
-**Origem:** 06/07/2026.
+**Origem:** 06/07/2026. **O sub-item "levantar o layout real de cada planilha" foi feito.**
 
-**O que é:** planejar como **importar histórico já existente em planilhas** (Excel/CSV que o usuário mantém) para dentro do `trades.db`, cobrindo período **anterior** ao que os scrapers alcançam. As fontes online guardam janela curta (deb/NTN-B ~4 meses; curva DI ~20 pregões; CRI/CRA ~5 pregões), então o histórico profundo só entra por importação manual das planilhas.
+**O que era:** importar histórico de planilhas do usuário para cobrir período anterior ao que
+os scrapers alcançam, porque "as fontes online guardam janela curta".
 
-**Três conjuntos a importar:**
-- **Taxas indicativas Anbima** (deb/CRI/CRA) → alvo `AnbimaIndicativos` (`cdTicker`, `dtReferencia`, `vrTaxaAnbima`, ...).
-- **NTN-B / DI (MtM)** → alvo `MtmAnbima` (curvas de referência por `dtReferencia`).
-- **DI projetado histórico** → definir onde grava (provavelmente `MtmAnbima` com os tickers `DI1F..`, ou tabela nova se a semântica de "projetado" divergir do MtM raspado).
+### O que foi medido
 
-**Decisões pendentes (planejar antes de codar):**
-- Levantar o **layout real** de cada planilha (abas, colunas, formato de data BR, unidade da taxa — % a.a. vs decimal).
-- Mapear colunas da planilha → colunas das tabelas destino; garantir **UPSERT idempotente** (não duplicar com o que os scrapers já trouxeram; scraper x planilha — quem prevalece na sobreposição?).
-- Script único de importação (`importar_historico_planilhas.py`?) com `--tipo anbima|mtm|di-proj` e `--arquivo`, ou um por fonte.
-- Conferir se o **DI projetado** casa com a chave/semântica de `MtmAnbima` ou precisa de coluna/tabela própria.
+**1. As planilhas não são o que o item supunha.** Varrido `D:\ItauBBA\Planilhas` (8 arquivos):
+`BACKUPCalculadora`, `CalcCDIPorcento`, `CalcIPCA`, `CalcPre`, `CalculadoraCRICRA`,
+`CalculadoraTitulosPublicos`, `plan_vna`. **Todas são calculadoras de precificação**, não
+séries históricas de taxa indicativa. As abas de dados que elas carregam são `IPCA
+Histórico`, `Projeção IPCA`, `CDI Histórico` (desde 2010) e `DI Projeção` — insumos da
+própria planilha, e **exatamente o que os nossos scrapers já coletam**. A aba `NTN-B` é uma
+calculadora de um papel numa data, não uma curva por data.
 
-**Por que importa:** destrava spread histórico profundo (match de referência precisa de NTN-B/DI na data do trade) e relatórios cobrindo período longo, sem depender da janela curta das fontes online.
+**Não existe, nesta máquina, planilha com histórico de taxa indicativa Anbima nem de curva
+NTN-B/DI por data.** Se ela existe, está no PC do banco.
 
+**2. Metade do item já está resolvida pelos scrapers.** Cobertura real hoje:
+
+| série | cobertura na base | fonte | veredito |
+|---|---|---|---|
+| **DI realizado** (`di.db/DiHistorico`) | **2000-01-03 → 2026-07-28** (26 anos) | `scrape_di_bcb` (BCB/SGS) | ✅ já profundo — **não precisa de planilha** |
+| **IPCA** (`ipca.db/IPCA`) | **1979-12 → 2026-12** (47 anos) | `scrape_ipca_ibge` | ✅ já profundo — **não precisa de planilha** |
+| `AnbimaIndicativos` | 2026-02-23 → 2026-07-28 (106 dias) | scrapers deb/CRI-CRA | ⚠️ **já no limite da fonte** (ver abaixo) |
+| `MtmAnbima` (NTN-B + DI1) | 2026-06-08 → 2026-07-28 (36 dias) | `scrape_anbima_ntnb` | 🎁 **3,5 meses de graça, não raspados** |
+| `di.db/CurvaDi` (vértices) | 2026-06-15 → 2026-07-28 (32 pregões) | `scrape_b3_curva_di` | ❌ janela da B3 ~20 pregões; fundo só por planilha |
+
+**3. Onde a fonte da Anbima acaba, exatamente.** Bissecção nos arquivos `.xls` diários
+(`m{yy}{mmm}{dd}.xls` para NTN-B, `d{...}.xls` para debênture):
+
+> **A fronteira é 2026-02-21 nos dois.** 20/02 dá 404, 21/02 baixa. Arquivos de 15/01/2026 e
+> anteriores não existem mais. Os de 17/03, 10/06 e 28/07 baixam e têm md5 distintos (são
+> arquivos de verdade, não a mesma página repetida).
+
+Ou seja: a janela da Anbima é de **~6 meses**, não os "~4 meses" que o item supunha — e o
+`AnbimaIndicativos` da base (começa 23/02) **já está colado nessa borda**. Não há nada a
+raspar ali; tudo antes de 21/02/2026 só existe em planilha, se existir.
+
+### O que fazer
+
+**Ação imediata, e ela EXPIRA:** o `MtmAnbima` só tem 36 dias, mas a fonte de NTN-B entrega
+desde 21/02. São **~3,5 meses de curva NTN-B disponíveis agora e que somem** conforme a
+janela desliza. O script já existe e é idempotente:
+
+```
+python codigos\scrape_anbima_ntnb\scrape_anbima_ntnb.py --start 2026-02-23 --end 2026-06-05
+```
+
+Isso é o que o item chamava de "destravar spread histórico profundo" — e não precisa de
+planilha nenhuma nem de código novo.
+
+**O que sobra de verdade para importação manual:** só a **curva DI por vértice** (`CurvaDi`),
+onde a B3 guarda ~20 pregões e não há outra fonte. E o histórico Anbima **anterior a
+21/02/2026**, se e somente se aparecer uma planilha que o contenha.
+
+**Decisões que continuam pendentes** (e só valem quando a planilha aparecer): layout real
+(abas, colunas, data BR, unidade da taxa), mapa coluna→tabela, quem prevalece na sobreposição
+scraper × planilha, e se o "DI projetado" cabe em `MtmAnbima` ou pede tabela própria.
+
+**Conversa com:** [[10 - Scripts/scrape_anbima_ntnb]], [[10 - Scripts/scrape_b3_curva_di]] e
+o Passo 6-B do `INSTALACAO_BANCO.md` (é o mesmo problema pela outra ponta: lá a fonte é o
+SQLite de produção do banco).
 
 ---
 

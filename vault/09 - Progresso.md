@@ -214,6 +214,38 @@ gerar_relatorio_credito       ← análise histórica (todos os pregões, sem ar
 
 ## Última atualização
 
+2026-09-02 — **Backlog: PRÉVIA, PU par/%par, medição do %CDI, migração e faxina.**
+
+> **Branch `refactor/split-bases`, árvore SUJA (nada commitado), NÃO mergeado.**
+> Teste de aceitação re-conferido: **34 pregões, 2.568 ativos, R$ 52.315,17 MM** — idêntico.
+> `conferir_dados` (agora com 9 seções) e `tests_fase1` passam.
+
+**O que entrou:**
+
+| item | estado |
+|---|---|
+| **Dia de hoje como PRÉVIA** | ✅ `CalcularDtPrevia()`; selo no banner, no seletor do Boletim e no email do dia; `--sem-previa` volta ao corte em D-1. Ver [[10 - Scripts/gerar_relatorio_credito]] |
+| **PU par e %par** | ✅ Tabela **`PuPar`** por (ativo, data), script **`calc_pu_par`** (passo 15) em cascata calc → B3 → FI, `%par` calculado na **leitura**. Ver [[10 - Scripts/calc_pu_par]] |
+| **Precisão da calc (%CDI)** | ⚠️ **medido, decisão do usuário pendente.** O gate calculava o `piorTaxa` e jogava fora; agora ele sai no CSV e no email. Em 40 ativos %CDI de maior volume: taxa reproduz a B3 com **mediana 0,054 bps, pior 0,458** — 40/40 dentro de 1 bp. O que os reprova é a régua de **PU** (`TOL_PU = 1e-5`), ~10× mais apertada em termos econômicos que a `TOL_TAXA_BPS = 5,0` do mesmo gate |
+| **Refresh do fluxo da B3** | ✅ `scrape_b3_bond_details --refrescar-dias 30 --refrescar-max 150`: esteira rotativa, do mais velho, sem pico. Fecha a "raiz de processo" que produziu os 19 fluxos defasados de 14/07 |
+| **Migração para o banco** | ✅ `migrar_para_parquet` endurecido (confere chave natural e recusa destino ocupado — pegou de primeira que apagaria a base local) + **Passo 6-B** no `INSTALACAO_BANCO.md` |
+| **Histórico de planilhas** | ✅ levantado: as planilhas do usuário são **calculadoras**, não séries. DI já tem 26 anos e IPCA 47. A fonte Anbima vai só até **21/02/2026** (bissectado). Sobrou: backfill de ~3,5 meses de `MtmAnbima`, que **expira** |
+| **Faxina** | ✅ `Helpers/datas.py` (4 cópias do leitor de feriados viraram uma, e ela LEVANTA se o CSV faltar); pasta órfã `migrar_split_bases` apagada; 8 nomes JS com `_` inicial renomeados (restam **zero** no projeto); imports mortos removidos; `idTrade` corrigido no `CONTEXTO_PROJETO.md` |
+
+**Achados de dado:** `RBRAJ7` tem `vrVNE = 1,00` e `vrTaxaEmissao = 1,00` (fonte B3) —
+cadastro corrompido, exposto pelo cálculo do %par. Mais 4 ativos fora da banda de ordem de
+grandeza em 645 mil negócios.
+
+**Aberto e conhecido:** os dois geradores de relatório (`gerar_relatorio_html` e
+`gerar_relatorio_credito`) compartilham **9 nomes de função e nenhum corpo idêntico**. Em
+`AgregarTicker` a divergência é numérica: o diário usa `vrTaxaAnbima` do primeiro negócio,
+o geral usa média ponderada por volume — **os dois dão Taxa/Spread Anbima diferentes para o
+mesmo ticker no mesmo dia**. O geral foi corrigido; o diário não.
+
+---
+
+## Última atualização (2026-08-29)
+
 2026-08-29 — **Reorganização da estrutura + Parquet/AWS como armazenamento (EM CURSO).**
 
 > **Branch `refactor/split-bases`, 6 commits, NÃO mergeado.** A fundação está pronta e

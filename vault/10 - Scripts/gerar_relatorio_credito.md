@@ -11,10 +11,48 @@
 ## Como rodar
 
 ```powershell
-python scripts/gerar_relatorio_credito.py
+python codigos\gerar_relatorio_credito\gerar_relatorio_credito.py
+python codigos\gerar_relatorio_credito\gerar_relatorio_credito.py --sem-previa
+python codigos\gerar_relatorio_credito\gerar_relatorio_credito.py --email-dia 2026-07-28
+python codigos\gerar_relatorio_credito\gerar_relatorio_credito.py --ate 2026-07-28
 ```
 
-Não aceita argumentos CLI. Lê tudo o que já existe no banco e sobrescreve o arquivo de saída.
+Lê tudo o que já existe na base e sobrescreve o arquivo de saída.
+
+### O pregão de HOJE entra, marcado como PRÉVIA (01/09/2026)
+
+Até 31/08 o relatório cortava em **D-1** (`CalcularDtCorte`): o pregão de hoje não fechou,
+e os negócios já lançados para a liquidação de hoje são a **perna D+1 do pregão anterior** —
+meio dia de dado. Publicá-los sem aviso mostrava volume e spread incompletos como se fossem
+fechados.
+
+O problema nunca foi o dado; era a ausência do aviso. Agora o corte é o **último dia útil
+≤ hoje**, e `CalcularDtPrevia()` devolve a data aberta. O selo viaja no payload (`dtPrevia`)
+e aparece em quatro lugares:
+
+- **banner** no topo, acima das abas (vale para todas elas);
+- sufixo **" · PRÉVIA"** na opção do seletor do Boletim — é a primeira coisa que a mesa lê;
+- **nota** dentro do Boletim quando a data selecionada é a prévia;
+- **`[PRÉVIA]`** no assunto e um aviso no corpo do email do dia.
+
+`--sem-previa` volta ao corte em D-1; `--ate YYYY-MM-DD` vence os dois. A paleta é a mesma
+do `badge-previa` que o `relatorio.html.j2` (o relatório **diário**, `--mode previa`) já
+usava — os dois falam do mesmo estado do dia.
+
+### Coluna **% Par** (02/09/2026)
+
+`%par = vrPU / vrPuPar × 100` — o preço do negócio como percentual do PU par. **Calculado na
+leitura**, não gravado: o denominador vem da tabela `PuPar`
+(ver [[10 - Scripts/calc_pu_par|calc_pu_par]]).
+
+A CTE **`PuParVigente`** resolve o puPar de cada ticker com `dtReferencia <= dtLiquidacao`,
+particionando por `cdTicker` (e não por negócio: todos os negócios do mesmo ticker no mesmo
+dia dividem o denominador, então a consulta não cresce com o histórico de `PuPar`).
+
+O `<=` é o que atende o **papel que saiu do cadastro** das calculadoras: sem linha nova para
+a data, vem a última que existe, e a **idade** dela — em pregões, via `PregoesEntre()` — diz
+se a referência está viva ou congelada. Acima de `PREGOES_CONGELADO = 5` a célula ganha o
+selo `Np`, com tooltip, e o dia ganha uma pílula com a contagem.
 
 > **Atenção — o relatório agrupa por `dtLiquidacao`, não por `dtNegocio`.** Um trade negociado num dia liquida no dia útil seguinte (D+1). Portanto, o último dia que aparece no relatório depende de quais trades já passaram por **todo o pipeline de processamento** (`calc_taxa_negocios` → `filtrar_trades` → `calc_spread_over`), não só de quais estão crus em `NegociosBrutos`.
 >

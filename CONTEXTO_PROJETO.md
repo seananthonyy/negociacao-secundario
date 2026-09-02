@@ -118,12 +118,17 @@ Negócios crus do boletim da B3, sem tratamento. Fonte: `scrape_b3_boletim.py`.
 | `cdSituacao` | TEXT | Situação do negócio no boletim |
 | `dtCriacao` / `dtAtualizacao` | TEXT | Auditoria do UPSERT |
 
-#### `NegociosProcessados` (522.670 linhas) — PK `idTrade`
+#### `NegociosProcessados` (645.318 linhas) — chave `cdIdentificadorNegocio`
 Resultado do tratamento: taxa resolvida, duplicados classificados, spread calculado.
+
+> ⚠️ **O `idTrade` não existe mais.** Era `INTEGER PRIMARY KEY AUTOINCREMENT` e só existia
+> porque o SQLite o dava de graça — fora dele ninguém gera esse número. A chave passou a ser
+> a natural, que a própria B3 manda: `cdIdentificadorNegocio`. Ver
+> [[17 - Armazenamento Parquet e AWS]].
 
 | coluna | tipo | papel |
 |---|---|---|
-| `idTrade` | INTEGER | FK para `NegociosBrutos` |
+| `cdIdentificadorNegocio` | TEXT | **A chave.** Liga a `NegociosBrutos`; vem da B3 |
 | `cdTicker`, `cdEmissor`, `dtNegocio`, `dtLiquidacao`, `vrQuantidade`, `vrPU`, `vrVolume` | — | Copiados do bruto |
 | `vrTaxaCalculada` | REAL | **A taxa final do negócio**, venha de onde vier |
 | `cdFonteTaxa` | TEXT | De onde veio: `Calc` (calculadora local), `FiAnalytics`, `B3`, ou NULL |
@@ -132,6 +137,23 @@ Resultado do tratamento: taxa resolvida, duplicados classificados, spread calcul
 | `idGrupoNegocio` | TEXT | Grupo do union-find do filtro de duplicados |
 | `cdStatus` | TEXT | `VALIDO`, `BROKER`, `FUNDO` ou `PF` (ver §6) |
 | `dtProcessamento` | TEXT | Quando foi processado |
+
+#### `PuPar` — chave `(cdTicker, dtReferencia)`
+PU par por ativo e data: o PU que o papel valeria precificado na **própria taxa de emissão**.
+É o denominador do `%par` do negócio, que **não é gravado** — sai na leitura do relatório
+(`vrPU / vrPuPar × 100`). Escrita pelo `calc_pu_par`.
+
+| coluna | tipo | papel |
+|---|---|---|
+| `cdTicker` | TEXT | O papel |
+| `dtReferencia` | TEXT | **A data.** PU par acreta todo dia útil, então não é propriedade do ativo e sim do par (ativo, data) |
+| `vrPuPar` | REAL | O PU no par |
+| `cdFontePuPar` | TEXT | `Calc` (calculadora local, só validados), `B3` ou `FI` |
+| `dtCriacao` | TEXT | Quando foi gravado |
+
+Guarda **só valor real** — nada sintético. Papel que sai do cadastro das calculadoras
+(emissor perto do default) simplesmente para de ganhar linha; a leitura pega o último com
+`dtReferencia <= dtLiquidacao` e exibe a **idade** dessa referência.
 
 #### `InfoAtivos` (5.102 linhas) — PK `cdTicker`
 Cadastro do papel. **É a tabela mais importante do sistema** — quase todo bug de

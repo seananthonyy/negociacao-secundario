@@ -19,6 +19,7 @@
 ```
 code/                     <- a pasta "z antoniooliveira" no PC do banco
 ├── Helpers/              módulos compartilhados (era lib/) + pipeline_core + dados.py
+│                         + datas.py (dias úteis/feriados Anbima — fonte única desde 01/09)
 ├── files/
 │   ├── config.toml, .env
 │   ├── Database/         ipca.db, di.db, feriados_anbima.csv (os 3 que a calc lê)
@@ -66,6 +67,7 @@ negociacao-secundario/
 │   │   │   ─── VALIDAÇÃO E CÁLCULO ───
 │   │   ├── calc_taxa_negocios.py            Taxa por trade (Calc local → FI → B3)
 │   │   ├── filtrar_trades.py                VALIDO / FUNDO / BROKER / PF → cdStatus
+│   │   ├── calc_pu_par.py                   PU par por (ativo, data) → tabela PuPar
 │   │   ├── calc_spread_anbima.py            Spread das indicativas Anbima
 │   │   ├── match_referencias.py             cdReferencia (NTN-B / DI1) por duration-match
 │   │   ├── calc_spread_over.py              vrSpreadOver em bps
