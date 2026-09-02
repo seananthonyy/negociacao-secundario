@@ -24,17 +24,13 @@ Uso típico:
     pc.RodarIntervalo(ini, fim)  # reprocessar um range
 """
 
-import csv
 import subprocess
 import sys
 from datetime import date, timedelta
 from pathlib import Path
 
-from config import cfg
-
 RAIZ = Path(__file__).resolve().parent.parent   # a pasta com Helpers/, files/, codigos/
 CODIGOS = RAIZ / "codigos"                      # um script por pasta: codigos/<n>/<n>.py
-FERIADOS_CSV = Path(cfg["paths"]["feriadosCsv"])
 
 
 def CaminhoScript(script: str) -> Path:
@@ -45,59 +41,11 @@ def CaminhoScript(script: str) -> Path:
 # ---------------------------------------------------------------------------
 # Dias úteis (feriados Anbima + fim de semana)
 # ---------------------------------------------------------------------------
-
-def Feriados() -> set[date]:
-    """Feriados Anbima a partir de data/feriados_anbima.csv (coluna 'data', ISO)."""
-    fer: set[date] = set()
-    if FERIADOS_CSV.exists():
-        with FERIADOS_CSV.open(encoding="utf-8") as f:
-            for row in csv.DictReader(f):
-                try:
-                    fer.add(date.fromisoformat(row["data"].strip()))
-                except (ValueError, KeyError):
-                    pass
-    return fer
-
-
-def EhDiaUtil(d: date, fer: set[date]) -> bool:
-    return d.weekday() < 5 and d not in fer
-
-
-def DiaUtilAnterior(d: date | str, fer: set[date] | None = None) -> date:
-    """Dia útil imediatamente anterior a d (exclui fim de semana e feriados)."""
-    fer = fer if fer is not None else Feriados()
-    d = date.fromisoformat(d) if isinstance(d, str) else d
-    d -= timedelta(days=1)
-    while not EhDiaUtil(d, fer):
-        d -= timedelta(days=1)
-    return d
-
-
-def UltimosNDiasUteis(n: int, ref: date | str | None = None) -> list[date]:
-    """Os n dias úteis mais recentes até `ref` (inclusive se ref for dia útil),
-    em ordem cronológica (mais antigo → mais recente)."""
-    fer = Feriados()
-    d = date.today() if ref is None else (date.fromisoformat(ref) if isinstance(ref, str) else ref)
-    dias: list[date] = []
-    while len(dias) < n:
-        if EhDiaUtil(d, fer):
-            dias.append(d)
-        d -= timedelta(days=1)
-    return list(reversed(dias))
-
-
-def DiasUteisEntre(inicio: date | str, fim: date | str) -> list[date]:
-    """Dias úteis no intervalo [inicio, fim] (cronológico)."""
-    fer = Feriados()
-    ini = date.fromisoformat(inicio) if isinstance(inicio, str) else inicio
-    end = date.fromisoformat(fim) if isinstance(fim, str) else fim
-    out, cur = [], ini
-    while cur <= end:
-        if EhDiaUtil(cur, fer):
-            out.append(cur)
-        cur += timedelta(days=1)
-    return out
-
+# A lógica vive em Helpers/datas.py desde 01/09/2026 — era a quarta cópia do mesmo
+# leitor de CSV no projeto. Reexportamos os nomes porque os notebooks chamam
+# `pc.DiaUtilAnterior(...)` / `pc.UltimosNDiasUteis(...)` direto.
+from datas import (DiaUtilAnterior, DiasUteisEntre, EhDiaUtil,  # noqa: F401
+                   Feriados, UltimosNDiasUteis)
 
 # ---------------------------------------------------------------------------
 # Runner de subprocesso
@@ -260,6 +208,22 @@ def SpreadOver(X, resultados=None) -> bool:
     """Spread dos trades vs MtM (casado por dtNegocio)."""
     return RodarPasso("calc_spread_over", "--date", X, resultados=resultados)
 
+def PuPar(X, semApi=False, limite=None, resultados=None) -> bool:
+    """PU par de cada ativo que negociou (cascata calc → B3 → FI), gravado em `PuPar`.
+
+    DEPOIS do validar_calc_b3, que decide em quais ativos a calc local vale, e do
+    calc_taxa, que cria as linhas em NegociosProcessados. Não depende de MatchRef nem
+    de spread — é preço, não curva.
+
+    É idempotente por (ticker, data): reprocessar um pregão não custa chamada nenhuma.
+    O %par do negócio NÃO é gravado — sai na leitura do relatório."""
+    extra = []
+    if semApi:
+        extra.append("--sem-api")
+    if limite is not None:
+        extra += ["--limite", str(limite)]
+    return RodarPasso("calc_pu_par", "--date", X, *extra, resultados=resultados)
+
 def Relatorio(resultados=None) -> bool:
     """Regenera o relatório HTML (toda a base)."""
     return RodarPasso("gerar_relatorio_credito", resultados=resultados)
@@ -298,6 +262,7 @@ def RodarDia(X: date | str, resultados: list | None = None,
 
     CalcTaxa(X, resultados=res)
     Filtrar(X, resultados=res)
+    PuPar(X, resultados=res)
     for d in (Xant, X):
         SpreadAnbima(d, resultados=res)
     MatchRef(resultados=res)
@@ -349,6 +314,7 @@ def RodarCadeiaDias(dias: list[date], rotulo: str) -> list:
     for X in dias:
         CalcTaxa(X, resultados=res)
         Filtrar(X, resultados=res)
+        PuPar(X, resultados=res)
         SpreadAnbima(X, resultados=res)
     SpreadAnbima(Xant0, resultados=res)
     MatchRef(resultados=res)
@@ -427,6 +393,7 @@ def RodarSetup(inicioBoletim: date | str,
     for X in dias:
         CalcTaxa(X, resultados=res)
         Filtrar(X, resultados=res)
+        PuPar(X, resultados=res)
         SpreadAnbima(X, resultados=res)
     MatchRef(resultados=res)
     for X in dias:

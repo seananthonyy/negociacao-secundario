@@ -24,10 +24,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "Helpers"))
 
 import config
-TMP = Path(sys.argv[1] if len(sys.argv) > 1 else "./tmp_parquet").resolve()
+# Pasta temporaria do SISTEMA, nao `./tmp_parquet` (02/09/2026). O default relativo
+# escrevia DENTRO do repositorio, e os 4 parquets que ele gerou foram parar no git no
+# commit 895fd88 — de modo que toda execucao deste teste sujava a arvore. O
+# tests_fase1.py sempre fez certo (tempfile); este era o unico fora do padrao.
+# O override posicional continua valendo, para inspecionar a base depois.
+TMP = (Path(sys.argv[1]).resolve() if len(sys.argv) > 1
+       else Path(tempfile.mkdtemp(prefix="conferir_dados_")))
 shutil.rmtree(TMP, ignore_errors=True)
 TMP.mkdir(parents=True)
 config.cfg["dados"]["raiz"] = str(TMP).replace("\\", "/")
+print(f"base de teste em {TMP}")
 
 import pandas as pd
 import dados as D
@@ -188,6 +195,56 @@ Conferir("stTemFluxo e inteiro", str(info["stTemFluxo"].dtype) in ("int64", "Int
          str(info["stTemFluxo"].dtype))
 Conferir("vrAniversario NULL preservado", info["vrAniversario"].isna().all())
 
+# ---------------------------------------------------------------------------
+print("\n9. PuPar: mudanca de cadastro ou de fluxo descarta o PU par do ativo")
+# O puPar e funcao do fluxo, do VNE, do indexador e da taxa de emissao. Se qualquer um
+# muda, TODO puPar ja gravado daquele ativo foi calculado com a premissa errada --
+# inclusive os de datas passadas, porque a agenda velha valia para elas tambem. Sem
+# este descarte, o %par do relatorio (calculado na leitura, dividindo pelo puPar) sairia
+# de um denominador em que ninguem mais acredita, sem erro e sem log.
+puPar = [{"cdTicker": "PPPP11", "dtReferencia": d, "vrPuPar": 1000.0,
+          "cdFontePuPar": "Calc", "dtCriacao": "2026-09-02 00:00:00"}
+         for d in ("2026-07-27", "2026-07-28")]
+for linha in puPar:
+    D.Mesclar("PuPar", pd.DataFrame([linha]), data=linha["dtReferencia"])
+D.Mesclar("InfoAtivos", pd.DataFrame([
+    {"cdTicker": "PPPP11", "vrTaxaEmissao": 7.0, "cdIndexador": "IPCA",
+     "cdFonteCadastro": "Anbima"}]))
+Conferir("PuPar aceita duas datas do mesmo ticker",
+         D.Escalar('SELECT COUNT(*) FROM "PuPar" WHERE cdTicker=\'PPPP11\'') == 2)
+
+# reescrever o MESMO valor nao descarta (a comparacao e null-safe, igual ao trigger)
+D.Mesclar("InfoAtivos", pd.DataFrame([{"cdTicker": "PPPP11", "vrTaxaEmissao": 7.0}]))
+Conferir("cadastro reescrito igual NAO descarta",
+         D.Escalar('SELECT COUNT(*) FROM "PuPar" WHERE cdTicker=\'PPPP11\'') == 2)
+
+# mudar a taxa de emissao muda o par: o historico inteiro do ticker sai
+D.Mesclar("InfoAtivos", pd.DataFrame([{"cdTicker": "PPPP11", "vrTaxaEmissao": 8.5}]),
+          politica={"vrTaxaEmissao": D.SOBRESCREVER})
+Conferir("mudar vrTaxaEmissao descarta as DUAS datas",
+         D.Escalar('SELECT COUNT(*) FROM "PuPar" WHERE cdTicker=\'PPPP11\'') == 0)
+
+# e o mesmo vale pelo caminho do fluxo
+D.Mesclar("PuPar", pd.DataFrame([puPar[0]]), data=puPar[0]["dtReferencia"])
+D.SincronizarFluxoAtivos("PPPP11", [
+    {"cdTicker": "PPPP11", "dtEvento": "2028-03-15", "vrPctAmortizacao": 100.0,
+     "vrPctIncorporacao": None, "dtAtualizacao": "2026-09-02 00:00:00"}])
+Conferir("agenda nova descarta o PU par",
+         D.Escalar('SELECT COUNT(*) FROM "PuPar" WHERE cdTicker=\'PPPP11\'') == 0)
+
+# ativo alheio nao pode ser afetado
+D.Mesclar("PuPar", pd.DataFrame([dict(puPar[0], cdTicker="QQQQ11")]),
+          data=puPar[0]["dtReferencia"])
+D.Mesclar("InfoAtivos", pd.DataFrame([{"cdTicker": "PPPP11", "vrTaxaEmissao": 9.9}]),
+          politica={"vrTaxaEmissao": D.SOBRESCREVER})
+Conferir("descarte nao encosta em outro ticker",
+         D.Escalar('SELECT COUNT(*) FROM "PuPar" WHERE cdTicker=\'QQQQ11\'') == 1)
+
 print("\n" + ("TODOS OS TESTES PASSARAM" if not falhas
               else f"{len(falhas)} FALHA(S): {falhas}"))
+
+# Passou e a pasta e nossa: nao ha o que inspecionar. Se FALHOU, a base fica de pe
+# para o diagnostico — e o caminho foi impresso no comeco da rodada.
+if not falhas and len(sys.argv) == 1:
+    shutil.rmtree(TMP, ignore_errors=True)
 sys.exit(1 if falhas else 0)

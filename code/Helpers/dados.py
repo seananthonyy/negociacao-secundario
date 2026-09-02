@@ -113,6 +113,28 @@ ESQUEMA: dict[str, pa.Schema] = {
     "Outstanding": pa.schema([
         ("cdTicker", TEXTO), ("dtOutstanding", TEXTO), ("vrOutstanding", REAL),
     ]),
+    # PU PAR por (ativo, data): o PU que o papel valeria precificado na PROPRIA taxa
+    # de emissao. E o denominador do %par do negocio (vrPU / vrPuPar * 100).
+    #
+    # A chave inclui a DATA porque o PU par ACRETA todo dia util. Guardar um valor por
+    # ativo e reusa-lo por alguns dias injeta erro sistematico -- sempre para cima, ja
+    # que puPar velho e menor. Medido em 249 ativos validados, 7 dias uteis (17/07 ->
+    # 28/07 de 2026): mediana 0,368%, p90 0,437%. Num CDI+, que vive entre 99 e 101,
+    # isso come 20% da faixa util do sinal. E ha o degrau: 128 dos 2.583 ativos
+    # negociados tiveram EVENTO de fluxo nessa mesma janela (o MATD23 amortizou 100%).
+    #
+    # Indexar por data tambem sai mais BARATO: sao 50.628 pares distintos na base
+    # inteira, e cada um se calcula UMA vez na vida. Com janela de N dias, a mesma
+    # chamada de API e re-paga para sempre — e devolve um numero errado.
+    #
+    # So guarda valor REAL (calc, B3 ou FI). Nada sintetico: papel que sai do cadastro
+    # nao ganha linha nova, e quem resolve isso e a leitura, pegando o ultimo puPar com
+    # dtReferencia <= dtLiquidacao. A IDADE desse valor e o que diz se e referencia viva
+    # ou congelada — ver PuParVigente no gerar_relatorio_credito.
+    "PuPar": pa.schema([
+        ("cdTicker", TEXTO), ("dtReferencia", TEXTO),
+        ("vrPuPar", REAL), ("cdFontePuPar", TEXTO), ("dtCriacao", TEXTO),
+    ]),
 }
 
 # Tabela -> coluna de particao. None = arquivo unico (tabela de ESTADO).
@@ -127,6 +149,7 @@ PARTICAO: dict[str, str | None] = {
     "InfoAtivos": None,
     "FluxoAtivos": None,
     "Outstanding": None,
+    "PuPar": "dtReferencia",
 }
 
 TABELAS = tuple(ESQUEMA)
@@ -140,6 +163,7 @@ CHAVE: dict[str, tuple[str, ...]] = {
     "AnbimaIndicativos": ("cdTicker", "dtReferencia"),
     "MtmAnbima": ("cdTicker", "dtReferencia"),
     "Outstanding": ("cdTicker", "dtOutstanding"),
+    "PuPar": ("cdTicker", "dtReferencia"),
 }
 
 COMPRESSAO = "zstd"
@@ -488,6 +512,43 @@ def Apagar(tabela: str, coluna: str, valores) -> int:
     return total
 
 
+def Reconformar(tabela: str, log=None) -> int:
+    """Reescreve todos os arquivos da tabela no esquema ATUAL. Devolve quantos arquivos.
+
+    E o caminho unico de evolucao de esquema. Sem ele, acrescentar uma coluna ao
+    ESQUEMA quebra a leitura em silencio parcial: a view e `SELECT *` sobre os
+    parquets, entao ela nasce sem a coluna nova, e todo `Ler()` (que lista as colunas
+    do esquema uma a uma) estoura com "column not found" ate que ALGUEM grave um
+    arquivo novo. Reconformar materializa a coluna como NULL em cada particao, de uma
+    vez, e a base volta a ser legivel por inteiro.
+
+    Le com `SELECT *` de proposito, e nao com `Ler()`: a coluna que estamos
+    introduzindo ainda nao existe em arquivo nenhum, entao pedi-la pelo nome falharia
+    — e o problema que este proprio metodo existe para resolver.
+
+    Roda tambem no sentido inverso (coluna REMOVIDA do esquema some dos arquivos) e e
+    idempotente: reconformar duas vezes da o mesmo resultado.
+    """
+    if not TemDados(tabela):
+        return 0
+    coluna = PARTICAO[tabela]
+    if not coluna:
+        GravarTudo(tabela, Consultar(f'SELECT * FROM "{tabela}"'))
+        if log:
+            log.info("reconformar: %s — arquivo unico reescrito", tabela)
+        return 1
+
+    dias = Datas(tabela)
+    for dia in dias:
+        GravarDia(tabela, Consultar(
+            f'SELECT * FROM "{tabela}" WHERE "{coluna}" = ?', (dia,)), dia)
+        if log:
+            log.debug("reconformar: %s — particao %s reescrita", tabela, dia)
+    if log:
+        log.info("reconformar: %s — %d particao(oes) reescritas", tabela, len(dias))
+    return len(dias)
+
+
 def Datas(tabela: str) -> list[str]:
     """As datas (particoes) que a tabela ja tem."""
     coluna = PARTICAO[tabela]
@@ -641,6 +702,30 @@ COLS_INVALIDAM_FLUXO = (
 )
 
 
+def DescartarPuPar(tickers) -> int:
+    """Apaga todo o historico de PuPar dos `tickers`. Devolve quantas linhas sairam.
+
+    Chamado sempre que o CADASTRO ou o FLUXO de um ativo muda de verdade. O puPar e
+    o PU do papel precificado na propria taxa de emissao: ele e funcao do fluxo, do
+    VNE, do indexador e da taxa de emissao. Se qualquer um desses muda, todo puPar ja
+    gravado daquele ativo foi calculado com a premissa errada — inclusive os de datas
+    passadas, porque a agenda velha valia para elas tambem.
+
+    Apagar em vez de recalcular na hora e de proposito: o `calc_pu_par` e idempotente
+    e so calcula o par (ticker, data) que NAO existe, entao a proxima rodada refaz
+    sozinha o que ainda interessa (as datas que tiveram negocio). Recalcular aqui
+    dentro do Mesclar transformaria uma gravacao de cadastro numa rodada de API.
+
+    Mora aqui, e nao nos scrapers, pelo mesmo motivo que a invalidacao de fluxo:
+    sao cinco escritores de InfoAtivos, e bastava um esquecer para o %par do
+    relatorio sair de um denominador em que ninguem mais acredita — sem erro,
+    sem log."""
+    tickers = list(tickers)
+    if not tickers or not TemDados("PuPar"):
+        return 0
+    return Apagar("PuPar", "cdTicker", tickers)
+
+
 def ZerarValidacao(df, mascara=None):
     """`df` com a validacao de fluxo zerada nas linhas de `mascara`.
 
@@ -684,6 +769,7 @@ def InvalidarSeFluxoMudou(antes, depois):
     tickers = set(comum[difere.values])
     if not tickers:
         return depois
+    DescartarPuPar(tickers)
     return ZerarValidacao(depois, depois[chave[0]].isin(tickers))
 
 
@@ -786,6 +872,10 @@ def SincronizarFluxos(porTicker: dict) -> set:
     if not mudaram:
         return set()
 
+    # Agenda nova = todo puPar ja gravado desses ativos foi calculado sobre a agenda
+    # velha. Sai antes da escrita, para nao sobrar denominador orfao nem por um
+    # instante. Ver DescartarPuPar.
+    DescartarPuPar(mudaram)
     Upsert("FluxoAtivos", pd.DataFrame(novas))
 
     info = Ler("InfoAtivos")
@@ -834,6 +924,7 @@ def SincronizarFluxoAtivos(cdTicker: str, linhas: list) -> bool:
     if not mudou:
         return False
 
+    DescartarPuPar([cdTicker])
     Upsert("FluxoAtivos", pd.DataFrame(linhas))
 
     info = Ler("InfoAtivos")

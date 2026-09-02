@@ -108,6 +108,27 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f4f5f7;color:#1a1a2e;fo
 .dur-chart{height:360px}
 @media(max-width:1100px){.dur-grid{grid-template-columns:1fr}}
 
+/* ── % par: ágio x deságio, e a referência congelada ── */
+.bpar-agio{color:#0a7d55;font-weight:600}
+.bpar-desagio{color:#a33a2a}
+.bpar-frio{display:inline-block;margin-left:5px;padding:1px 4px;border-radius:3px;
+  background:#e3e8ef;color:#5a6a8a;font-size:9px;font-weight:700;letter-spacing:.3px;
+  vertical-align:middle}
+
+/* ── prévia: o pregão de hoje entra, mas nunca sem aviso ──
+   Mesma paleta do `badge-previa` do relatorio.html.j2 (fundo #fff3cd, texto #856404,
+   borda #ffc107): os dois relatorios falam do mesmo estado do dia, e um usuario que
+   ve os dois lado a lado tem de reconhecer o aviso sem reaprender a cor. */
+.previa-bar{background:#fff3cd;border-bottom:2px solid #ffc107;color:#856404;
+  padding:8px 24px;font-size:12px;line-height:1.5}
+.previa-bar b{color:#6d4c00}
+.previa-tag{display:inline-block;background:#856404;color:#fff;font-size:9.5px;
+  font-weight:700;letter-spacing:.6px;padding:2px 6px;border-radius:3px;
+  vertical-align:middle;margin-left:6px}
+.previa-nota{margin-bottom:12px;padding:9px 14px;background:#fff3cd;
+  border:1px solid #ffc107;border-left:3px solid #ffc107;border-radius:6px;
+  font-size:11.5px;color:#856404;line-height:1.5}
+
 /* ── info ativos: data sob a taxa + alinhamento ── */
 .ia-dt{font-size:10px;color:#9aabb4;font-weight:400;margin-top:1px}
 #ia-tabela thead th, #ia-tabela tbody td{text-align:right}
@@ -124,6 +145,16 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f4f5f7;color:#1a1a2e;fo
   <h1>Relatório Secundário — Crédito Privado</h1>
   <span class="per">Base completa: {{ dtStart.replace('-','/') }} a {{ dtEnd.replace('-','/') }}</span>
 </div>
+{% if dtPrevia %}
+<div class="previa-bar">
+  <b>PRÉVIA — o pregão de {{ dtPrevia.replace('-','/') }} ainda não fechou.</b>
+  Esta liquidação aparece em todas as abas, mas é <b>meio dia de dado</b>: a perna D+1
+  do pregão anterior já está completa, e a perna do pregão em curso ainda está entrando.
+  Volume, número de negócios e médias de taxa/spread <b>vão subir até o fechamento</b> —
+  não compare o último ponto de uma série com os anteriores. Para o número consolidado,
+  use o pregão anterior.
+</div>
+{% endif %}
 
 <div class="tabs">
   <button class="tab-btn active" onclick="switchTab('boletim',this)">Boletim Diário</button>
@@ -142,6 +173,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f4f5f7;color:#1a1a2e;fo
       <span class="flabel">Liquidação</span>
       <select id="b-date" class="fsel" onchange="renderBoletim()"></select>
     </div>
+    <div id="boletim-previa"></div>
     <div id="boletim-pills" class="pills"></div>
     <div class="card">
       <div id="boletim-content">
@@ -825,7 +857,7 @@ function anbTkClear(sid)  { ANB_TK[sid].clear(); anbTkFilter(sid); anbTkBadge(si
 function anbTkRerender(sid) {
   const g = ANBIMA_IDX.find(x => x.sid === sid);
   const s = document.getElementById('a-start').value, e = document.getElementById('a-end').value;
-  renderAnbimaIdxChart(g, s, e, _anbDts(s, e));
+  renderAnbimaIdxChart(g, s, e, anbDts(s, e));
 }
 document.addEventListener('click', e => {
   ANBIMA_IDX.forEach(g => {
@@ -834,7 +866,7 @@ document.addEventListener('click', e => {
   });
 });
 
-function _anbDts(s, e) {
+function anbDts(s, e) {
   return [...new Set(DATA.anbimaIdx.filter(r => r.dt >= s && r.dt <= e).map(r => r.dt))].sort();
 }
 
@@ -863,7 +895,7 @@ function renderAnbimaIdxChart(g, s, e, dts) {
 function renderAnbima() {
   const s = document.getElementById('a-start').value;
   const e = document.getElementById('a-end').value;
-  const dts = _anbDts(s, e);
+  const dts = anbDts(s, e);
   ANBIMA_IDX.forEach(g => renderAnbimaIdxChart(g, s, e, dts));
   // ── por referência: curva por vértice (term-structure), uma curva por data ──
   renderAnbimaRefAll();
@@ -908,7 +940,7 @@ function anbRefTipos() {
 }
 // Agrega DATA.anbimaRef (por ticker) -> [{dt, ref, spreadRaw(mediana), taxa(mediana), n}],
 // filtrando por tipo de instrumento (DEB/DEB 12.431/CRI/CRA). Vazio = todos.
-function _anbRefAgg(s, e) {
+function anbRefAgg(s, e) {
   const tipos = anbRefTipos();
   const grp = {};
   for (const r of DATA.anbimaRef) {
@@ -928,7 +960,7 @@ function _anbRefAgg(s, e) {
 function renderAnbimaRefAll() {
   const s = document.getElementById('a-start').value;
   const e = document.getElementById('a-end').value;
-  const agg = _anbRefAgg(s, e);
+  const agg = anbRefAgg(s, e);
   renderAnbimaRef('chart-anb-ntnb', 'NTN-B', s, e, agg);
   renderAnbimaRef('chart-anb-di1',  'DI1',   s, e, agg);
   // CDI+ e %CDI não têm vértice de referência → curva por duration do ativo.
@@ -1006,7 +1038,7 @@ function renderAnbimaRef(div, kind, s, e, agg) {
 
   if (!showSpread && !showNominal) { emptyChart(div, 'Marque Spread e/ou Nominal'); setTbl(''); return; }
 
-  const rows = (agg || _anbRefAgg(s, e)).filter(r =>
+  const rows = (agg || anbRefAgg(s, e)).filter(r =>
     selDates.has(r.dt) &&
     (isNtnb ? r.ref.startsWith('NTN-B') : r.ref.startsWith('DI1')));
   if (!rows.length) { emptyChart(div, 'Sem dados de ' + kind + ' nas datas/instrumentos selecionados'); setTbl('<table><tbody><tr><td class="bnull" style="text-align:center">Sem dados</td></tr></tbody></table>'); return; }
@@ -1184,11 +1216,11 @@ function renderTkTrades() {
   });
   body.innerHTML = out.length ? out.join('')
     : '<tr><td colspan="8" class="bnull" style="text-align:center">Sem negócios no período para a seleção</td></tr>';
-  _tkTradesSortCol = -1;   // reset ordenação ao reconstruir
+  tkTradesSortCol = -1;   // reset ordenação ao reconstruir
   tkTradesFilter();        // reaplica filtros de coluna nas linhas novas
 }
 
-let _tkTradesSortCol = -1, _tkTradesSortAsc = true;
+let tkTradesSortCol = -1, tkTradesSortAsc = true;
 
 function tkTradesFilter() {
   const table = document.getElementById('tk-trades-tbl');
@@ -1212,8 +1244,8 @@ function tkTradesSort(th, col, isNum) {
   const table = document.getElementById('tk-trades-tbl');
   const tbody = table.querySelector('tbody');
   if (!tbody || tbody.children.length && tbody.children[0].children.length < 8) return;  // placeholder
-  const asc = (_tkTradesSortCol === col) ? !_tkTradesSortAsc : true;
-  _tkTradesSortCol = col; _tkTradesSortAsc = asc;
+  const asc = (tkTradesSortCol === col) ? !tkTradesSortAsc : true;
+  tkTradesSortCol = col; tkTradesSortAsc = asc;
   table.querySelectorAll('thead th').forEach(h => h.classList.remove('sort-asc', 'sort-desc'));
   th.classList.add(asc ? 'sort-asc' : 'sort-desc');
   const rows = [...tbody.querySelectorAll('tr')];
@@ -1294,7 +1326,7 @@ function renderDuration() {
 
 // ══════════════════════════ BOLETIM DIÁRIO ═══════════════════════════════════
 
-let _bSortCol = -1, _bSortAsc = true;
+let bSortCol = -1, bSortAsc = true;
 
 function renderBoletim() {
   const dt  = document.getElementById('b-date').value;
@@ -1305,16 +1337,26 @@ function renderBoletim() {
 
   if (!day || !day.tickers.length) {
     pillsEl.innerHTML = '';
+    document.getElementById('boletim-previa').innerHTML = '';
     el.innerHTML = '<div class="empty-msg">Sem dados para esta data</div>';
     return;
   }
 
-  _bSortCol = -1; _bSortAsc = true;
+  bSortCol = -1; bSortAsc = true;
+
+  // A nota vai num container PRÓPRIO, não dentro de #boletim-pills: aquele é um
+  // flex-row de cartões, e um parágrafo ali dentro vira mais um cartão espremido.
+  document.getElementById('boletim-previa').innerHTML = dt === DATA.dtPrevia
+    ? `<div class="previa-nota"><b>PRÉVIA — pregão de ${dt.split('-').reverse().join('/')} em curso.</b>
+       Os números abaixo são parciais e ainda vão subir: falta a perna do pregão de hoje.
+       A composição por instrumento e a média de taxa podem mudar bastante até o fechamento.</div>`
+    : '';
 
   pillsEl.innerHTML = [
-    `<div class="pill"><div class="plabel">Tickers</div><div class="pval">${bFmtInt(day.nrTickers)}</div><div class="psub">ativos negociados</div></div>`,
+    `<div class="pill"><div class="plabel">Tickers</div><div class="pval">${bFmtInt(day.nrTickers)}${dt === DATA.dtPrevia ? '<span class="previa-tag">PRÉVIA</span>' : ''}</div><div class="psub">ativos negociados</div></div>`,
     `<div class="pill"><div class="plabel">Negócios</div><div class="pval">${bFmtInt(day.nrTrades)}</div><div class="psub">VALIDO + BROKER</div></div>`,
     `<div class="pill"><div class="plabel">Volume Total</div><div class="pval">R$ ${bFmt(day.vrVolumeTotal/1e6,0)} MM</div><div class="psub">&nbsp;</div></div>`,
+    ...(day.nrCongelados ? [`<div class="pill" style="border-left-color:#5a6a8a"><div class="plabel">Ref. congelada</div><div class="pval">${bFmtInt(day.nrCongelados)}</div><div class="psub">PU par de pregão anterior</div></div>`] : []),
     ...day.resumo.map(r =>
       `<div class="pill"><div class="plabel">${r.cdTipo}</div><div class="pval">R$ ${bFmt(r.vrVolume/1e6,0)} MM</div><div class="psub">${r.nrTickers} tickers · ${r.nrTrades} neg.</div></div>`
     ),
@@ -1336,6 +1378,23 @@ function renderBoletim() {
     const fOr  = v => v != null ? `<td data-v="${v}">${bFmt(v,0)}</td>`   : `<td data-v="" class="bnull">—</td>`;
     const f4   = v => v != null ? `<td data-v="${v}">${bFmt(v,4)}</td>`   : `<td data-v="" class="bnull">—</td>`;
     const fStr = v => v         ? `<td data-v="${v}">${v}</td>`            : `<td data-v="" class="bnull">—</td>`;
+    // %par: 100 e no par. A cor e a informacao — acima e agio, abaixo e desagio —, e
+    // sem ela a coluna vira mais um numero para a vista percorrer.
+    // %par: 100 e no par. A cor e a informacao — acima e agio, abaixo e desagio.
+    // Referencia congelada (papel que saiu do cadastro das calculadoras) leva selo com
+    // a idade: o numero continua valendo, mas contra um par que parou no tempo.
+    const fPar = t => {
+      const v = t.vrPctPar;
+      if (v == null) return `<td data-v="" class="bnull">—</td>`;
+      const cor = v >= 100 ? 'bpar-agio' : 'bpar-desagio';
+      if (!t.stPuParCongelado)
+        return `<td data-v="${v}" class="${cor}">${bFmt(v,2)}</td>`;
+      const dt = t.dtPuPar ? t.dtPuPar.split('-').reverse().join('/') : '?';
+      return `<td data-v="${v}" class="${cor}" title="Referência CONGELADA: PU par de ${dt}, `
+           + `${t.nrPregoesPuPar} pregões atrás. O papel saiu do cadastro das calculadoras — `
+           + `o mercado passa a negociar contra o último PU par conhecido.">`
+           + `${bFmt(v,2)}<span class="bpar-frio">${t.nrPregoesPuPar}p</span></td>`;
+    };
     return `<tr data-tipo="${t.cdTipo}" data-indexador="${t.cdIndexador||''}">
       <td class="btp" data-v="${t.cdTipo||''}">${t.cdTipo||'—'}</td>
       <td class="btk" data-v="${t.cdTicker}">${t.cdTicker}</td>
@@ -1347,6 +1406,7 @@ function renderBoletim() {
       <td data-v="${t.nrTrades}">${bFmtInt(t.nrTrades)}</td>
       <td data-v="${t.vrQuantidadeTotal}">${bFmtInt(t.vrQuantidadeTotal)}</td>
       <td data-v="${volM}">${bFmt(volM,2)}</td>
+      ${fPar(t)}
       ${f4(t.vrTaxaMedia)}
       ${fOr(spreadOver)}
       ${f4(t.vrTaxaAnbima)}
@@ -1378,10 +1438,11 @@ function renderBoletim() {
             <th onclick="bSort(this,7,true)">Neg.<span class="sa"></span></th>
             <th onclick="bSort(this,8,true)">Qtd<span class="sa"></span></th>
             <th onclick="bSort(this,9,true)">Volume (R$M)<span class="sa"></span></th>
-            <th onclick="bSort(this,10,true)">Taxa Méd. (%)<span class="sa"></span></th>
-            <th onclick="bSort(this,11,true)">Spread Méd.<span class="sa"></span></th>
-            <th onclick="bSort(this,12,true)">Taxa Anbima (%)<span class="sa"></span></th>
-            <th onclick="bSort(this,13,true)">Spread Anbima<span class="sa"></span></th>
+            <th onclick="bSort(this,10,true)" title="Preço do negócio como % do PU par (o PU na própria taxa de emissão). 100 = no par, acima = ágio, abaixo = deságio.">% Par<span class="sa"></span></th>
+            <th onclick="bSort(this,11,true)">Taxa Méd. (%)<span class="sa"></span></th>
+            <th onclick="bSort(this,12,true)">Spread Méd.<span class="sa"></span></th>
+            <th onclick="bSort(this,13,true)">Taxa Anbima (%)<span class="sa"></span></th>
+            <th onclick="bSort(this,14,true)">Spread Anbima<span class="sa"></span></th>
           </tr>
           <tr class="bfr">
             <th><input type="text" placeholder="Tipo"        oninput="bFilterAll()"></th>
@@ -1394,6 +1455,7 @@ function renderBoletim() {
             <th><input type="text" placeholder="Neg."        oninput="bFilterAll()"></th>
             <th><input type="text" placeholder="Qtd"         oninput="bFilterAll()"></th>
             <th><input type="text" placeholder="Volume"      oninput="bFilterAll()"></th>
+            <th><input type="text" placeholder="% Par"       oninput="bFilterAll()"></th>
             <th><input type="text" placeholder="Taxa"        oninput="bFilterAll()"></th>
             <th><input type="text" placeholder="Spread"      oninput="bFilterAll()"></th>
             <th><input type="text" placeholder="Taxa Anbima" oninput="bFilterAll()"></th>
@@ -1408,10 +1470,33 @@ function renderBoletim() {
             <td>${bFmtInt(day.nrTrades)}</td>
             <td>${bFmtInt(day.vrQtdTotal)}</td>
             <td>${bFmt(day.vrVolumeTotal/1e6,2)}</td>
-            <td colspan="4"></td>
+            <td colspan="5"></td>
           </tr>
         </tfoot>
       </table>
+    </div>
+    <div class="disclaimer">
+      <b>% Par</b> = preço do negócio ÷ PU par × 100, onde o PU par é o que o papel
+      valeria precificado na <b>própria taxa de emissão</b>, na data de liquidação.
+      100 é no par, <span class="bpar-agio">acima é ágio</span>,
+      <span class="bpar-desagio">abaixo é deságio</span>. O preço é a média ponderada
+      por volume quando o ticker teve mais de um negócio no dia.
+      <br>O PU par vem, nesta ordem, da <b>calculadora local</b> (ativo com fluxo
+      validado), da <b>B3</b> ou da <b>FI Analytics</b>. Travessão significa que
+      nenhuma das três tem o papel — não é preço no par.
+      <br><b>Selo <span class="bpar-frio">Np</span></b> = o PU par usado é de <b>N
+      pregões atrás</b>, não do próprio dia. Há duas leituras, e a diferença está em
+      <i>quantos</i> papéis têm o selo:
+      <br>&nbsp;&nbsp;• <b>Poucos papéis, com datas de congelamento diferentes entre si</b>
+      — é o caso real: o emissor se aproximou do default, as calculadoras
+      <b>removeram o título do cadastro</b>, e o mercado passa a negociar contra o último
+      PU par conhecido, em <i>cents on the dollar</i>. Para esses, taxa e spread não
+      existem (saíram junto com o cadastro) e o % Par é o único número disponível.
+      <br>&nbsp;&nbsp;• <b>Muitos papéis compartilhando a MESMA data</b> — não são
+      defaults: é o <code>calc_pu_par</code> que não rodou para o dia. Rode-o e o selo
+      some.
+      <br>Deságio profundo <b>sem</b> selo é distress de crédito real com cadastro vivo,
+      não erro.
     </div>
   `;
 }
@@ -1419,8 +1504,8 @@ function renderBoletim() {
 function bSort(th, col, isNum) {
   const table = document.getElementById('b-tabela');
   if (!table) return;
-  const asc = (_bSortCol === col) ? !_bSortAsc : true;
-  _bSortCol = col; _bSortAsc = asc;
+  const asc = (bSortCol === col) ? !bSortAsc : true;
+  bSortCol = col; bSortAsc = asc;
   table.querySelectorAll('thead tr:first-child th').forEach(h => h.classList.remove('sort-asc','sort-desc'));
   th.classList.add(asc ? 'sort-asc' : 'sort-desc');
   const tbody = table.querySelector('tbody');
@@ -1472,7 +1557,7 @@ function bDataCurta(s) {
   return `${d}/${m}/${y.slice(2)}`;
 }
 
-let _iaSortCol = -1, _iaSortAsc = true;
+let iaSortCol = -1, iaSortAsc = true;
 
 function renderInfoAtivos() {
   const q   = norm(document.getElementById('ia-search').value);
@@ -1520,8 +1605,8 @@ function iaFilter() {
 function iaSort(th, col, isNum) {
   const table = document.getElementById('ia-tabela');
   if (!table) return;
-  const asc = (_iaSortCol === col) ? !_iaSortAsc : true;
-  _iaSortCol = col; _iaSortAsc = asc;
+  const asc = (iaSortCol === col) ? !iaSortAsc : true;
+  iaSortCol = col; iaSortAsc = asc;
   table.querySelectorAll('thead th').forEach(h => h.classList.remove('sort-asc','sort-desc'));
   th.classList.add(asc ? 'sort-asc' : 'sort-desc');
   const tbody = table.querySelector('tbody');
@@ -1565,7 +1650,10 @@ window.addEventListener('load', () => {
     const [y, m, d] = dt.split('-');
     const opt = document.createElement('option');
     opt.value = dt;
-    opt.textContent = `${d}/${m}/${y}`;
+    // O selo vai no texto da própria opção: o seletor é a primeira coisa que a mesa
+    // lê, e quem abre o relatório na data mais recente precisa ver que ela é parcial
+    // antes de olhar os números.
+    opt.textContent = `${d}/${m}/${y}` + (dt === DATA.dtPrevia ? '  ·  PRÉVIA' : '');
     bSel.appendChild(opt);
   });
 

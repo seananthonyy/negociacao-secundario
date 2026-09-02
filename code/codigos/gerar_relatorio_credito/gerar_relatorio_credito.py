@@ -11,12 +11,17 @@ Carrega todos os dados disponíveis na base (sem filtro de período).
 Boletim replica exatamente a lógica de gerar_relatorio_html.py
 (VALIDO + BROKER, D-1 Anbima, spread calculado por grupo).
 
+O pregão de HOJE entra, marcado como PRÉVIA (ver CalcularDtPrevia): ele é meio dia de
+dado — a perna D+1 do pregão anterior já está completa, a perna do pregão em curso
+ainda está entrando. O selo viaja no payload (`dtPrevia`) e aparece no banner do topo,
+na opção do seletor do Boletim e no email do dia. `--sem-previa` volta ao corte em D-1.
+
 CLI:
-    python scripts/gerar_relatorio_credito.py
+    python codigos/gerar_relatorio_credito/gerar_relatorio_credito.py
+    python codigos/gerar_relatorio_credito/gerar_relatorio_credito.py --sem-previa
 """
 
 import argparse
-import csv
 import json
 import sys
 import traceback
@@ -30,6 +35,7 @@ from jinja2 import Environment, FileSystemLoader
 
 from config import cfg, ObterListaEmails
 import dados as D
+from datas import DiaUtilAnteriorOuIgual, DiasUteisEntre, EhDiaUtil, Feriados
 from email_outlook import EnviarEmailConclusao, EnviarEmailHtml
 from relatorio_execucao import RelatorioExecucao
 from logger import ObterLogger
@@ -40,33 +46,33 @@ NOME_SCRIPT = "gerar_relatorio_credito"
 # Helpers compartilhados com gerar_relatorio_html.py
 # ---------------------------------------------------------------------------
 
-def CarregarFeriados() -> set[date]:
-    """Feriados Anbima a partir de data/feriados_anbima.csv (set de date)."""
-    feriadosPath = Path(cfg["paths"]["feriadosCsv"])
-    feriados: set[date] = set()
-    if feriadosPath.exists():
-        with feriadosPath.open(encoding="utf-8") as f:
-            for row in csv.DictReader(f):
-                try:
-                    feriados.add(date.fromisoformat(row["data"].strip()))
-                except ValueError:
-                    pass
-    return feriados
+def CalcularDtPrevia() -> str | None:
+    """A data de liquidação que AINDA NÃO FECHOU, ou None se hoje não é pregão.
 
-
-def CalcularDtCorte() -> str:
-    """Última data de liquidação publicável: o dia útil ANTERIOR a hoje (D-1).
-
-    O pregão de hoje não fechou — os negócios que já aparecem na base para a
-    liquidação de hoje são a perna D+1 do pregão anterior, um dia pela metade.
-    Publicá-los mostraria volume e spread de um dia incompleto como se fosse
-    fechado. O relatório sempre corta em D-1, salvo `--ate` explícito.
+    Uma `dtLiquidacao = D` recebe duas pernas: os negócios do pregão de D (D+0) e os
+    do pregão de D-1u (D+1). Com D = hoje, a segunda perna está completa e a primeira
+    está em curso — é meio dia de dado. Em fim de semana ou feriado não há pregão
+    aberto, então nada é prévia.
     """
-    feriados = CarregarFeriados()
-    d = date.today() - timedelta(days=1)
-    while d.weekday() >= 5 or d in feriados:
-        d -= timedelta(days=1)
-    return d.isoformat()
+    hoje = date.today()
+    return hoje.isoformat() if EhDiaUtil(hoje) else None
+
+
+def CalcularDtCorte(incluirPrevia: bool = True) -> str:
+    """Última data de liquidação publicável.
+
+    Historicamente o corte era em D-1: o pregão de hoje não fechou, e publicar a
+    liquidação de hoje mostrava um dia pela metade **como se fosse fechado**. O
+    problema nunca foi o dado — era a ausência do aviso.
+
+    Com `incluirPrevia` (default), o corte passa a ser o último dia útil <= hoje e a
+    liquidação de hoje entra marcada como PRÉVIA: o selo viaja no payload
+    (`dtPrevia`) e o template avisa em toda aba. `--sem-previa` volta ao corte em D-1,
+    e `--ate` continua vencendo os dois.
+    """
+    hoje = date.today()
+    d = hoje if incluirPrevia else hoje - timedelta(days=1)
+    return DiaUtilAnteriorOuIgual(d).isoformat()
 
 
 def MediaPonderada(valores: list[tuple[float | None, float]]) -> float | None:
@@ -113,6 +119,42 @@ def SpreadNaBanda(cdIndexador: str | None, vrSpread: float | None) -> bool:
     return True
 
 
+# A partir de quantos pregoes de idade o puPar deixa de ser "referencia viva" e passa a
+# ser REFERENCIA CONGELADA no relatorio.
+#
+# Um puPar so fica velho por dois motivos, e o limiar existe para separa-los:
+#   - soluco: a API caiu num dia, ou a nossa calc falhou. Idade de 1-2 pregoes, deriva
+#     de ~0,1% (o puPar acreta ~0,055%/dia util com o CDI em ~14,9%). Tolerado, e a
+#     idade aparece discreta.
+#   - o papel SAIU DO CADASTRO: o emissor se aproximou do default e as calculadoras
+#     removeram o titulo. Ai a idade so cresce, e o mercado passa a negociar em cents on
+#     the dollar contra essa referencia fixa. E o que a mesa quer ver -- para esses nomes
+#     taxa e spread somem junto com o cadastro, e o %par vira o UNICO numero disponivel.
+#
+# Cinco pregoes e o preco de nao confundir um com o outro. Nao ha status gravado em
+# lugar nenhum: a IDADE e o status, e a tabela PuPar fica so com valor real.
+PREGOES_CONGELADO = 5
+
+
+def PregoesEntre(dtInicio: str, dtFim: str) -> int:
+    """Quantos pregoes separam duas datas ISO. 0 se forem a mesma."""
+    if not dtInicio or not dtFim or dtInicio >= dtFim:
+        return 0
+    return len(DiasUteisEntre(dtInicio, dtFim)) - 1
+
+
+def CalcularPctPar(vrPU: float | None, vrPuPar: float | None) -> float | None:
+    """%par de um negocio: o preco pago como percentual do PU par.
+
+    NAO e gravado na base -- sai daqui, na leitura, a partir do vrPU do negocio e do
+    vrPuPar vigente. Se o puPar de um ativo for descartado (correcao de cadastro ou de
+    fluxo, ver dados.DescartarPuPar), o %par some junto, em vez de sobrar um numero
+    calculado sobre um denominador em que ninguem mais acredita."""
+    if vrPU is None or not vrPuPar or vrPuPar <= 0:
+        return None
+    return vrPU / vrPuPar * 100.0
+
+
 @dataclass
 class LinhaNegocio:
     cdTicker: str
@@ -128,6 +170,9 @@ class LinhaNegocio:
     dtVencimento: str | None
     vrTaxaAnbima: float | None
     vrSpreadAnbima: float | None
+    vrPU: float | None = None
+    vrPuPar: float | None = None
+    dtPuPar: str | None = None
     nrTrades: int = 1
 
 
@@ -316,15 +361,37 @@ WITH AnbimaMatch AS (
     JOIN AnbimaIndicativos ai
       ON ai.cdTicker = tp.cdTicker AND ai.dtReferencia <= tp.dtNegocio
     WHERE tp.dtLiquidacao = ? AND tp.cdStatus = 'VALIDO'
+),
+PuParVigente AS (
+    -- O puPar VIGENTE de cada ticker para esta liquidacao: o mais recente com
+    -- dtReferencia <= a data do boletim. Mesmo padrao do AnbimaMatch acima.
+    --
+    -- Particiona por cdTicker e nao por negocio: todos os negocios do mesmo ticker
+    -- nesta mesma dtLiquidacao compartilham o denominador, entao resolver por ticker
+    -- devolve uma linha em vez de uma por negocio -- e a consulta nao cresce com o
+    -- historico de PuPar.
+    --
+    -- O `<=` (em vez de `=`) e o que atende o papel que SAIU DO CADASTRO das
+    -- calculadoras: quando o emissor se aproxima do default elas removem o titulo, e o
+    -- mercado passa a usar o ultimo puPar disponivel como referencia, negociando em
+    -- cents on the dollar. Aqui isso acontece sozinho -- nao ha linha nova para a data,
+    -- entao vem a ultima que existe. Quem diz se a referencia esta viva ou congelada e
+    -- a IDADE dela (dtPuPar), calculada em pregoes e exibida sempre. Ver PREGOES_CONGELADO.
+    SELECT cdTicker, vrPuPar, dtReferencia AS dtPuPar, cdFontePuPar,
+           ROW_NUMBER() OVER (PARTITION BY cdTicker ORDER BY dtReferencia DESC) AS rn
+    FROM PuPar
+    WHERE dtReferencia <= ?
 )
 SELECT tp.cdTicker, ia.cdEmissor, tr.cdInstrumento,
-       tp.vrQuantidade, tp.vrVolume, tp.vrTaxaCalculada, tp.vrSpreadOver,
+       tp.vrQuantidade, tp.vrPU, tp.vrVolume, tp.vrTaxaCalculada, tp.vrSpreadOver,
        ia.cdIndexador, ia.cdReferencia, ia.vrDuration, ia.dtVencimento,
-       am.vrTaxaAnbima, am.vrSpreadAnbima
+       am.vrTaxaAnbima, am.vrSpreadAnbima,
+       pv.vrPuPar, pv.dtPuPar, pv.cdFontePuPar
 FROM NegociosProcessados tp
 JOIN NegociosBrutos tr ON tr.cdIdentificadorNegocio = tp.cdIdentificadorNegocio
 LEFT JOIN InfoAtivos ia ON ia.cdTicker = tp.cdTicker
 LEFT JOIN AnbimaMatch am ON am.cdIdentificadorNegocio = tp.cdIdentificadorNegocio AND am.rn = 1
+LEFT JOIN PuParVigente pv ON pv.cdTicker = tp.cdTicker AND pv.rn = 1
 WHERE tp.dtLiquidacao = ? AND tp.cdStatus = 'VALIDO' AND {D.NaoCancelado('tr.')}
 """
 
@@ -336,15 +403,37 @@ WITH AnbimaMatch AS (
     JOIN AnbimaIndicativos ai
       ON ai.cdTicker = tp.cdTicker AND ai.dtReferencia <= tp.dtNegocio
     WHERE tp.dtLiquidacao = ? AND tp.cdStatus = 'BROKER'
+),
+PuParVigente AS (
+    -- O puPar VIGENTE de cada ticker para esta liquidacao: o mais recente com
+    -- dtReferencia <= a data do boletim. Mesmo padrao do AnbimaMatch acima.
+    --
+    -- Particiona por cdTicker e nao por negocio: todos os negocios do mesmo ticker
+    -- nesta mesma dtLiquidacao compartilham o denominador, entao resolver por ticker
+    -- devolve uma linha em vez de uma por negocio -- e a consulta nao cresce com o
+    -- historico de PuPar.
+    --
+    -- O `<=` (em vez de `=`) e o que atende o papel que SAIU DO CADASTRO das
+    -- calculadoras: quando o emissor se aproxima do default elas removem o titulo, e o
+    -- mercado passa a usar o ultimo puPar disponivel como referencia, negociando em
+    -- cents on the dollar. Aqui isso acontece sozinho -- nao ha linha nova para a data,
+    -- entao vem a ultima que existe. Quem diz se a referencia esta viva ou congelada e
+    -- a IDADE dela (dtPuPar), calculada em pregoes e exibida sempre. Ver PREGOES_CONGELADO.
+    SELECT cdTicker, vrPuPar, dtReferencia AS dtPuPar, cdFontePuPar,
+           ROW_NUMBER() OVER (PARTITION BY cdTicker ORDER BY dtReferencia DESC) AS rn
+    FROM PuPar
+    WHERE dtReferencia <= ?
 )
 SELECT tp.cdTicker, ia.cdEmissor, tr.cdInstrumento, tp.idGrupoNegocio, tp.dtNegocio,
-       tp.vrQuantidade, tp.vrVolume, tp.vrTaxaCalculada,
+       tp.vrQuantidade, tp.vrPU, tp.vrVolume, tp.vrTaxaCalculada,
        ia.cdIndexador, ia.cdReferencia, ia.vrDuration, ia.dtVencimento,
-       am.vrTaxaAnbima, am.vrSpreadAnbima
+       am.vrTaxaAnbima, am.vrSpreadAnbima,
+       pv.vrPuPar, pv.dtPuPar, pv.cdFontePuPar
 FROM NegociosProcessados tp
 JOIN NegociosBrutos tr ON tr.cdIdentificadorNegocio = tp.cdIdentificadorNegocio
 LEFT JOIN InfoAtivos ia ON ia.cdTicker = tp.cdTicker
 LEFT JOIN AnbimaMatch am ON am.cdIdentificadorNegocio = tp.cdIdentificadorNegocio AND am.rn = 1
+LEFT JOIN PuParVigente pv ON pv.cdTicker = tp.cdTicker AND pv.rn = 1
 WHERE tp.dtLiquidacao = ? AND tp.cdStatus = 'BROKER'
   AND tp.idGrupoNegocio IS NOT NULL AND {D.NaoCancelado('tr.')}
 """
@@ -606,7 +695,7 @@ def TickersPorVolume(tickerRows: list[dict]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def BuscarNegocios(dtLiquidacao: str) -> list[LinhaNegocio]:
-    rows = D.Linhas(SQL_BUSCAR_VALIDO, (dtLiquidacao, dtLiquidacao))
+    rows = D.Linhas(SQL_BUSCAR_VALIDO, (dtLiquidacao, dtLiquidacao, dtLiquidacao))
     return [
         LinhaNegocio(
             cdTicker=r["cdTicker"],
@@ -622,13 +711,16 @@ def BuscarNegocios(dtLiquidacao: str) -> list[LinhaNegocio]:
             dtVencimento=r["dtVencimento"],
             vrTaxaAnbima=r["vrTaxaAnbima"],
             vrSpreadAnbima=r["vrSpreadAnbima"],
+            vrPU=r["vrPU"],
+            vrPuPar=r["vrPuPar"],
+            dtPuPar=r["dtPuPar"],
         )
         for r in rows
     ]
 
 
 def BuscarGruposBroker(dtLiquidacao: str) -> list[LinhaNegocio]:
-    rows = D.Linhas(SQL_BUSCAR_BROKER, (dtLiquidacao, dtLiquidacao))
+    rows = D.Linhas(SQL_BUSCAR_BROKER, (dtLiquidacao, dtLiquidacao, dtLiquidacao))
     if not rows:
         return []
     grupos: dict[str, list] = {}
@@ -665,12 +757,18 @@ def BuscarGruposBroker(dtLiquidacao: str) -> list[LinhaNegocio]:
             dtVencimento=rep["dtVencimento"],
             vrTaxaAnbima=rep["vrTaxaAnbima"],
             vrSpreadAnbima=rep["vrSpreadAnbima"],
+            # O par corretor e o MESMO papel na MESMA data, entao as duas pernas
+            # dividem o mesmo puPar; so o PU difere. Media do PU pelas duas pontas, do
+            # mesmo jeito que a taxa do grupo — o %par sai disso na agregacao.
+            vrPU=MediaPonderada([(t["vrPU"], t["vrVolume"]) for t in trades]),
+            vrPuPar=rep["vrPuPar"],
+            dtPuPar=rep["dtPuPar"],
             nrTrades=len(trades),
         ))
     return result
 
 
-def AgregarTicker(cdTicker: str, grupo: list[LinhaNegocio]) -> dict:
+def AgregarTicker(cdTicker: str, grupo: list[LinhaNegocio], dtBoletim: str) -> dict:
     p            = grupo[0]
     vrVolumeTotal  = sum(t.vrVolume for t in grupo)
     vrTaxaMedia    = MediaPonderada([(t.vrTaxaCalculada, t.vrVolume) for t in grupo])
@@ -679,6 +777,16 @@ def AgregarTicker(cdTicker: str, grupo: list[LinhaNegocio]) -> dict:
     # dtNegocio (logo indicativa Anbima) diferentes dentro da mesma liquidação.
     vrTaxaAnbima   = MediaPonderada([(t.vrTaxaAnbima,   t.vrVolume) for t in grupo])
     vrSpreadAnbima = MediaPonderada([(t.vrSpreadAnbima, t.vrVolume) for t in grupo])
+    # O %par sai do PU MEDIO ponderado, e nao da media dos %par de cada negocio. Da no
+    # mesmo numero (o denominador e constante dentro do ticker-dia), mas por este
+    # caminho o puPar aparece uma vez so — e e ele que carrega a data que o relatorio
+    # precisa exibir. Ponderar por volume, e nao pela media simples dos tickets, e a
+    # mesma regra das taxas: interessa onde o DINHEIRO negociou.
+    vrPuMedio      = MediaPonderada([(t.vrPU,           t.vrVolume) for t in grupo])
+    vrPuPar        = next((t.vrPuPar for t in grupo if t.vrPuPar), None)
+    dtPuPar        = next((t.dtPuPar for t in grupo if t.vrPuPar), None)
+    vrPctPar       = CalcularPctPar(vrPuMedio, vrPuPar)
+    nrPregoes      = PregoesEntre(dtPuPar, dtBoletim) if dtPuPar else 0
     return {
         "cdTicker":          cdTicker,
         "cdEmissor":         p.cdEmissor,
@@ -695,6 +803,12 @@ def AgregarTicker(cdTicker: str, grupo: list[LinhaNegocio]) -> dict:
         "vrSpreadOverMedio": round(vrSpreadOver, 6)  if vrSpreadOver  is not None else None,
         "vrTaxaAnbima":      round(vrTaxaAnbima, 4)   if vrTaxaAnbima   is not None else None,
         "vrSpreadAnbima":    round(vrSpreadAnbima, 4) if vrSpreadAnbima is not None else None,
+        "vrPctPar":          round(vrPctPar, 2)       if vrPctPar       is not None else None,
+        # Idade da referencia, em pregoes, e o selo de congelada. Viajam prontos para o
+        # template: ele nao tem calendario de feriados para contar dia util.
+        "dtPuPar":           dtPuPar,
+        "nrPregoesPuPar":    nrPregoes,
+        "stPuParCongelado":  1 if nrPregoes >= PREGOES_CONGELADO else 0,
     }
 
 
@@ -715,7 +829,7 @@ def CarregarBoletim(log, dtCorte: str) -> dict:
             gruposTicker.setdefault(ln.cdTicker, []).append(ln)
 
         tickers = sorted(
-            [AgregarTicker(tk, grp) for tk, grp in gruposTicker.items()],
+            [AgregarTicker(tk, grp, dt) for tk, grp in gruposTicker.items()],
             key=lambda t: (ordemInstr.get(t["cdTipo"] or "", 99), -(t["vrVolumeTotal"] or 0)),
         )
 
@@ -740,6 +854,7 @@ def CarregarBoletim(log, dtCorte: str) -> dict:
             "nrTrades":      sum(t["nrTrades"] for t in tickers),
             "vrVolumeTotal": vrVolumeTotal,
             "vrQtdTotal":    sum(t["vrQuantidadeTotal"] for t in tickers),
+            "nrCongelados":  sum(1 for t in tickers if t["stPuParCongelado"]),
         }
         log.info("  boletim %s: %d tickers | R$ %.2f MM", dt, len(tickers), vrVolumeTotal / 1e6)
 
@@ -785,6 +900,17 @@ def RefDisplayEmail(ref: str | None) -> str:
     return ref
 
 
+def PctParEmail(ticker: dict) -> str:
+    """%par para o email: numero, e um asterisco quando a referencia esta congelada.
+
+    O email vira print no celular de alguem, entao o aviso tem de caber na propria
+    celula — o rodape explica o asterisco. Ver PREGOES_CONGELADO."""
+    if ticker["vrPctPar"] is None:
+        return "—"
+    marca = " *" if ticker["stPuParCongelado"] else ""
+    return FmtBr(ticker["vrPctPar"], 2) + marca
+
+
 def SpreadEmail(v: float | None, cdIndexador: str | None) -> str:
     """%CDI → multiplicador direto; demais → ×100 = bps (espelha bSpreadDisp)."""
     if v is None:
@@ -794,13 +920,18 @@ def SpreadEmail(v: float | None, cdIndexador: str | None) -> str:
     return FmtBr(v * 100, 0) + " bps"
 
 
-def MontarEmailHtml(dtX: str, top: list[dict], diaInfo: dict) -> str:
-    """Tabela HTML formatada (tons Itaú) com os top 20 ativos por volume do pregão."""
+def MontarEmailHtml(dtX: str, top: list[dict], diaInfo: dict, ehPrevia: bool = False) -> str:
+    """Tabela HTML formatada (tons Itaú) com os top 20 ativos por volume do pregão.
+
+    `ehPrevia` marca o email quando dtX é o pregão de hoje, que ainda não fechou — o
+    email sai da máquina e vira print no celular de alguém, então o aviso tem de estar
+    no corpo, não só no relatório em anexo."""
     cols = [
         ("Instrumento",          "left"),
         ("Ticker",               "left"),
         ("Emissor",              "left"),
         ("Volume Negociado",     "right"),
+        ("% Par",                "right"),
         ("Indexador",            "left"),
         ("Duration",             "right"),
         ("Ref",                  "left"),
@@ -826,6 +957,7 @@ def MontarEmailHtml(dtX: str, top: list[dict], diaInfo: dict) -> str:
             (t["cdTicker"],                                                            "left"),
             (t["cdEmissor"] or "—",                                                    "left"),
             (FmtBr(vol / 1e6 if vol is not None else None, 2) + " MM",                "right"),
+            (PctParEmail(t),                                                         "right"),
             (idx or "—",                                                               "left"),
             (FmtBr(t["vrDuration"], 2),                                               "right"),
             (RefDisplayEmail(t["cdReferencia"]),                                                "left"),
@@ -846,6 +978,15 @@ def MontarEmailHtml(dtX: str, top: list[dict], diaInfo: dict) -> str:
     nrTickers = diaInfo["nrTickers"]
     volTotMM  = (diaInfo["vrVolumeTotal"] or 0) / 1e6
 
+    avisoPrevia = f"""
+    <div style="background:#fff8e1;border-left:4px solid #c47f00;padding:10px 16px;
+                font-size:12px;color:#6d4c00;">
+      <b>PRÉVIA — o pregão de {DataBr(dtX)} ainda não fechou.</b> Estes números são
+      parciais: a liquidação de hoje já contém a perna D+1 do pregão anterior, mas a
+      perna do pregão em curso ainda está entrando. Volume e média de taxa vão subir
+      até o fechamento. Para o dado consolidado, use o pregão anterior.
+    </div>""" if ehPrevia else ""
+
     return f"""\
 <!DOCTYPE html>
 <html><head><meta charset="utf-8"></head>
@@ -857,16 +998,23 @@ def MontarEmailHtml(dtX: str, top: list[dict], diaInfo: dict) -> str:
       </div>
       <div style="font-size:12px;color:#cdd6ea;margin-top:3px;">
         Top 20 ativos por <b style="color:#fff;">volume negociado</b> ·
-        data de <b style="color:#fff;">liquidação {DataBr(dtX)}</b>
+        data de <b style="color:#fff;">liquidação {DataBr(dtX)}</b>{
+        ' · <b style="color:#ffcf6b;">PRÉVIA</b>' if ehPrevia else ''}
       </div>
-    </div>
+    </div>{avisoPrevia}
     <div style="background:{ITAU_LITE};border-left:4px solid {ITAU_ORANGE};
                 padding:10px 16px;font-size:12px;color:{ITAU_NAVY};">
       Ranking pelos 20 maiores volumes negociados no pregão de liquidação
       <b>{DataBr(dtX)}</b> ({nrTickers} ativos no dia · R$ {FmtBr(volTotMM, 2)} MM no total).
       O relatório completo e interativo (todas as abas e pregões) segue em anexo
       (<b>relatorio_secundario.html</b>). Taxas em % a.a.; spreads em bps
-      (exceto %&nbsp;CDI, que é multiplicador).
+      (exceto %&nbsp;CDI, que é multiplicador). <b>% Par</b> = preço ÷ PU par × 100
+      (100 = no par, acima é ágio, abaixo é deságio); travessão onde não há PU par de
+      nenhuma fonte. <b>*</b> = o PU par usado é de pregão anterior. Em poucos papéis com
+      datas distintas, é o caso real: o título saiu do cadastro das calculadoras (emissor
+      perto do default) e o mercado passa a medir contra o último PU par conhecido, em
+      <i>cents on the dollar</i> — aí taxa e spread também não existem. Em muitos papéis
+      com a mesma data, é só o <code>calc_pu_par</code> que não rodou para o dia.
     </div>
     <table style="width:100%;border-collapse:collapse;background:#fff;
                   box-shadow:0 1px 5px rgba(0,0,0,.08);border-radius:0 0 6px 6px;overflow:hidden;">
@@ -882,7 +1030,8 @@ def MontarEmailHtml(dtX: str, top: list[dict], diaInfo: dict) -> str:
 </body></html>"""
 
 
-def EnviarEmailDia(dtX: str, boletim: dict, htmlPath: Path, log) -> None:
+def EnviarEmailDia(dtX: str, boletim: dict, htmlPath: Path, log,
+                   dtPrevia: str | None = None) -> None:
     """Monta e envia o email do dia X (top 20 por volume) com o HTML em anexo."""
     try:
         date.fromisoformat(dtX)
@@ -902,9 +1051,11 @@ def EnviarEmailDia(dtX: str, boletim: dict, htmlPath: Path, log) -> None:
                     NOME_SCRIPT)
         return
 
+    ehPrevia = dtX == dtPrevia
     top = sorted(diaInfo["tickers"], key=lambda t: -(t["vrVolumeTotal"] or 0))[:20]
-    html = MontarEmailHtml(dtX, top, diaInfo)
-    subject = f"Relatório Crédito Privado — Top 20 volume · liquidação {DataBr(dtX)}"
+    html = MontarEmailHtml(dtX, top, diaInfo, ehPrevia)
+    subject = (f"[PRÉVIA] " if ehPrevia else "") + \
+              f"Relatório Crédito Privado — Top 20 volume · liquidação {DataBr(dtX)}"
     EnviarEmailHtml(
         subject, html,
         attachments=[str(htmlPath)],
@@ -934,6 +1085,7 @@ def RenderizarHtml(
     dtStart:     str,
     dtEnd:       str,
     pesoFonte:   str,
+    dtPrevia:    str | None,
 ) -> str:
     tickers = TickersPorVolume(ticker)
     datas   = sorted({r["dt"] for r in ticker})
@@ -942,6 +1094,7 @@ def RenderizarHtml(
         "dtStart":     dtStart,
         "dtEnd":       dtEnd,
         "pesoFonte":   pesoFonte,
+        "dtPrevia":    dtPrevia,
         "diario":      diario,
         "diarioIdx":   diarioIdx,
         "anbimaIdx":   anbimaIdx,
@@ -954,7 +1107,7 @@ def RenderizarHtml(
         "boletim":     boletim,
         "diasBoletim": diasBoletim,
         "infoAtivos":  infoAtivos,
-        "feriados":    sorted(d.isoformat() for d in CarregarFeriados()),
+        "feriados":    sorted(d.isoformat() for d in Feriados()),
     }
 
     templatesDir = Path(cfg["paths"].get("templatesDir", "templates"))
@@ -965,10 +1118,11 @@ def RenderizarHtml(
         dtStart=dtStart,
         dtEnd=dtEnd,
         pesoFonte=pesoFonte,
+        dtPrevia=dtPrevia,
     )
 
 
-def MontarResumo(diario: list[dict], ticker: list[dict]) -> str:
+def MontarResumo(diario: list[dict], ticker: list[dict], dtPrevia: str | None = None) -> str:
     totalVol     = sum(r["volume"] for r in diario)
     totalTickers = len({r["ticker"] for r in ticker})
     dtStart = diario[0]["dt"]  if diario else "?"
@@ -979,6 +1133,14 @@ def MontarResumo(diario: list[dict], ticker: list[dict]) -> str:
         f"Tickers  : {totalTickers}",
         f"Volume   : R$ {totalVol:,.2f} MM",
     ]
+    if dtPrevia and dtPrevia == dtEnd:
+        volPrevia = next((r["volume"] for r in diario if r["dt"] == dtPrevia), 0.0)
+        lines.append(f"PRÉVIA   : {dtPrevia} — pregão em curso, R$ {volPrevia:,.2f} MM "
+                     "parciais no total acima")
+    elif dtPrevia:
+        # O pregão de hoje está no corte mas não tem negócio na base ainda (rodada da
+        # manhã, antes do boletim do dia). Dizer isso evita a leitura de que sumiu.
+        lines.append(f"PRÉVIA   : {dtPrevia} — sem negócio na base ainda")
     return "\n".join(lines)
 
 
@@ -1003,8 +1165,16 @@ def LerArgumentos() -> argparse.Namespace:
         metavar="YYYY-MM-DD",
         default=None,
         dest="ate",
-        help="Última data de LIQUIDAÇÃO a publicar. Default: D-1 (o dia útil anterior a "
-             "hoje). O pregão de hoje não fechou — publicá-lo mostraria um dia pela metade.",
+        help="Última data de LIQUIDAÇÃO a publicar. Default: hoje, se for pregão "
+             "(entra marcada como PRÉVIA). Vence --sem-previa.",
+    )
+    parser.add_argument(
+        "--sem-previa",
+        action="store_true",
+        dest="semPrevia",
+        help="Volta ao corte em D-1: a liquidação de hoje fica FORA do relatório. "
+             "Use quando o destino não puder exibir o selo de prévia (ex.: print "
+             "colado num email de terceiro).",
     )
     return parser.parse_args()
 
@@ -1020,9 +1190,15 @@ def Principal() -> None:
     try:
         log.info("%s: iniciando", NOME_SCRIPT)
 
-        dtCorte = args.ate or CalcularDtCorte()
+        dtCorte = args.ate or CalcularDtCorte(incluirPrevia=not args.semPrevia)
+        # Só é prévia o pregão de hoje, e só se ele estiver DENTRO do corte: com --ate
+        # ou --sem-previa apontando para trás, o que entra já fechou.
+        dtPrevia = CalcularDtPrevia()
+        if dtPrevia is not None and dtPrevia > dtCorte:
+            dtPrevia = None
         log.info("%s: corte em dtLiquidacao <= %s%s", NOME_SCRIPT, dtCorte,
-                 "" if args.ate else " (D-1 — o pregão de hoje não fechou)")
+                 f" | PRÉVIA: {dtPrevia} (o pregão de hoje não fechou)" if dtPrevia
+                 else " (só pregão fechado)")
 
         ctePeso, pesoFonte = EscolherFontePeso()
         log.info("%s: peso da Visão Anbima = %s", NOME_SCRIPT,
@@ -1048,19 +1224,19 @@ def Principal() -> None:
         dtEnd   = diario[-1]["dt"] if diario else date.today().isoformat()
 
         html = RenderizarHtml(diario, diarioIdx, anbimaIdx, anbimaRef, anbimaDur, ticker, duration,
-                           boletim, diasBoletim, infoAtivos, dtStart, dtEnd, pesoFonte)
+                           boletim, diasBoletim, infoAtivos, dtStart, dtEnd, pesoFonte, dtPrevia)
 
         relDir = Path(cfg["paths"]["relatoriosDir"])
         relDir.mkdir(parents=True, exist_ok=True)
         outPath = relDir / "relatorio_secundario.html"
         outPath.write_text(html, encoding="utf-8")
 
-        summary = MontarResumo(diario, ticker)
+        summary = MontarResumo(diario, ticker, dtPrevia)
         log.info("%s: HTML salvo em %s\n%s", NOME_SCRIPT, outPath, summary)
         print(f"Arquivo: {outPath}\n{summary}".encode("ascii", errors="replace").decode())
 
         if args.emailDia:
-            EnviarEmailDia(args.emailDia, boletim, outPath, log)
+            EnviarEmailDia(args.emailDia, boletim, outPath, log, dtPrevia)
 
     except Exception:
         success = False
