@@ -37,7 +37,7 @@ from __future__ import annotations
 import argparse
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from traceback import format_exc
 
@@ -69,9 +69,84 @@ def LerArgumentos() -> argparse.Namespace:
     parser.add_argument("--forcar", dest="forcar", action="store_true",
                         help="ignora o gate de info faltante — para reprocessar depois de "
                              "corrigir o parser do fluxo")
+    parser.add_argument("--refrescar-dias", dest="refrescarDias", type=int, default=30,
+                        help="tambem re-raspa ativo cujo fluxo da B3 tem mais de N dias "
+                             "(default 30). 0 desliga. Ver REFRESCO em MontarFila.")
+    parser.add_argument("--refrescar-max", dest="refrescarMax", type=int, default=150,
+                        help="teto de ativos REFRESCADOS por rodada, do mais velho para o "
+                             "mais novo (default 150). Nao limita quem entrou na fila por "
+                             "informacao faltante. 0 = sem teto.")
     parser.add_argument("--limite", dest="limite", type=int, default=None,
                         help="processa so os N primeiros da fila")
     return parser.parse_args()
+
+
+def Unir(faltantes: list[str], refrescar: list[str]) -> list[str]:
+    """Junta as duas filas sem repetir, com os FALTANTES na frente.
+
+    A ordem importa quando ha `--limite`: quem nao tem cadastro nenhum bloqueia a calc
+    hoje, enquanto quem so envelheceu ainda esta precificando. Cortar a fila pelo fim
+    tem de sacrificar o refresco, nunca o buraco."""
+    vistos = set(faltantes)
+    return faltantes + [t for t in refrescar if t not in vistos]
+
+
+def FilaRefresco(args: argparse.Namespace, log) -> list[str]:
+    """Os ativos cujo fluxo da B3 envelheceu, do MAIS VELHO para o mais novo, ate o teto.
+
+    Por que existe (01/09/2026). O gate de `MontarFila` so pergunta "falta alguma
+    coisa?". Fluxo que JA EXISTE nunca era re-raspado, entao ele so envelhecia — e a
+    fonte tambem apodrece: o EMIV11 foi aditado em fev/26 e a agenda velha continuou de
+    pe. Foi essa deriva silenciosa que produziu os 19 fluxos defasados da faxina de
+    14/07/2026.
+
+    Por que TETO e nao so idade. Medido na base local em 01/09/2026: sem teto, o corte de
+    30 dias leva a fila de 1.917 para 5.009 ativos de uma vez — porque nenhum fluxo tinha
+    sido refrescado ainda, entao a populacao inteira vence junta. Numa API que CONTA
+    chamada, isso e um pico de ~3.000 requisicoes na primeira rodada e zero nas
+    seguintes. Com teto + ordem do mais velho, o refresco vira uma ESTEIRA: um pedaco por
+    dia, sempre o mais atrasado, sem pico nenhum, e a populacao converge para "ninguem com
+    mais de N dias" em poucas rodadas.
+
+    A ancora e `FluxoAtivos.dtAtualizacao`, nao `InfoAtivos.dtAtualizacao`: o segundo e
+    escrito por QUALQUER fonte que toque o ativo (a FI Analytics escreve a cada rodada),
+    entao um toque da FI zeraria o relogio sem que a B3 tivesse sido consultada, e o
+    ativo nunca mais refrescaria. Restrito a `cdFonteCadastro = 'B3'` porque so ai a
+    agenda em disco e da B3 — ativo da Anbima nao e assunto deste script.
+
+    A comparacao de texto funciona apesar de a base misturar os dois separadores de ISO
+    ('2026-08-01T10:00:00' do cadastro_b3 e '2026-08-01 10:00:00' dos demais): contra um
+    corte que e so a data, os dois ordenam certo.
+    """
+    if args.forcar or not args.refrescarDias or args.refrescarDias <= 0:
+        return []
+
+    corte = (date.today() - timedelta(days=args.refrescarDias)).isoformat()
+    limite = f"LIMIT {args.refrescarMax}" if args.refrescarMax and args.refrescarMax > 0 else ""
+    linhas = D.Linhas(f"""
+        SELECT i.cdTicker,
+               COALESCE((SELECT MAX(f.dtAtualizacao) FROM FluxoAtivos f
+                          WHERE f.cdTicker = i.cdTicker), '') AS dtFluxo
+          FROM InfoAtivos i
+         WHERE i.cdFonteCadastro = 'B3'
+           AND COALESCE((SELECT MAX(f.dtAtualizacao) FROM FluxoAtivos f
+                          WHERE f.cdTicker = i.cdTicker), '') < ?
+         ORDER BY dtFluxo ASC, i.cdTicker
+         {limite}""", (corte,))
+
+    vencidos = D.Escalar("""
+        SELECT COUNT(*) FROM InfoAtivos i
+         WHERE i.cdFonteCadastro = 'B3'
+           AND COALESCE((SELECT MAX(f.dtAtualizacao) FROM FluxoAtivos f
+                          WHERE f.cdTicker = i.cdTicker), '') < ?""", (corte,))
+
+    fila = [r["cdTicker"] for r in linhas]
+    if fila:
+        log.info("%s: refresco — %d ativo(s) com fluxo da B3 anterior a %s; "
+                 "%d nesta rodada (do mais velho, teto %s)",
+                 NOME_SCRIPT, vencidos, corte, len(fila),
+                 args.refrescarMax or "sem teto")
+    return fila
 
 
 def MontarFila(args: argparse.Namespace, log) -> tuple[list[str], list[str]]:
@@ -95,7 +170,7 @@ def MontarFila(args: argparse.Namespace, log) -> tuple[list[str], list[str]]:
         fila = [r["cdTicker"] for r in D.Linhas(
             f"SELECT i.cdTicker FROM InfoAtivos i WHERE {faltando} ORDER BY i.cdTicker")]
         log.info("%s: modo --todos, %d ativo(s) com informacao faltante", NOME_SCRIPT, len(fila))
-        return fila, []
+        return Unir(fila, FilaRefresco(args, log)), []
 
     if args.start and args.end:
         onde, params = "n.dtNegocio BETWEEN ? AND ?", (args.start, args.end)
@@ -119,7 +194,7 @@ def MontarFila(args: argparse.Namespace, log) -> tuple[list[str], list[str]]:
         f"SELECT COUNT(DISTINCT n.cdTicker) FROM NegociosBrutos n WHERE {onde}", params)
     log.info("%s: %d ticker(s) negociaram; %d com informacao faltante (gate)",
              NOME_SCRIPT, negociaram, len(fila))
-    return fila, datas
+    return Unir(fila, FilaRefresco(args, log)), datas
 
 
 def Principal() -> None:

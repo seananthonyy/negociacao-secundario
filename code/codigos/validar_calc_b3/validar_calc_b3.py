@@ -434,8 +434,12 @@ def Principal() -> None:
         CSV_SAIDA.parent.mkdir(parents=True, exist_ok=True)
         with open(CSV_SAIDA, "w", newline="", encoding="utf-8") as fh:
             w = csv.writer(fh)
-            w.writerow(["cdTicker", "idx", "fonteConfirma", "piorPU", "piorFiBps",
-                        "nConfB3", "nConfFi", "veredito"])
+            # piorTaxaBps so e preenchido com --com-taxa; sem a flag sai vazio. Ate
+             # 01/09/2026 este numero era CALCULADO e jogado fora: entrava na decisao
+             # (b3Pass exige piorTaxa <= TOL_TAXA_BPS) mas nao saia em relatorio nenhum,
+             # entao nao dava para MEDIR a divergencia de taxa que o backlog persegue.
+            w.writerow(["cdTicker", "idx", "fonteConfirma", "piorPU", "piorTaxaBps",
+                        "piorFiBps", "nConfB3", "nConfFi", "veredito"])
             for r in resultados:
                 rr = confPorTk.get(r["tk"], r)   # se recuperado no refresh, usa o r2
                 if NaoConfirmavel(rr):
@@ -445,6 +449,7 @@ def Principal() -> None:
                 else:
                     v = "REPROVADO"
                 w.writerow([rr["tk"], rr["idx"], rr["fonte"] or "-", f"{rr['piorPU']:.2e}",
+                            f"{rr['piorTaxa']:.3f}" if rr["piorTaxa"] else "",
                             f"{rr['piorFi']:.2f}", rr["nConfB3"], rr["nConfFi"], v])
 
         # UPDATE bidirecional: promove os confiáveis (validado=1 + fonte + dtValidacaoFluxo
@@ -503,6 +508,28 @@ def Principal() -> None:
             totDentro = sum(1 for r in comB3 if r["piorPU"] <= TOL_PU)
             rel.Metrica("Acuracia PU<=1e-5 (R$0,01/1000) global",
                         f"{100 * totDentro / totN:.1f}% ({totDentro}/{totN})" if totN else "n/a")
+
+        # ── ACURACIA da TAXA (round-trip calcYield), so com --com-taxa ──
+        # E a medicao que separa "o fluxo esta certo" (PU no par) de "o DESCONTO esta
+        # certo" (taxa implicita num PU fora do par). Ja em BPS DE YIELD via
+        # DiffTaxaEmBps, entao o %CDI aparece na mesma escala dos demais — e nao ~10x
+        # inflado como na medicao de 13/07 que tirou o %CDI da calc local.
+        comTaxaMedida = [r for r in resultados if r["piorTaxa"]]
+        if comTaxaMedida:
+            porIdxTaxa = defaultdict(list)
+            for r in comTaxaMedida:
+                porIdxTaxa[r["idx"]].append(r["piorTaxa"])
+            linhasTaxa = []
+            for idx in sorted(porIdxTaxa):
+                v = sorted(porIdxTaxa[idx])
+                mediana = v[len(v) // 2]
+                p90 = v[min(len(v) - 1, int(0.9 * len(v)))]
+                linhasTaxa.append([idx, len(v), f"{mediana:.2f}", f"{p90:.2f}",
+                                   f"{v[-1]:.2f}",
+                                   sum(1 for x in v if x <= TOL_TAXA_BPS)])
+            rel.Secao("Acuracia da TAXA calc vs B3 em bps de yield (round-trip, --com-taxa)",
+                      ["indexador", "n", "mediana", "p90", "pior",
+                       f"<= {TOL_TAXA_BPS:.0f} bps"], linhasTaxa)
 
         rel.Metrica("Candidatos testados", len(ativos))
         rel.Metrica("Confiáveis (calc reproduz um oráculo)", len(confirmados))

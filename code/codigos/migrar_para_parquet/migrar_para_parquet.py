@@ -56,6 +56,9 @@ def LerArgumentos() -> argparse.Namespace:
                    help="grava de verdade (sem a flag e dry-run)")
     p.add_argument("--tabelas", dest="tabelas", default=None,
                    help="lista separada por virgula (default: todas)")
+    p.add_argument("--sobrescrever", action="store_true",
+                   help="autoriza gravar por cima de um destino que JA TEM dados. Sem "
+                        "esta flag o script aborta nesse caso — ver ConferirDestinoVazio.")
     return p.parse_args()
 
 
@@ -108,6 +111,78 @@ def Gravar(tabela: str, df: pd.DataFrame, log) -> int:
     return total
 
 
+def ConferirChaveNatural(conn: sqlite3.Connection, log) -> bool:
+    """A chave que substitui o idTrade tem de existir e ser unica ANTES de migrar.
+
+    O idTrade era AUTOINCREMENT: o SQLite garantia a unicidade de graca. Fora dele a
+    chave e o `cdIdentificadorNegocio` que a B3 manda, e ninguem garante nada — a propria
+    B3 ja mandou negocio SEM identificador (foi o que o fix de 31/08/2026 passou a
+    descartar na entrada). Uma base montada ANTES desse fix pode ter essas linhas.
+
+    Se elas passarem, o estrago e silencioso: linha com chave NULL nao casa com nada, e
+    duas linhas com a mesma chave se anulam no primeiro Upsert/Mesclar — sem erro, sem
+    log, com o total de volume mudando sozinho semanas depois. Por isso a conferencia e
+    ANTES e ABORTA, em vez de virar um aviso no fim.
+    """
+    nulos = conn.execute(
+        "SELECT COUNT(*) FROM NegociosBrutos "
+        "WHERE cdIdentificadorNegocio IS NULL OR TRIM(cdIdentificadorNegocio) = ''"
+    ).fetchone()[0]
+    dups = conn.execute(
+        "SELECT COUNT(*) FROM (SELECT cdIdentificadorNegocio FROM NegociosBrutos "
+        " WHERE cdIdentificadorNegocio IS NOT NULL "
+        " GROUP BY cdIdentificadorNegocio HAVING COUNT(*) > 1)"
+    ).fetchone()[0]
+
+    if not nulos and not dups:
+        log.info("   chave natural OK: cdIdentificadorNegocio presente e unico")
+        return True
+
+    if nulos:
+        log.error("   %d negocio(s) SEM cdIdentificadorNegocio. Eles nao tem chave no "
+                  "Parquet — o fix de 31/08/2026 descarta esses na entrada, mas os que "
+                  "ja estao na base precisam sair antes:", nulos)
+        log.error("       DELETE FROM NegociosBrutos WHERE cdIdentificadorNegocio IS NULL "
+                  "OR TRIM(cdIdentificadorNegocio) = '';")
+    if dups:
+        log.error("   %d cdIdentificadorNegocio REPETIDO. Duas linhas com a mesma chave "
+                  "se anulam no primeiro Mesclar, sem erro nenhum. Investigar antes de "
+                  "migrar:", dups)
+        log.error("       SELECT cdIdentificadorNegocio, COUNT(*) FROM NegociosBrutos "
+                  "GROUP BY 1 HAVING COUNT(*) > 1;")
+    return False
+
+
+def ConferirDestinoVazio(alvo: list[str], log, sobrescrever: bool) -> bool:
+    """O destino tem de estar vazio — ou o usuario tem de dizer que sabe.
+
+    `Gravar` usa GravarTudo/GravarDia, que SUBSTITUEM o arquivo (ou a particao) inteiro:
+    e o certo para uma migracao unica sobre destino limpo, e destrutivo sobre um destino
+    que ja tem dados. No banco os dois casos existem — a primeira carga e sobre vazio, e
+    uma segunda tentativa depois de meio caminho andado nao e. Sem esta trava, a segunda
+    apaga o que a primeira trouxe e o que o pipeline gravou entre as duas.
+
+    Para MESCLAR em vez de substituir, o caminho e outro (D.Mesclar, com politica por
+    coluna) — nao esta flag.
+    """
+    ocupadas = [(t, int(D.Escalar(f'SELECT COUNT(*) FROM "{t}"') or 0))
+                for t in alvo if D.TemDados(t)]
+    ocupadas = [(t, n) for t, n in ocupadas if n]
+    if not ocupadas:
+        log.info("   destino vazio nas %d tabela(s) — carga limpa", len(alvo))
+        return True
+
+    detalhe = ", ".join(f"{t} ({n} linhas)" for t, n in ocupadas)
+    if sobrescrever:
+        log.warning("   destino JA TEM dados e --sobrescrever foi passado: %s", detalhe)
+        log.warning("   essas linhas serao SUBSTITUIDAS pelo conteudo do SQLite.")
+        return True
+    log.error("   destino JA TEM dados: %s", detalhe)
+    log.error("   a gravacao substitui arquivo/particao inteiros e apagaria isso.")
+    log.error("   Se e mesmo para sobrepor, repita com --sobrescrever.")
+    return False
+
+
 def Principal() -> bool:
     args = LerArgumentos()
     log = ObterLogger(NOME_SCRIPT)
@@ -134,10 +209,20 @@ def Principal() -> bool:
             log.info("   %-22s %8d linhas  (particao: %s)",
                      tabela, n, D.PARTICAO[tabela] or "nenhuma")
 
+        log.info("")
+        log.info("conferencias previas:")
+        okChave = ("NegociosBrutos" not in alvo
+                   or ConferirChaveNatural(conns["dbTrades"], log))
+        okDestino = ConferirDestinoVazio(alvo, log, args.sobrescrever)
+
         if not args.executar:
             log.info("")
             log.info("DRY-RUN -- nada foi escrito. Rode com --executar para valer.")
-            return True
+            return okChave and okDestino
+
+        if not (okChave and okDestino):
+            log.error("ABORTADO -- conferencia previa reprovou (acima). Nada foi escrito.")
+            return False
 
         log.info("")
         log.info("gravando...")
