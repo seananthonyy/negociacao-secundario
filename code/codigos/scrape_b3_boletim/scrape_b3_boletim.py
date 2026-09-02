@@ -2,52 +2,32 @@
 scrape_b3_boletim.py
 ====================
 Baixa o Boletim Diario da B3 -- tabela "Negocio a negocio" de credito privado
-(DEB/CRI/CRA) -- e faz UPSERT em NegociosBrutos.
+(DEB/CRI/CRA) -- e grava em NegociosBrutos.
 
-Nao e scraping. E um POST
+Nao e scraping: e um POST
 -------------------------
-O dado sai de um endpoint publico do BDI, que responde CSV direto:
-
     POST https://arquivos.b3.com.br/bdi/table/export/csv?lang=pt-BR
     Content-Type: application/json
 
     {"Name": "Trade", "Date": "2026-07-28", "FinalDate": "2026-07-28",
      "ClientId": "", "Filters": {}}
 
-`Name: "Trade"` e o que seleciona a tabela NEGOCIO A NEGOCIO -- uma linha por operacao,
-em vez do agregado por ativo. `Date` e `FinalDate` iguais pedem um pregao.
+Endpoint publico: nao pede login, cookie, token nem header especial. Responde o
+CSV direto.
 
-Ate 02/09/2026 este script subia um Chromium via Playwright para chegar nesse POST:
-abria o iframe `arquivos.b3.com.br/bdi/tabelas`, clicava na aba "Renda fixa", setava a
-data no `duet-date-picker` por tres estrategias diferentes, selecionava a tabela e
-interceptava o download. Eram ~750 linhas de interacao com a pagina.
+  Name        "Trade" seleciona a tabela NEGOCIO A NEGOCIO -- uma linha por
+              operacao, em vez do agregado por ativo.
+  Date        pregao pedido. FinalDate igual = um dia so (ver BaixarCsv).
+  ClientId    sempre vazio.
+  Filters     sempre vazio; o filtro de DEB/CRI/CRA e nosso, no parse.
 
-Nada disso era necessario. O navegador entrou porque foi COMO O ENDPOINT FOI DESCOBERTO
-(interceptando o clique no botao CSV, em 30/05/2026) -- e, uma vez que o corpo do POST
-ficou conhecido, ninguem voltou para conferir se ele ainda fazia falta. Andaime de
-investigacao que virou producao.
-
-Medido em 02/09/2026, com httpx puro, sem cookie e sem header nenhum:
-
-    2026-07-28   HTTP 200   5,4 MB   20.448 negocios DEB/CRI/CRA
-    2026-07-23   HTTP 200   3,6 MB   16.541
-    2026-06-11   HTTP 200   4,1 MB   19.405
-
-O que se ganha: nao sobe navegador (muito mais rapido), nao quebra quando a B3 mexe no
-layout (so se a API mudar), e no banco o httpx le HTTP_PROXY/HTTPS_PROXY do ambiente
-sozinho (`trust_env`), como o b3_calc_api e o fianalytics_api ja fazem -- uma dependencia
-a menos no ambiente corporativo, sem Chromium para instalar.
-
-O CSV
------
-Delimitador `;`, com linhas de preambulo descritivo antes do header real. O parser NAO
-conta linhas fixas: procura a primeira que contenha alguma coluna conhecida, o que
-sobrevive a B3 reescrever o texto do preambulo.
+O CSV vem com delimitador `;`, BOM UTF-8 e algumas linhas de preambulo
+descritivo antes do header real.
 
 CLI:
     python codigos/scrape_b3_boletim/scrape_b3_boletim.py --date 2026-05-27
     python codigos/scrape_b3_boletim/scrape_b3_boletim.py --start 2026-05-25 --end 2026-05-27
-    python codigos/scrape_b3_boletim/scrape_b3_boletim.py --date 2026-05-27 --salvar-csv
+    python codigos/scrape_b3_boletim/scrape_b3_boletim.py --date 2026-05-27 --sem-gravar
 """
 
 import argparse
@@ -77,19 +57,9 @@ NOME_SCRIPT = "scrape_b3_boletim"
 # ---------------------------------------------------------------------------
 
 URL_EXPORT = "https://arquivos.b3.com.br/bdi/table/export/csv?lang=pt-BR"
-
-# Corpos candidatos, tentados em ordem. O primeiro e o formato real, confirmado por
-# inspecao em 30/05/2026 e re-testado em 02/09/2026. Os outros dois sao variacoes que ja
-# funcionaram em algum momento -- ficam como rede se a B3 apertar a validacao do corpo.
-def CorposCandidatos(dataStr: str) -> list[dict]:
-    return [
-        {"Name": "Trade", "Date": dataStr, "FinalDate": dataStr, "ClientId": "", "Filters": {}},
-        {"Name": "Trade", "Date": dataStr, "FinalDate": dataStr, "ClientId": ""},
-        {"Name": "Trade@true", "Date": dataStr, "FinalDate": dataStr, "ClientId": "", "Filters": {}},
-    ]
-
 TIMEOUT_SEGUNDOS = 90       # o CSV de um pregao cheio passa de 5 MB
 TAMANHO_MINIMO = 2_000      # abaixo disso nao e boletim: e erro ou pagina vazia
+DELIMITADOR = ";"           # o boletim negocio-a-negocio da B3 sempre usa ponto-e-virgula
 
 INSTRUMENTOS: list[str] = cfg["scrape"]["b3"]["instrumentosAceitos"]
 DIR_CSV = Path(cfg["paths"]["dadosDir"]) / "debug"
@@ -97,7 +67,7 @@ DIR_CSV = Path(cfg["paths"]["dadosDir"]) / "debug"
 # ---------------------------------------------------------------------------
 # Mapeamento de colunas CSV -> colunas internas
 #
-# Nomes reais confirmados no CSV de "Negocio a negocio" da B3 (descobertos em 2026-05-30).
+# Nomes reais confirmados no CSV de "Negocio a negocio" da B3 (2026-05-30).
 # Os nomes a direita (valores) sao as colunas em NegociosBrutos — NAO altere.
 # ---------------------------------------------------------------------------
 COLUMN_MAP: dict[str, str] = {
@@ -118,7 +88,7 @@ COLUMN_MAP: dict[str, str] = {
     # Coluna ignorada: "Origem negócio" (sempre "Pre-registro - Voice")
 }
 
-# Colunas obrigatorias (nao podem estar ausentes no CSV apos mapeamento)
+# Colunas obrigatorias: linha sem alguma delas e rodape ou lixo, e e pulada.
 REQUIRED_COLS = {
     "cdIdentificadorNegocio", "cdInstrumento", "cdEmissor", "cdTicker",
     "vrQuantidade", "vrPU", "vrVolume", "dtHorarioNegocio",
@@ -129,13 +99,8 @@ COLS_NEGOCIO = ("cdIdentificadorNegocio", "cdInstrumento", "cdEmissor", "cdTicke
                 "vrQuantidade", "vrPU", "vrVolume", "vrTaxaNegocio",
                 "dtHorarioNegocio", "dtNegocio", "cdISIN", "dtLiquidacao", "cdSituacao")
 
-# O `ON CONFLICT(cdIdentificadorNegocio) DO UPDATE` daqui reescrevia so tres colunas:
-# vrTaxaNegocio, cdSituacao e dtAtualizacao. Um negocio ja gravado nao muda de ticker,
-# de PU nem de volume — o que a B3 revisa depois e a taxa e a situacao.
-#
-# Como Mesclar aplica a politica a toda coluna PRESENTE no DataFrame, o lote e partido em
-# dois, como no calc_taxa_negocios: linha nova entra inteira, linha existente leva so as
-# tres do DO UPDATE.
+# Negocio ja gravado nao muda de ticker, de PU nem de volume: o que a B3 revisa
+# depois do pregao e a taxa e a situacao. Sao as unicas colunas reescritas.
 COLS_ATUALIZAVEIS = ("vrTaxaNegocio", "cdSituacao", "dtAtualizacao")
 POLITICA_UPSERT = {c: D.SOBRESCREVER for c in COLS_ATUALIZAVEIS}
 
@@ -155,7 +120,7 @@ def LerArgumentos() -> argparse.Namespace:
     p.add_argument("--salvar-csv", dest="salvarCsv", action="store_true",
                    help="Grava o CSV cru em files/debug/ antes de parsear (diagnostico).")
     p.add_argument("--sem-gravar", dest="semGravar", action="store_true",
-                   help="Baixa e parseia, mas nao escreve na base. Serve para conferir o "
+                   help="Baixa e parseia, mas nao escreve na base. Serve para validar o "
                         "endpoint num ambiente novo (o banco, atras do proxy).")
     args = p.parse_args()
     if args.start and not args.end:
@@ -180,56 +145,33 @@ def MontarIntervaloDatas(start: str, end: str) -> list[date]:
 # Download
 # ---------------------------------------------------------------------------
 
-def BaixarCsv(cliente: httpx.Client, dataAlvo: date, log) -> str | None:
-    """O CSV do pregao, ou None se a B3 nao entregou.
+def BaixarCsv(cliente: httpx.Client, dataAlvo: date, log) -> str:
+    """O CSV do pregao. Levanta se a B3 nao entregou.
 
     Uma requisicao por pregao, de proposito. Ja houve um atalho que pedia o intervalo
     inteiro num POST so (`Date` != `FinalDate`), e a API devolvia apenas as duas PONTAS
-    do intervalo — sem os pregoes do meio, e com status 200. O fallback nunca disparava e
-    os dias sumiam em silencio."""
+    do intervalo — sem os pregoes do meio, e com status 200. Os dias sumiam em silencio.
+    """
     dataStr = dataAlvo.isoformat()
+    corpo = {"Name": "Trade", "Date": dataStr, "FinalDate": dataStr,
+             "ClientId": "", "Filters": {}}
 
-    for corpo in CorposCandidatos(dataStr):
-        try:
-            resp = cliente.post(URL_EXPORT, json=corpo, timeout=TIMEOUT_SEGUNDOS)
-        except httpx.HTTPError as exc:
-            log.warning("%s: erro de rede no POST (%s) — %s", dataStr, corpo["Name"], exc)
-            continue
+    resp = cliente.post(URL_EXPORT, json=corpo, timeout=TIMEOUT_SEGUNDOS)
+    resp.raise_for_status()
 
-        if resp.status_code != 200:
-            log.warning("%s: HTTP %d com corpo %s", dataStr, resp.status_code, corpo)
-            continue
+    # A B3 responde 200 com HTML quando nao gosta do corpo — o content-type e o unico
+    # jeito de distinguir isso de um CSV legitimo.
+    tipo = resp.headers.get("content-type", "").lower()
+    if "csv" not in tipo:
+        raise RuntimeError(f"{dataStr}: resposta nao e CSV (content-type={tipo or '?'})")
+    if len(resp.content) < TAMANHO_MINIMO:
+        raise RuntimeError(f"{dataStr}: CSV de {len(resp.content)} bytes — "
+                           "pequeno demais para ser boletim")
 
-        # A B3 responde 200 com HTML quando nao gosta do corpo. Content-type e o unico
-        # jeito de distinguir isso de um CSV legitimo.
-        tipo = resp.headers.get("content-type", "").lower()
-        if "csv" not in tipo:
-            log.warning("%s: resposta nao e CSV (content-type=%s) com corpo %s",
-                        dataStr, tipo or "?", corpo)
-            continue
-
-        if len(resp.content) < TAMANHO_MINIMO:
-            log.warning("%s: CSV de %d bytes — pequeno demais para ser boletim",
-                        dataStr, len(resp.content))
-            continue
-
-        log.info("%s: %d KB baixados (corpo %s)",
-                 dataStr, len(resp.content) // 1024, corpo["Name"])
-        return Decodificar(resp.content, log)
-
-    log.error("%s: nenhum corpo de POST foi aceito pela B3.", dataStr)
-    return None
-
-
-def Decodificar(bruto: bytes, log) -> str:
-    """O CSV vem com BOM UTF-8, mas ja veio latin-1 em algum momento. Tenta em ordem."""
-    for codificacao in ("utf-8-sig", "utf-8", "latin-1", "cp1252"):
-        try:
-            return bruto.decode(codificacao, errors="strict")
-        except UnicodeDecodeError:
-            continue
-    log.warning("nenhuma codificacao decodificou limpo — caindo para latin-1 tolerante")
-    return bruto.decode("latin-1", errors="replace")
+    log.info("%s: %d KB baixados", dataStr, len(resp.content) // 1024)
+    # O CSV vem com BOM UTF-8; `errors="replace"` evita derrubar o pregao inteiro por
+    # causa de um acento estranho num nome de emissor.
+    return resp.content.decode("utf-8-sig", errors="replace")
 
 
 def SalvarCsvCru(texto: str, dataAlvo: date, log) -> None:
@@ -252,12 +194,9 @@ def AnalisarCsv(textoBruto: str, log) -> list[dict]:
     A funcao detecta automaticamente onde o header comeca buscando
     a coluna "Instrumento financeiro" (ou outra coluna do COLUMN_MAP).
     """
-    # Detecta delimitador: B3 usa ";" no boletim de negocio-a-negocio
-    amostra = textoBruto[:4096]
-    delimitador = ";" if amostra.count(";") > amostra.count(",") else ","
-    log.debug("CSV delimiter detectado: '%s'", delimitador)
-
-    # Divide em linhas e localiza o header real
+    # Localiza o header real: a primeira linha que contenha uma coluna conhecida.
+    # Procurar pelo NOME, em vez de contar linhas de preambulo, sobrevive a B3
+    # reescrever o texto descritivo do topo.
     linhas = textoBruto.splitlines()
     idxHeader = None
     for i, linha in enumerate(linhas):
@@ -273,7 +212,7 @@ def AnalisarCsv(textoBruto: str, log) -> list[dict]:
         return []
 
     leitor = csv.DictReader(io.StringIO("\n".join(linhas[idxHeader:])),
-                            delimiter=delimitador)
+                            delimiter=DELIMITADOR)
 
     nomesColunas = leitor.fieldnames or []
     log.info("Colunas no CSV: %s", nomesColunas)
@@ -281,13 +220,14 @@ def AnalisarCsv(textoBruto: str, log) -> list[dict]:
     if semMapa:
         log.warning("Colunas no CSV sem mapeamento (ignoradas): %s", semMapa)
 
+    aceitos = {x.upper() for x in INSTRUMENTOS}
     linhasSaida: list[dict] = []
     linhasPuladas = linhasInstrumentoErrado = linhasSemId = 0
 
     for i, row in enumerate(leitor, start=2):   # linha 1 = header
         mapped: dict = {}
         for colCsv, colInterna in COLUMN_MAP.items():
-            val = row.get(colCsv) or row.get(colCsv.strip())
+            val = row.get(colCsv)
             if val is not None:
                 mapped[colInterna] = val.strip() if isinstance(val, str) else val
 
@@ -298,8 +238,7 @@ def AnalisarCsv(textoBruto: str, log) -> list[dict]:
             linhasPuladas += 1
             continue
 
-        instrumento = mapped.get("cdInstrumento", "").upper().strip()
-        if instrumento not in [x.upper() for x in INSTRUMENTOS]:
+        if mapped.get("cdInstrumento", "").upper().strip() not in aceitos:
             linhasInstrumentoErrado += 1
             continue
 
@@ -479,8 +418,6 @@ def ProcessarData(cliente: httpx.Client, dataAlvo: date, log,
     dataStr = dataAlvo.isoformat()
 
     texto = BaixarCsv(cliente, dataAlvo, log)
-    if texto is None:
-        raise RuntimeError(f"B3 nao entregou o CSV de {dataStr}")
     if salvarCsv:
         SalvarCsvCru(texto, dataAlvo, log)
 
