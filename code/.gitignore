@@ -36,3 +36,8 @@ venv/
 
 # --- Playwright ---
 .playwright/
+
+# Base temporaria do conferir_dados. Ela ja foi commitada uma vez por engano (895fd88);
+# desde 02/09/2026 o script usa a pasta temporaria do sistema, mas a entrada fica como
+# rede de seguranca para quem passar um caminho relativo no argumento posicional.
+tmp_parquet/

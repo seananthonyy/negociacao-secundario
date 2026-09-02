@@ -41,7 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "Helpers"))
 
 import dados as D
 from calc import ObterBancoDi
-from config import cfg
+from datas import Feriados
 from logger import ObterLogger
 from email_outlook import EnviarEmailConclusao
 from relatorio_execucao import RelatorioExecucao
@@ -60,7 +60,6 @@ CONTRATOS = [
     "DI1F31", "DI1F32", "DI1F33", "DI1F34",
 ]
 
-FERIADOS_PATH = Path(cfg["paths"]["feriadosCsv"])
 
 # O que era `ON CONFLICT(cdTicker, dtReferencia) DO UPDATE SET vrTaxa = excluded.vrTaxa,
 # vrDuration = excluded.vrDuration`. Aqui as duas SOBRESCREVEM (diferente do
@@ -79,21 +78,6 @@ HEADERS = {"Accept": "application/json", "User-Agent": "Mozilla/5.0"}
 # ---------------------------------------------------------------------------
 # Feriados
 # ---------------------------------------------------------------------------
-
-def CarregarFeriados() -> frozenset:
-    if not FERIADOS_PATH.exists():
-        raise FileNotFoundError(f"Feriados nao encontrado: {FERIADOS_PATH.resolve()}")
-    feriados = set()
-    with open(FERIADOS_PATH, encoding="utf-8", newline="") as fh:
-        for row in csv.DictReader(fh):
-            raw = (row.get("data") or "").strip()
-            if raw:
-                try:
-                    feriados.add(date.fromisoformat(raw))
-                except ValueError:
-                    pass
-    return frozenset(feriados)
-
 
 # ---------------------------------------------------------------------------
 # Cálculo de vencimento e du
@@ -254,7 +238,7 @@ def Principal() -> None:
         dtRef  = date.fromisoformat(args.date)
         dtStr  = dtRef.isoformat()
 
-        feriados = CarregarFeriados()
+        feriados = Feriados()
         log.info("curva_di: %d feriados carregados", len(feriados))
 
         with httpx.Client(verify=False) as client:
