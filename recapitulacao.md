@@ -1,7 +1,8 @@
 # Retomar aqui
 
-> Escrito em **03/09/2026, manhã**. Branch **`refactor/split-bases`**, HEAD `f986e10`.
-> **Árvore suja de propósito — nada foi commitado.** Comece por `git status`.
+> Escrito em **03/09/2026, manhã**. Branch **`refactor/split-bases`**, árvore limpa.
+> **Commitado em commits temáticos, e NADA foi pushado** — o push é seu. A calculadora
+> vizinha tem commit próprio, também sem push. Comece por `git log --oneline -5`.
 >
 > A sessão fez uma coisa só, grande: **a reestruturação inteira do projeto**. Tudo mudou
 > de lugar, o armazenamento da calculadora virou Parquet, o gate foi reescrito, e os 37
@@ -60,8 +61,8 @@ Quem seta as duas variáveis é `codigos/helpers/calc.py` — o único módulo q
 calc está instalada. Verificado ponta a ponta: 1.263 feriados, 565 meses de IPCA, 438
 projeções, 6.698 dias de DI.
 
-⚠️ **`calculadora-renda-fixa` é um repositório separado e também está sujo.** Precisa do
-commit dele, à parte.
+⚠️ **`calculadora-renda-fixa` é um repositório separado.** Tem commit próprio
+(`4973af2`), sem push.
 
 ---
 
@@ -126,7 +127,7 @@ Pipeline completo, 63 passos, **60 OK e 3 falhas**. A base avançou de 28/07 par
 
 ---
 
-## 5. Três coisas que consertei depois do pipeline
+## 5. Cinco coisas que consertei depois do pipeline
 
 **O backup do IPCA projetado ia para `cache/`.** Ou seja: a única tabela do projeto que
 **não é reconstituível** tinha sua rede de proteção na pasta explicitamente descartável. O
