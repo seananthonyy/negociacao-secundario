@@ -540,13 +540,27 @@ razão: metade dele descrevia `code/`, `setup_teste.ipynb` e `setup_inicial.ipyn
 existem mais. Documento que descreve o que o código já não faz é pior que documento nenhum.
 O que sobrevive, atualizado, está aqui.
 
-**Passo 0 — levar os arquivos.** Dois repositórios, dois downloads. Deste projeto basta o
-`migracao-banco/bundle_banco.py`: baixe só ele, rode `python bundle_banco.py` numa pasta
-nova e ele recria a árvore. Ele **se recusa a sobrescrever** `*.db`, `.env`,
-`destinatarios.py` e a skip-list, e o `config.toml` existente sai ao lado como
-`config.toml.novo` — então é seguro rodar por cima de uma instalação anterior. A
-calculadora vai à parte, e as duas pastas precisam ser **irmãs** (ou aponte
-`[paths] calculadoraDir`).
+**Passo 0 — levar os arquivos. No banco NÃO se clona repositório**: abre-se o GitHub pela
+web e baixa-se **um arquivo por projeto**, os dois auto-extraíveis.
+
+| projeto | baixar | rodar em |
+|---|---|---|
+| este | `migracao-banco/bundle_banco.py` | `<pai>/negociacao-secundario/` |
+| calculadora | `bundle_calc.py` (raiz do repo) | `<pai>/calculadora-renda-fixa/` |
+
+Crie as duas pastas **irmãs**, com esses nomes, ponha cada bundle na sua e rode
+`python bundle_banco.py` / `python bundle_calc.py`. Cada um recria a própria árvore na
+pasta atual. (Se as pastas não puderem ser irmãs, aponte `[paths] calculadoraDir` ou a
+variável `CALCULADORA_DIR`.)
+
+⚠️ **O bundle da calculadora tem de ser regerado sempre que a calc mudar.** O que estava no
+repo era de 23/07 e ainda empacotava a versão SQLite — quem o baixasse receberia uma calc
+procurando `ipca.db`/`di.db`, que não existem mais. Como no banco o bundle é o **único**
+caminho, um bundle defasado equivale a não ter publicado a mudança.
+
+O extrator do projeto **se recusa a sobrescrever** `*.db`, `.env`, `destinatarios.py` e a
+skip-list, e o `config.toml` existente sai ao lado como `config.toml.novo` — então é seguro
+rodar por cima de uma instalação anterior.
 
 **Passo 1 — Python e dependências.** Da raiz:
 
