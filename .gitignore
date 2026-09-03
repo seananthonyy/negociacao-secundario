@@ -1,42 +1,37 @@
-# .gitignore RAIZ do repositório. O code/.gitignore cobre a subpasta code/.
-# Defesa em profundidade: repetimos aqui os segredos e binários grandes.
+# ---------------------------------------------------------------------------
+# .gitignore do projeto. Uma regra por natureza de arquivo, e nenhuma pasta
+# inteira ignorada quando ela contem dado curado a mao.
+# ---------------------------------------------------------------------------
 
-# --- Segredos / config local (NUNCA versionar) ---
-.env
-code/files/.env
-code/Helpers/destinatarios.py
+# --- Segredos (NUNCA versionar) ---
+config/.env
+codigos/helpers/destinatarios.py
 
-# --- Banco de dados e backups (grandes; regeneráveis) ---
-*.db
-*.db-journal
-*.db-wal
-code/files/Database/
+# --- A base. Grande, e o Athena/S3 e a fonte no banco. ---
+database/parquets/
+backups/
 
-# --- Saídas geradas / dados brutos (regeneráveis) ---
-# O log de cada script cai na pasta do proprio script (ver Helpers/logger.py).
-code/codigos/*/logs/
-code/files/logs/
-code/files/relatorios/
-code/files/anbima_data_raw/
-code/files/api_samples/
-code/files/debug/
-code/files/diagnosticos/
-code/files/emails/
+# --- Saida gerada e cache ---
+relatorios/
+cache/
+# So os logs, NAO a pasta do script: ela guarda a skip-list e o template, que sao
+# curados a mao e TEM de ser versionados. Foi assim que 4 parquets de teste foram
+# commitados por engano uma vez.
+codigos/scripts/*/logs/
 
 # --- Ferramentas / editores ---
 .obsidian/
 .vscode/
+.idea/
 __pycache__/
 *.pyc
-.venv/
-venv/
-.playwright/
+*.pyo
 .ipynb_checkpoints/
 
-# Config local do Claude Code (pessoal)
-.claude/settings.local.json
-pv.html
+# --- Restos de banco (o projeto nao usa mais SQLite) ---
+*.db
+*.db-journal
+*.db-wal
 
-# Artefatos ad-hoc de depuracao (respostas de API, coberturas) — nao versionar
-code/files/fianalytics_resposta.json
-code/files/cobertura_fontes.csv
+# --- Claude Code (config local da maquina) ---
+.claude/
