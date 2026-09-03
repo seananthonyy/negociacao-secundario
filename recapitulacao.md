@@ -98,8 +98,10 @@ curva de 02/09 existia e o DI realizado de 02/09 não. Todo papel indexado a CDI
 registrado, não reprovado; a falha é da nossa base, não do ativo" — só não estava
 implementado para esta segunda condição.
 
-**Corrigido:** `SemearCurvaCarryForward` agora confere as duas tabelas. Nos 5 ativos
-reprovados que usei de amostra, 4 voltaram a passar; o gate foi re-rodado na base inteira.
+**Corrigido e re-rodado na base inteira:** os validados voltaram para **2.727**, com
+**0 rebaixados de fato** (1.319 promovidos). Não é o mesmo 2.917 de antes, e não deveria
+ser: o gate novo é mais estrito — ganhou o teste em data passada e o de taxa, que agora é
+default. Os 190 de diferença reprovam de verdade.
 
 **A lição, que virou código:** o `9.9` do CSV não distinguia "a calc levantou" de "a calc
 divergiu" — foi essa indistinção que escondeu o bug por uma rodada inteira. O resumo agora
@@ -138,23 +140,35 @@ a feiura seria permanente.
 
 **Referências de caminho antigo em comentário e docstring** (`Helpers/`, `code/`) — varridas.
 
+**O `make_bundle.py` tinha escapado da faxina inteira.** Três defeitos: o `ROOT` apontava
+para `migracao-banco/`, e o `git ls-files` rodado de lá geraria um bundle **sem código, com
+sucesso**; o `EXCLUIR` deixou de bater no caminho novo e o bundle passou a **empacotar a si
+mesmo**, crescendo ~2 MB por regeração; e `_arquivos_versionados` / `_protegido` / `main`
+violavam duas convenções fechadas. Regenerado e **testado de verdade**: extrai 92 arquivos
+numa pasta limpa, com os 24 scripts, os 37 docs e os 2 notebooks, sem segredo nenhum, e
+todo `.py` extraído compila.
+
+**O `INSTALACAO_BANCO.md` foi apagado na reestruturação e três docs ainda apontavam para
+ele.** Metade dele já era falsa (falava de `code/`, `setup_teste.ipynb`,
+`setup_inicial.ipynb`). Reescrevi o que sobrevive para a estrutura nova e dobrei na Parte A
+do item de migração do backlog — sem criar arquivo fora do plano.
+
 ---
 
 ## 6. Onde continuar
 
 ### Imediato
 
-1. **`git status` e commitar.** Nada foi commitado de propósito: a reestruturação move
-   quase tudo, e você deve revisar antes. Rode
-   `python codigos/scripts/check_no_secrets/check_no_secrets.py` antes de qualquer push.
-   Conferido nesta sessão: o git **não enxerga** `config/.env`,
-   `codigos/helpers/destinatarios.py`, `database/parquets/`, `backups/`, `cache/` nem
-   `relatorios/`.
-2. **Commitar `../calculadora-renda-fixa` à parte.** É outro repositório.
-3. **Regenerar o `migracao-banco/bundle_banco.py`.** Ele empacota a estrutura **antiga** —
-   está defasado e não serve para levar nada ao banco. `make_bundle.py`, depois de commitar.
-4. **Consertar o `scrape_fianalytics_planilha`.** O site mudou. A receita já conhecida:
+1. **Revisar os 4 commits e dar o push.** **Nada foi pushado** — isso é seu. O
+   `check_no_secrets` passa limpo (98 arquivos nos dois repos), e o git **não enxerga**
+   `config/.env`, `codigos/helpers/destinatarios.py`, `database/parquets/`, `backups/`,
+   `cache/` nem `relatorios/`.
+2. **A calculadora tem commit próprio, também sem push.** É outro repositório.
+3. **Consertar o `scrape_fianalytics_planilha`.** O site mudou. A receita já conhecida:
    seletor por texto/role, **nunca por classe CSS** neste site.
+4. **A migração dos dados**, que é o item grande: converter o SQLite de produção do banco
+   em vez de raspar o histórico de novo. O passo a passo de instalação está na Parte A do
+   item de migração do backlog; o conversor é o `migrar_para_parquet`.
 
 ### Decisões que são suas, não do código
 
@@ -184,7 +198,7 @@ NEGSEC_SEM_EMAIL=1 python codigos/scripts/scrape_anbima_ntnb/scrape_anbima_ntnb.
 
 ## 7. O que eu NÃO fiz, de propósito
 
-- **Não commitei nada**, nem aqui nem na calculadora.
+- **Não pushei nada**, nem aqui nem na calculadora. Commitei nos dois; o push é seu.
 - **Não mergeei o branch.**
 - **Não mexi na régua do gate** (`TOL_PU`) nem liguei o `%CDI` na calc local — muda número
   de produção, e é decisão sua.
