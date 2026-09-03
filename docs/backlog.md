@@ -557,19 +557,24 @@ playwright install chromium
 
 **Passo 2 — segredos.** São lidos por `config.ObterSegredo()`, que resolve pelo bloco
 `[env]` do `config.toml` (só nomes de variável, nunca valores). No banco eles vêm de
-variáveis de ambiente da conta, e o `.env` não é necessário:
+variáveis de ambiente da conta, e o `.env` não é necessário. **Confirmado em 03/09/2026:
+as seis já existem lá.**
 
-| segredo | variável | situação no banco |
-|---|---|---|
-| Token B3 Calculator | `token_calc_B3` | já existe |
-| API key FI Analytics | `token_fianalytics` | já existe |
-| Login FI Analytics | `user_fianalytics` | **criar** |
-| Senha FI Analytics | `password_fianalytics` | **criar** |
-| Proxy | `proxy_http`, `proxy_https` | já existem |
-| Pasta da calculadora | `CALCULADORA_DIR` | só se ela não for irmã da raiz |
+| segredo | variável |
+|---|---|
+| Token B3 Calculator | `token_calc_B3` |
+| API key FI Analytics | `token_fianalytics` |
+| Login FI Analytics | `user_fianalytics` |
+| Senha FI Analytics | `password_fianalytics` |
+| Proxy | `proxy_http`, `proxy_https` |
+| Pasta da calculadora | `CALCULADORA_DIR` — só se ela não for irmã da raiz |
 
-`setx user_fianalytics "..."` e depois **feche e reabra o terminal** — variável nova só
-aparece em processo novo.
+Se algum dia faltar uma: `setx nome "valor"` e depois **feche e reabra o terminal** —
+variável nova só aparece em processo novo. Para conferir todas de uma vez:
+
+```powershell
+python -c "import sys; sys.path.insert(0,'codigos/helpers'); from config import ObterSegredo; print({k: bool(ObterSegredo(k)) for k in ('b3CalcToken','fianalyticsApiKey','fianalyticsUser','fianalyticsPass')})"
+```
 
 **Passo 3 — emails.** Copie `codigos/helpers/destinatarios.example.py` para
 `destinatarios.py` e preencha. `NEGSEC_SEM_EMAIL=1` desliga o Outlook e grava o corpo em
