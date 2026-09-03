@@ -1,179 +1,223 @@
-# Projeto: Relatório Diário de Negociação Secundária de Crédito Privado
+# Relatório Diário de Negociação Secundária — Crédito Privado
 
-Este projeto gera relatórios HTML diários de negócios de crédito privado brasileiro (Debêntures, CRIs, CRAs) consolidando dados da B3, FI Analytics e Anbima.
+Gera um relatório HTML diário dos negócios de crédito privado brasileiro (debêntures,
+CRIs e CRAs), consolidando B3, Anbima, FI Analytics, IBGE, BCB e Bloomberg.
 
-> ▶️ **RETOMANDO O TRABALHO? Leia `RETOMAR_AQUI.md` na raiz.** É o handoff da última
-> sessão: onde o projeto parou, o que mudou nos números e por quê, o que fazer a seguir, e
-> as armadilhas da camada de dados nova.
+---
 
-> 🚧 **LEIA PRIMEIRO — branch `refactor/split-bases` (31/08/2026).** Ele reorganizou a
-> estrutura de pastas e trocou o armazenamento de SQLite por **Parquet + DuckDB** (os dados
-> vão para a AWS: bucket S3 + Athena, sem banco SQL). **A conversão está completa**: os 21
-> scripts, os três notebooks e o `tests_fase1.py` falam Parquet, e o `db.py` foi aposentado.
-> O branch **ainda não foi mergeado** e falta o acesso à AWS (depende de Quant/TI).
-> **Leia `vault/17 - Armazenamento Parquet e AWS.md` antes de tocar em qualquer código.**
-> Partes do vault ainda descrevem o `main` e estão marcadas.
+## 1. O que o projeto faz
 
-> **Instalando/migrando para o PC do banco?** Se o usuário pedir "me diga o que fazer" / "como instalo isto", siga o runbook **`INSTALACAO_BANCO.md`** (raiz) — passo a passo de pastas, dependências, segredos, teste de fluxos e montagem da base. Contexto da migração em `vault/13 - Migracao Banco.md`.
+A pergunta que ele responde é: **o que negociou ontem, a que preço, e caro ou barato
+em relação a quê?**
 
-## Documento mestre
+Nenhuma fonte responde isso sozinha. A B3 publica os negócios, mas sem taxa na maioria
+deles — só preço. Transformar preço em taxa exige conhecer o papel: fluxo de pagamentos,
+indexador, valor nominal. Esse cadastro está espalhado entre B3, Anbima e FI Analytics,
+cada uma com convenção diferente. E para saber se a taxa é alta ou baixa é preciso
+compará-la com uma curva de referência — NTN-B para papel IPCA, contrato DI para
+prefixado — que vem de outras fontes ainda.
 
-**Toda decisão de projeto está em `PLANEJAMENTO_v5.md` na raiz.** Leia esse arquivo antes de qualquer ação. É a fonte da verdade.
+Então, todo dia, nesta ordem:
 
-**Para contexto técnico rápido (arquitetura, dicionário de dados do banco, mapa do motor de cálculo): `CONTEXTO_PROJETO.md` na raiz.** Foi escrito para ser colado inteiro como contexto e é verificado contra o código. O `guia_projeto.html` é a mesma informação em formato visual, para leitura humana.
+1. **Baixa os negócios** do Boletim Diário da B3, um a um.
+2. **Busca o cadastro** de cada papel que negociou. A B3 é primária; a Anbima cobre o resto.
+3. **Valida se consegue precificar** cada papel: roda a calculadora local e confere se
+   ela reproduz o que a B3 ou a FI devolvem. Só quem passa é precificado localmente.
+4. **Calcula a taxa de cada negócio** — direta do boletim quando vem, senão pela calc
+   local, senão por API.
+5. **Filtra duplicados** — passagem de fundo e operação de corretor aparecem duas vezes.
+6. **Calcula o PU par** de cada ativo que negociou, para o `%par` do relatório.
+7. **Casa cada papel com uma referência** de curva, por duration, e calcula o spread.
+8. **Gera o relatório HTML** com seis abas.
 
-## Estrutura
+### Duas convicções que explicam quase toda decisão do projeto
+
+**Errado em silêncio é pior que quebrado.** Um script que roda, sai com sucesso e grava
+número errado custa semanas até alguém notar. Por isso os caminhos são ancorados na raiz
+e não no diretório atual; o leitor de feriados levanta em vez de devolver conjunto vazio;
+a calculadora recusa calcular sem projeção em vez de inventar; e negócio sem
+identificador é descartado em vez de guardado.
+
+**Fonte também apodrece.** Cadastro que a B3 publicou hoje pode estar aditado amanhã.
+Por isso o gate revalida periodicamente, o fluxo tem refresco por idade, e o boletim
+marca como cancelado o negócio que sumiu numa re-raspagem.
+
+---
+
+## 2. Onde as coisas moram
 
 ```
-negociacao-secundario/
-├── code/                    <- é a pasta "z antoniooliveira" no PC do banco
-│   ├── Helpers/             Módulos compartilhados (era lib/). Achatado: `from db import X`
-│   │   ├── dados.py         ★ A CAMADA DE DADOS: Parquet + DuckDB (substitui o db.py)
-│   │   ├── config.py        Lê files/config.toml; ANCORA todo [paths] na raiz
-│   │   ├── cadastro_b3.py   Leitura do getBondDetails (dois donos: scraper e validador)
-│   │   ├── pipeline_core.py Orquestrador (resolve codigos/<n>/<n>.py)
-│   │   ├── datas.py         Dias uteis + feriados Anbima (fonte unica; era copiado 4x)
-│   │   └── calc.py, logger.py, email_outlook.py, b3_calc_api.py, fianalytics_api.py
-│   ├── files/
-│   │   ├── config.toml, .env
-│   │   ├── Database/        ipca.db, di.db, feriados_anbima.csv — os 3 que a CALC lê,
-│   │   │                    e ela exige os três na MESMA pasta (CALCRF_FILES_DIR)
-│   │   ├── Parquet/         ★ A BASE. [dados] raiz — vira "s3://bucket/..." no banco
-│   │   ├── templates/, relatorios/, anbima_data_raw/, logs/, emails/
-│   ├── codigos/<script>/    Uma pasta por código: <script>.py + logs/ dentro
-│   └── requirements.txt
-├── vault/                   Obsidian — fonte da verdade viva do projeto
-└── .claude/agents/          Subagents customizados (coder, documenter)
+<raiz>/                          irmã de calculadora-renda-fixa/
+├── CLAUDE.md                    este arquivo
+├── recapitulacao.md             onde paramos na última sessão
+├── requirements.txt
+│
+├── config/                      config.toml · .env (não versionado) · .env.example
+│
+├── codigos/
+│   ├── helpers/                 13 módulos compartilhados
+│   └── scripts/<nome>/          <nome>.py · logs/ · dados do próprio script
+│
+├── docs/
+│   ├── base-de-dados.md         schema das tabelas, colunas, tipos, relações
+│   ├── pipeline.md              ordem de execução e argumentos
+│   ├── backlog.md · fontes.md · credenciais.md
+│   ├── codigos/<nome>.md        um por script
+│   └── helpers/<nome>.md        um por helper
+│
+├── database/
+│   ├── parquets/                A BASE — vira "s3://bucket/..." no banco
+│   └── arquivos/                feriados_anbima.csv
+│
+├── migracao-banco/              make_bundle.py · bundle_banco.py
+├── relatorios/                  HTML final
+├── cache/<script>/              saída descartável: emails, JSON cru, CSV de debug
+├── backups/                     só o IPCA projetado, que não é reconstituível
+└── rotinas/                     teste-debug.ipynb · run-pipeline-diario.ipynb
 ```
 
-**Cada código roda sozinho, de qualquer diretório.** Nenhum script importa outro; o que é
-compartilhado vive em `Helpers/`. Os `[paths]` são ancorados na raiz do projeto, não no cwd.
+**Cada script roda sozinho, de qualquer diretório.** Nenhum script importa outro; o que
+é compartilhado vive em `codigos/helpers/`. Os `[paths]` são ancorados na raiz do
+projeto, nunca no cwd.
 
-## Calculadora de renda fixa (projeto vizinho)
+---
 
-`D:\ItauBBA\calculadora-renda-fixa` é a **biblioteca de cálculo** (precifica: VNA, PU Par, PU de operação, duration). **Não modificar `calculadora_rf.py` sem permissão explícita do usuário.**
+## 3. A camada de dados
 
-Desde 12/07/2026, **este** projeto roda as rotinas de dados que ela consome (IPCA, projeção de IPCA, DI, curva DI) e valida o fluxo dos ativos que ela pode precificar. Os bancos `files/Database/ipca.db` e `di.db` são nossos; o schema deles é **contrato com a calc** (não segue o prefixo `vr/cd/dt` — não renomear). Import via `Helpers/calc.py`. Ver **[[14 - Rotinas da Calculadora]]** no vault.
+`codigos/helpers/dados.py` é o centro. O armazenamento é **Parquet**, o motor de consulta
+é **DuckDB** — uma biblioteca, não um servidor. O SQLite saiu porque os dados precisam
+viver na AWS, onde há bucket S3 + Athena e nenhum banco SQL.
 
-⚠️ **`ipca.db`, `di.db` e `feriados_anbima.csv` têm de ficar na MESMA pasta** — a calc lê os
-três de `CALCRF_FILES_DIR`, pelo nome do arquivo. Apontar para o lugar errado **não dá erro**:
-o SQLite cria um `ipca.db` vazio lá e a calc passa a rodar sem série de IPCA. Já aconteceu
-(29/08) e contaminou uma rodada inteira de `match_referencias`.
+**O SQL não mudou:** as views do DuckDB têm o nome das tabelas antigas. Onde os arquivos
+moram é **uma linha** do config (`[dados] raiz`): pasta local hoje, `s3://` no banco.
 
-## Agentes customizados
+| natureza | tabelas | como se escreve |
+|---|---|---|
+| **SÉRIE** (particionada por data) | `NegociosBrutos`, `NegociosProcessados`, `AnbimaIndicativos`, `PuPar` | reescreve **o dia inteiro** |
+| **ESTADO** (arquivo único) | `InfoAtivos`, `FluxoAtivos`, `MtmAnbima`, `Outstanding`, `IPCA`, `IPCAProjetado`, `DiHistorico`, `CurvaDi` | reescreve o arquivo inteiro |
 
-- **coder** — implementa scripts em `code/codigos/<nome>/` e módulos em `code/Helpers/`. Lê o vault para contexto.
-- **documenter** — mantém o vault Obsidian sincronizado com o código atual. Atualiza notas em `vault/` conforme o coder progride.
+Não existe UPDATE em disco. Reprocessar uma data é **trocar a partição**.
 
-Use `/agents` no Claude Code pra ver/invocar.
+### Regras que, esquecidas, causam bug silencioso
 
-## Convenções fechadas (não revisitar sem motivo forte)
+- **Tipo de coluna é declarado, nunca inferido** (`ESQUEMA`). Coluna toda NULL num dia
+  seria inferida como tipo `null` e quebraria a leitura das outras partições.
+- **Escrita parcial vai por `Mesclar()`**, com política por coluna (`SOBRESCREVER` /
+  `PREFERIR_NOVO` / `PREFERIR_ATUAL`). É o `ON CONFLICT DO UPDATE` do SQLite.
+  **`Upsert()` troca a linha inteira** e só serve a quem é dono de todas as colunas.
+- **Grave em LOTE, nunca por ativo** — `InfoAtivos` e `FluxoAtivos` são arquivos únicos.
+- **Evoluir o `ESQUEMA` exige `Reconformar(tabela)`**: a view é `SELECT *` sobre os
+  parquets, então coluna nova não existe até alguém reescrever os arquivos.
+- **Não use `SUM()` de float como checksum de regressão.** Reconformar deu diferença de
+  R$ 0,01 em R$ 163 bi — ordem de acumulação, não perda. A conferência certa é diferença
+  simétrica linha a linha.
 
-- **Python 3.11+**, sem venv, sem tests automatizados
-- **Armazenamento: Parquet + DuckDB** (`Helpers/dados.py`), em `files/Parquet/` ou num
-  `s3://` — é **uma linha** do `config.toml` (`[dados] raiz`). O SQLite saiu: os dados
-  precisam viver na AWS e lá só há bucket + Athena. Ver [[17 - Armazenamento Parquet e AWS]].
-  - **O SQL continua o mesmo** — as views do DuckDB têm o nome das tabelas antigas.
-  - Tabela **SÉRIE** (particionada por data) reescreve o dia inteiro; tabela **ESTADO**
-    (`InfoAtivos`, `FluxoAtivos`) reescreve o arquivo inteiro. Não existe UPDATE em disco.
-  - **Tipo de coluna é declarado, nunca inferido** (`ESQUEMA` em `dados.py`): coluna toda
-    NULL num dia seria inferida como tipo `null` e quebraria a leitura das outras partições.
-  - **Escrita parcial vai por `Mesclar()`**, com política por coluna (`SOBRESCREVER` /
-    `PREFERIR_NOVO` / `PREFERIR_ATUAL`) — é o `ON CONFLICT DO UPDATE` do SQLite. `Upsert()`
-    troca a linha inteira e só serve a quem é dono de todas as colunas.
-  - **Grave em LOTE, nunca por ativo:** `InfoAtivos` e `FluxoAtivos` são arquivos únicos.
-  - `ipca.db` e `di.db` seguem SQLite — são **contrato com a calculadora**, não nossos.
-- **Chave dos negócios: `cdIdentificadorNegocio`** (a que a B3 manda). O `idTrade`
-  (`AUTOINCREMENT`) morreu com o SQLite — fora dele ninguém gera esse número.
-  ⚠️ O `PLANEJAMENTO_v5.md` ainda cita `idTrade` em 12 lugares — é texto histórico.
-- **Paths ancorados na raiz do projeto**, nunca no cwd (`AncorarPaths` em `Helpers/config.py`).
-  Antes eram relativos ao cwd: rodar um script de outra pasta fazia o SQLite criar um banco
-  vazio ali e o script terminava "com sucesso", sobre nada. (O SQLite saiu, mas a âncora
-  continua valendo — sem ela o Parquet nasceria numa raiz errada, com o mesmo silêncio.)
-- **Tabelas**: PascalCase e **em português** (`NegociosBrutos`, `NegociosProcessados`, `InfoAtivos`, `FluxoAtivos`)
-- **Colunas**: camelCase com prefixos `vr` (valor), `cd` (código/categoria), `dt` (data/hora), `id` (identificador)
-- **Nomes de arquivo de script**: snake_case, sem prefixo numérico (`scrape_b3_boletim.py`, não `01_scrape_...`). Nome de arquivo é a **única** coisa em snake_case.
-- **Um código, uma pasta**: `codigos/<nome>/<nome>.py`, com o `logs/` dentro. Cada um roda
-  sozinho, de qualquer diretório. **Nenhum script importa outro** — o que dois precisam vai
-  para `Helpers/` (foi o caso do `cadastro_b3.py`).
-- **Email**: `NEGSEC_SEM_EMAIL=1` no ambiente roda qualquer script sem tocar no Outlook,
-  gravando o corpo em `files/emails/`. Usar sempre em teste e em rodada de lote.
-- **Python funções e classes**: PascalCase, **em português** (`LerArgumentos`, `ProcessarData`, `MontarUrl`, `AnalisarCsv`, `Principal`)
-- **Python variáveis e parâmetros**: camelCase, em português (`dtRef`, `cdTicker`, `anbimaRows`, `limiteTrades`)
-- **Constantes de módulo**: UPPER_SNAKE (`SQL_UPSERT`, `MESES_PT`) — o `_` **interno** é permitido
-- **NUNCA `_` no início de nome nenhum** (nem função "privada", nem constante, nem variável). `_ParseArgs`, `_SQL_UPSERT`, `_smoke` são todos proibidos.
-- **Exceções que ficam em inglês**: jargão de mercado (`vrSpreadOver`, `vrDuration`, `vrPU`, `cdISIN`, `Mtm*`, `Outstanding`, `Broker`, `Yield`), API de terceiros (`parse_args`, `status_code`, `format_exc`), nomes de módulo/arquivo, e **chaves de contrato** (colunas do banco, variáveis do template Jinja como `data_json`).
-- **`dest=` explícito no argparse** sempre que a flag tiver hífen (`--email-dia` → `dest="emailDia"`), senão o argparse gera `email_dia` em snake_case e quebra a convenção — e o mismatch só aparece em runtime.
-- **Sem CHECK constraints** no schema
-- **Cada script é independente**, idempotente, com CLI próprio (`--date` ou `--start --end`)
-- **Email no fim de cada script** via Outlook (`pywin32`), sucesso ou erro
-- **Filtro de duplicados**: union-find, status só `PRIMARY` ou `DUPLICATE`
-- **Cascata de taxa** (19/07/2026): taxa direta do boletim → **calc local** (`[calc].usarCalcTaxa=true`, só `stFluxoValidado=1` e indexador em `["CDI+","IPCA","PREFIXADO"]`) → FI Analytics → B3 → NULL (só Deb/CRI/CRA). A confiança da calc é garantida pelo gate **`validar_calc_b3`** (passo 13 do pipeline). **%CDI e não-validados seguem em FI→B3.** ⚠️ **A justificativa do %CDI foi re-medida em 01/09/2026 e não se sustenta mais**: em 40 ativos de maior volume, a taxa da calc reproduz a B3 com mediana de 0,05 bps e pior caso de 0,46 bps (40/40 dentro de 1 bp). O que os reprova é a régua de PU (`TOL_PU = 1e-5`), mais apertada em termos econômicos que a própria `TOL_TAXA_BPS = 5,0` do mesmo gate. Decisão pendente do usuário — ver o backlog. Ver [[16 - Confianca nos Validados (WIP)]] e [[14 - Rotinas da Calculadora]].
-- **Cadastro dos ativos**: a **B3** (`getBondDetails`) é a fonte **primária**; a Anbima Data é fallback, só para o que negociou e a B3 não cobriu. `vrVNE` + `dtInicioRentabilidade` + `FluxoAtivos` são um **pacote indivisível** por ativo — a coluna `cdFonteCadastro` diz de quem é, e misturar as duas fontes conta a carência duas vezes, em silêncio.
-- **Match de referência** (`IPCA→NTN-B`, `PREFIXADO→DI1`): script separado (`match_referencias.py`), sem args — roda idempotente sobre a base toda a cada ciclo do pipeline. Duration-match data-exata contra `MtmAnbima`; não sobrescreve refs da Anbima (`cdFonteReferencia='Anbima'`)
-- **Relatório agrupa por `dtLiquidacao`**, não `dtNegocio`
-- **O relatório geral inclui o pregão de HOJE, marcado como PRÉVIA** (01/09/2026). Ele é meio
-  dia de dado — a perna D+1 do pregão anterior fechou, a do pregão em curso não. O selo viaja
-  no payload (`dtPrevia`) e aparece no banner do topo, na opção do seletor do Boletim e no
-  email do dia; `--sem-previa` volta ao corte em D-1. Mesma paleta do `badge-previa` que o
-  relatório diário (`--mode previa`) já usava.
-- **PU par e %par** (02/09/2026). A tabela **`PuPar`** guarda o PU par por **(ativo, data)**,
-  escrita pelo `calc_pu_par` logo depois do `filtrar_trades`, em cascata
-  **calc local → B3 → FI**. O **`%par` do negócio NÃO é gravado** — sai na leitura do
-  relatório (`vrPU / vrPuPar × 100`), para que corrigir um cadastro não deixe um %par velho
-  de pé sobre um denominador descartado.
-  - **A chave inclui a data porque o PU par acreta todo dia útil.** Reusar um valor por
-    alguns dias injeta erro sistemático (mediana 0,368% em 7 dias úteis, medido em 249
-    ativos) e ignora evento de fluxo na janela (5% dos ativos negociados; o MATD23
-    amortizou 100%). Indexar por data também é **mais barato**: cada par se calcula uma vez.
-  - **Idempotente:** par `(ticker, data)` que existe não é recalculado nem consultado em API.
-    Quem invalida é `dados.DescartarPuPar`, chamado de dentro do `Mesclar`/`Sincronizar*`.
-  - **Papel que sai do cadastro** (emissor perto do default): as calculadoras removem o
-    título e o mercado passa a usar o **último PU par conhecido**, em *cents on the dollar*.
-    A leitura pega o último com `dtReferencia <= dtLiquidacao` e mostra a **idade**. Não há
-    status "congelado" gravado — a idade é o status (`PREGOES_CONGELADO = 5`).
-  - TODOS os indexadores, **%CDI inclusive**: no par não há desconto envolvido. A coluna
-    `% PU Par` da FI Analytics **não** serve de fonte — numerador e denominador diferentes.
-- **Dias úteis e feriados vêm de `Helpers/datas.py`** — e ele LEVANTA se o CSV faltar, em vez
-  de devolver conjunto vazio (o que faria todo sábado virar pregão, em silêncio).
-- **Evoluir o `ESQUEMA` exige `dados.Reconformar(tabela)`**: a view é `SELECT *` sobre os
-  parquets, então coluna nova não existe até alguém reescrever os arquivos, e todo `Ler()`
-  quebra com "column not found" nesse meio-tempo.
+O que era **trigger no banco** virou código dentro do `Mesclar()`: mudança de cadastro ou
+de fluxo zera `stFluxoValidado` **e descarta o `PuPar`** do ativo. Mora ali porque
+`InfoAtivos` tem cinco escritores e bastava um esquecer.
 
-## Estado atual
+### As quatro tabelas da calculadora
 
-**Branch `refactor/split-bases`, não mergeado. A conversão para Parquet está COMPLETA.**
-O detalhe está em **`vault/17 - Armazenamento Parquet e AWS.md`** — leia antes de continuar.
-Resumo: `Helpers/dados.py` é a camada de dados, a base real vive em `files/Parquet`
-(1.582.200 linhas, 388 MB → 41,6 MB), e nada mais fala SQLite fora do `ipca.db`/`di.db`.
+`IPCA`, `IPCAProjetado`, `DiHistorico` e `CurvaDi` eram `ipca.db` e `di.db`. Viraram
+Parquet em 03/09/2026. **Os nomes de coluna delas são contrato com a `calculadora_rf`** e
+por isso não seguem o prefixo `vr`/`cd`/`dt` — renomear qualquer um quebra a precificação
+inteira, em silêncio.
 
-- **O trigger `trgInfoAtivosInvalidaFluxo` virou código**, dentro de `dados.Mesclar()` — e
-  mora lá pelo mesmo motivo que morava no banco: é o único caminho de escrita coluna a
-  coluna de `InfoAtivos`, então nenhum dos cinco escritores pode esquecer.
-- **Teste de aceitação:** o relatório geral sai em **34 pregões, 2.568 ativos,
-  R$ 52.315,17 MM**. Esse número **não** é o R$ 53.265,83 MM que o vault citava antes — ele
-  mudou três vezes, por motivo verificado. A tabela com os três passos está em
-  `RETOMAR_AQUI.md` §4.
+A calc as lê por `CALCRF_PARQUET_DIR`; o `feriados_anbima.csv` continua arquivo e vai por
+`CALCRF_FILES_DIR`. Quem seta as duas é o `codigos/helpers/calc.py`.
 
-Veja `vault/09 - Progresso.md` para saber em que fase está a implementação e o que falta.
+---
 
-Veja `vault/98 - Backlog.md` para itens pendentes de decisão. **Leia e mencione ao usuário no início de cada sessão se houver itens relevantes ao trabalho em curso.**
+## 4. Convenções fechadas
 
-## Workflow de implementação
+Não revisitar sem motivo forte.
 
-O projeto é dividido em **fases** (uma por script principal). Em cada fase:
+- **Python 3.11+**, sem venv.
+- **Funções e classes: PascalCase, em português** (`ProcessarData`, `MontarUrl`).
+- **Variáveis e parâmetros: camelCase, em português** (`dtRef`, `cdTicker`, `limiteTrades`).
+- **Constantes de módulo: UPPER_SNAKE** (`TOL_PU`, `MESES_PT`) — `_` interno é permitido.
+- **NUNCA `_` no início de nome nenhum.** Nem função "privada", nem constante, nem
+  variável, nem em JavaScript de template.
+- **Tabelas: PascalCase, em português.** **Colunas: camelCase** com prefixo `vr` (valor),
+  `cd` (código), `dt` (data), `id` (identificador), `st` (status).
+- **Nome de arquivo de script: snake_case**, sem prefixo numérico. É a única coisa em
+  snake_case.
+- **Ficam em inglês:** jargão de mercado (`vrSpreadOver`, `vrDuration`, `vrPU`, `cdISIN`,
+  `Outstanding`), API de terceiros (`parse_args`, `status_code`), nomes de módulo, e
+  chaves de contrato (colunas da base, variáveis do template Jinja como `data_json`).
+- **`dest=` explícito no argparse** sempre que a flag tiver hífen (`--email-dia` →
+  `dest="emailDia"`) — senão o argparse gera snake_case e o mismatch só aparece em runtime.
+- **Cada script é independente e idempotente**, com CLI próprio (`--date` ou `--start --end`).
+- **Email no fim de cada script**, sucesso ou erro. `NEGSEC_SEM_EMAIL=1` desliga o Outlook
+  e grava o corpo em `cache/emails/` — **usar sempre em teste e em rodada de lote.**
+- **Chave dos negócios: `cdIdentificadorNegocio`**, a que a B3 manda. O `idTrade`
+  (`AUTOINCREMENT`) morreu com o SQLite.
+- **Sem CHECK constraints** no schema.
 
-1. Coder lê PLANEJAMENTO_v5.md + notas relevantes do vault
-2. Coder implementa o script + dependências em `lib/`
-3. Documenter atualiza as notas do vault e o Progresso.md
-4. Usuário revisa, aprova, próxima fase
+### Regras de negócio que atravessam vários scripts
 
-## Como começar
+- **Cadastro:** a B3 (`getBondDetails`) é a fonte **primária**; a Anbima é fallback por
+  demanda. `vrVNE` + `dtInicioRentabilidade` + `FluxoAtivos` são um **pacote indivisível**
+  por ativo — `cdFonteCadastro` diz de quem é, e misturar as duas fontes conta a carência
+  duas vezes, em silêncio.
+- **Cascata de taxa:** taxa direta do boletim → **calc local** (só `stFluxoValidado = 1`
+  e indexador em `["CDI+","IPCA","PREFIXADO"]`) → FI Analytics → B3 → NULL.
+- **%par:** `vrPU / vrPuPar × 100`, **calculado na leitura**, nunca gravado. O `vrPuPar`
+  vem da tabela `PuPar`, indexada por **(ativo, data)** — o PU par acreta todo dia útil.
+- **Filtro de duplicados:** union-find; status `VALIDO`, `BROKER`, `FUNDO` ou `PF`.
+- **Match de referência** (`IPCA→NTN-B`, `PREFIXADO→DI1`): script separado, sem args,
+  idempotente sobre a base toda.
+- **Relatório agrupa por `dtLiquidacao`**, não `dtNegocio`, e **inclui o pregão de hoje
+  marcado como PRÉVIA** (é meio dia de dado; o selo aparece em toda aba).
 
-**Retomando de uma sessão anterior** (o caso normal hoje), diga:
-**"Leia `RETOMAR_AQUI.md`, `vault/17 - Armazenamento Parquet e AWS.md` e
-`vault/98 - Backlog.md`. Depois me diga o que você faria primeiro."**
+---
 
-Para uma fase nova do zero: **"Leia PLANEJAMENTO_v5.md e vault/09 - Progresso.md, depois proponha a próxima fase de implementação"**.
+## 5. A calculadora de renda fixa (projeto vizinho)
 
-Se for a primeira vez (vault ainda vazio), diga: **"Despache o documenter para popular o vault baseado em PLANEJAMENTO_v5.md, depois comece a Fase 1 com o coder"**.
+`../calculadora-renda-fixa` é a **biblioteca de cálculo** (VNA, PU par, PU de operação,
+duration). **Não modificar `calculadora_rf.py` sem permissão explícita do usuário.**
+
+Este projeto roda as rotinas de dados que ela consome (IPCA, projeção de IPCA, DI, curva
+DI) e valida o fluxo dos ativos que ela pode precificar. Import via
+`codigos/helpers/calc.py`, que é o **único** módulo que sabe onde ela está instalada.
+
+⚠️ **A calc recusa calcular sem a projeção da data** — levanta `ValueError` em vez de
+inventar número. É o comportamento certo: foi ele que deixou 825 ativos sem `vrPuPar` em
+vez de dar-lhes um denominador falso.
+
+---
+
+## 6. Como trabalhar neste projeto
+
+**Sempre que alterar código, atualize o `.md` correspondente.** Um documento que descreve
+o que o código já não faz é pior que documento nenhum.
+
+- `docs/codigos/<script>.md` — Overview · Regras de negócio · CLI · Interação com a base ·
+  Detalhes técnicos · **Armadilhas**
+- `docs/helpers/<helper>.md` — Overview · API pública · Invariantes · Quem consome ·
+  **Armadilhas**
+
+A seção **Armadilhas** é onde mora o conhecimento mais caro do projeto: o que falha em
+silêncio e como perceber. Se o script não tem armadilha conhecida, escreva isso — não
+deixe a seção vazia.
+
+**Ao terminar uma sessão, atualize o `recapitulacao.md`**: onde paramos, o que mudou nos
+números e por quê, o que fazer a seguir.
+
+**Ao validar mudanças, rode o relatório geral** e compare com o número de aceitação. Não
+rode o pipeline de rede inteiro só para conferir código.
+
+**Antes de qualquer `git push`:** `python codigos/scripts/check_no_secrets/check_no_secrets.py`.
+
+---
+
+## 7. Estado atual
+
+**Branch `refactor/split-bases`.**
+
+Teste de aceitação do relatório, medido sobre a base até 28/07/2026: **34 pregões ·
+2.568 ativos · R$ 52.315,17 MM**. É contra esse número que se confere uma mudança que
+não deveria mexer em nada.
+
+Itens abertos em `docs/backlog.md`. **Leia e mencione ao usuário no início de cada sessão
+se houver item relevante ao trabalho em curso.**
