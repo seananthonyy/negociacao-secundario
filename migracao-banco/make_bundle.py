@@ -14,20 +14,26 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).parent
-OUT = ROOT / "bundle_banco.py"
-EXCLUIR = {"bundle_banco.py"}  # nunca empacota a si mesmo
+# ROOT e a RAIZ DO PROJETO, nao a pasta deste script. `git ls-files` rodado de dentro
+# de migracao-banco/ listaria so os arquivos dessa pasta, e o bundle sairia vazio de
+# codigo — falha silenciosa, porque ele seria gerado com sucesso.
+ROOT = Path(__file__).resolve().parents[1]
+OUT = Path(__file__).parent / "bundle_banco.py"
+# Nunca empacota a si mesmo. O caminho e relativo a ROOT (a raiz do projeto), entao
+# tem de incluir a pasta: sem isso o bundle cresce ~2 MB a cada regeracao, empacotando
+# a versao anterior de si mesmo dentro da nova.
+EXCLUIR = {"migracao-banco/bundle_banco.py"}
 
 
-def _arquivos_versionados() -> list[str]:
+def ArquivosVersionados() -> list[str]:
     saida = subprocess.run(
         ["git", "ls-files"], cwd=str(ROOT), capture_output=True, text=True, check=True
     ).stdout
     return [p for p in saida.splitlines() if p and p not in EXCLUIR]
 
 
-def main() -> None:
-    arquivos = _arquivos_versionados()
+def Principal() -> None:
+    arquivos = ArquivosVersionados()
     linhas = [
         '"""',
         "bundle_banco.py — AUTO-EXTRAÍVEL. Baixe só este arquivo e rode:",
@@ -61,7 +67,7 @@ def main() -> None:
         "# sobrevive no banco e continua executavel (foi o caso do validar_fluxos).",
         "VARRER = ('codigos/scripts', 'codigos/helpers')",
         "",
-        "def _protegido(path):",
+        "def Protegido(path):",
         "    return any(path == p or path.endswith('/' + p) or path.endswith(p)",
         "               for p in PROTEGIDOS)",
         "",
@@ -76,10 +82,10 @@ def main() -> None:
     linhas += [
         "}",
         "",
-        "def main():",
+        "def Principal():",
         "    escritos, preservados, mesclar, apagados = 0, [], [], []",
         "    for path, b64 in FILES.items():",
-        "        if _protegido(path) and os.path.exists(path):",
+        "        if Protegido(path) and os.path.exists(path):",
         "            preservados.append(path)",
         "            continue",
         "        destino = path",
@@ -96,7 +102,7 @@ def main() -> None:
         "    for pasta in VARRER:",
         "        if not os.path.isdir(pasta):",
         "            continue",
-        "        for raiz, _dirs, arqs in os.walk(pasta):",
+        "        for raiz, dirs, arqs in os.walk(pasta):",
         "            for nome in arqs:",
         "                if not nome.endswith('.py'):",
         "                    continue",
@@ -113,10 +119,11 @@ def main() -> None:
         "    if apagados:",
         "        print(f'Removidos (sairam do projeto): {apagados}')",
         "    print('Seu trades.db (se existir) NAO foi tocado.')",
-        "    print('Proximo passo: leia INSTALACAO_BANCO.md (ou peca ao Claude).')",
+        "    print('Proximo passo: preencha config/.env (modelo em .env.example) e leia')",
+        "    print('  docs/credenciais.md. O CLAUDE.md tem o mapa do projeto.')",
         "",
         "if __name__ == '__main__':",
-        "    main()",
+        "    Principal()",
         "",
     ]
     OUT.write_text("\n".join(linhas), encoding="utf-8")
@@ -125,4 +132,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    Principal()

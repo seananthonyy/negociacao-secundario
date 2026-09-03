@@ -535,12 +535,56 @@ distintas** que sempre andaram juntas nesta nota: o **ambiente** (instalar e rod
 
 ### Parte A — ambiente
 
-Instalação de dependências (Python, Playwright, pacotes), ajuste de paths, variáveis de
-ambiente (`.env`), acesso às fontes (B3, Anbima, FI Analytics — verificar bloqueios de
-proxy/firewall), permissões de Outlook (`pywin32`) e ajuste de credenciais.
+O `INSTALACAO_BANCO.md` que guardava isto **foi apagado na reestruturação de 03/09**, e com
+razão: metade dele descrevia `code/`, `setup_teste.ipynb` e `setup_inicial.ipynb`, que não
+existem mais. Documento que descreve o que o código já não faz é pior que documento nenhum.
+O que sobrevive, atualizado, está aqui.
 
-O passo a passo já existe: **`INSTALACAO_BANCO.md`** na raiz. O que continua pendente é
-levantar as restrições reais do ambiente (proxy, Python disponível, permissão de instalação).
+**Passo 0 — levar os arquivos.** Dois repositórios, dois downloads. Deste projeto basta o
+`migracao-banco/bundle_banco.py`: baixe só ele, rode `python bundle_banco.py` numa pasta
+nova e ele recria a árvore. Ele **se recusa a sobrescrever** `*.db`, `.env`,
+`destinatarios.py` e a skip-list, e o `config.toml` existente sai ao lado como
+`config.toml.novo` — então é seguro rodar por cima de uma instalação anterior. A
+calculadora vai à parte, e as duas pastas precisam ser **irmãs** (ou aponte
+`[paths] calculadoraDir`).
+
+**Passo 1 — Python e dependências.** Da raiz:
+
+```powershell
+pip install -r requirements.txt
+playwright install chromium
+```
+
+**Passo 2 — segredos.** São lidos por `config.ObterSegredo()`, que resolve pelo bloco
+`[env]` do `config.toml` (só nomes de variável, nunca valores). No banco eles vêm de
+variáveis de ambiente da conta, e o `.env` não é necessário:
+
+| segredo | variável | situação no banco |
+|---|---|---|
+| Token B3 Calculator | `token_calc_B3` | já existe |
+| API key FI Analytics | `token_fianalytics` | já existe |
+| Login FI Analytics | `user_fianalytics` | **criar** |
+| Senha FI Analytics | `password_fianalytics` | **criar** |
+| Proxy | `proxy_http`, `proxy_https` | já existem |
+| Pasta da calculadora | `CALCULADORA_DIR` | só se ela não for irmã da raiz |
+
+`setx user_fianalytics "..."` e depois **feche e reabra o terminal** — variável nova só
+aparece em processo novo.
+
+**Passo 3 — emails.** Copie `codigos/helpers/destinatarios.example.py` para
+`destinatarios.py` e preencha. `NEGSEC_SEM_EMAIL=1` desliga o Outlook e grava o corpo em
+`cache/emails/` — use sempre em teste e em lote.
+
+**Passo 4 — provar cada fluxo, rápido.** `rotinas/teste-debug.ipynb`, um bloco por script,
+cada um autocontido e no menor período possível. É o que substitui o `setup_teste.ipynb`.
+`scrape_outstanding_bloomberg` só funciona com terminal Bloomberg.
+
+**Passo 5 — a base.** Não raspe o histórico: converta o SQLite de produção (Parte B).
+
+**Passo 6 — rotina diária.** `rotinas/run-pipeline-diario.ipynb`.
+
+**O que continua pendente:** levantar as restrições reais do ambiente — proxy, versão de
+Python disponível e permissão de instalação.
 
 ### Parte B — aproveitar os dados da arquitetura antiga no Parquet
 
@@ -569,9 +613,9 @@ B3 são **contadas**, então re-derivar taxa de pregão antigo custa consumo de 
 - Conferir se `InfoAtivos`/`FluxoAtivos` (tabelas **estado**, arquivo único) precisam de
   reconciliação com o cadastro atual da B3, ou se entram como estão e o pipeline atualiza.
 
-**Conversa com:** [base-de-dados](base-de-dados.md), Migracao Banco,
-`INSTALACAO_BANCO.md` e o item de importação de histórico de planilhas abaixo (é o mesmo
-problema pela outra ponta: lá a fonte é Excel, aqui é o SQLite de produção).
+**Conversa com:** [base-de-dados](base-de-dados.md), [migrar_para_parquet](codigos/migrar_para_parquet.md)
+e o item de importação de histórico de planilhas abaixo (é o mesmo problema pela outra
+ponta: lá a fonte é Excel, aqui é o SQLite de produção).
 
 ---
 ## ✅ RESOLVIDO (19/07/2026) — `scrape_fianalytics_planilha` quebrado (layout novo do site)
@@ -740,7 +784,7 @@ onde a B3 guarda ~20 pregões e não há outra fonte. E o histórico Anbima **an
 scraper × planilha, e se o "DI projetado" cabe em `MtmAnbima` ou pede tabela própria.
 
 **Conversa com:** [scrape_anbima_ntnb](codigos/scrape_anbima_ntnb.md), [scrape_b3_curva_di](codigos/scrape_b3_curva_di.md) e
-o Passo 6-B do `INSTALACAO_BANCO.md` (é o mesmo problema pela outra ponta: lá a fonte é o
+a Parte B do item de migração acima (é o mesmo problema pela outra ponta: lá a fonte é o
 SQLite de produção do banco).
 
 ---
